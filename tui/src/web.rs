@@ -7,10 +7,9 @@
 //! public, as its source is.
 
 use anyhow::{Context, Result, bail, ensure};
+use chatir_core::{Node, api, crypto};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
-use irch_core::{Node, api, crypto};
-use iroh::endpoint::presets;
-use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey};
+use iroh::{RelayUrl, SecretKey};
 use serde_json::{Value, json};
 use std::{net::SocketAddr, path::Path, path::PathBuf, sync::Arc};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -18,11 +17,8 @@ use tokio::sync::{Semaphore, broadcast, broadcast::error::RecvError};
 use tokio::time::{Duration, timeout};
 
 const UI: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/ui.rs"));
-/// irp's page, and the relays it dials when a link pins none (irpo-core's
-/// RELAYS): we must home on one of them, or the page never finds us.
-const LINK: &str = "https://cab-ucf.github.io/";
-const RELAYS: [&str; 2] =
-    ["https://iroh.cxn.center./", "https://use1-1.relay.n0.iroh.link./"];
+/// irp's page: it dials the relays irnet homes on when a link pins none.
+const LINK: &str = "https://cablab-ucf.github.io/";
 const ALPN: &[u8] = b"irweb/http/2";
 const HEAD: usize = 16 << 10;
 const BODY: usize = 8 << 20;
@@ -56,7 +52,7 @@ pub async fn run(
             k
         }
     };
-    let token = HEXLOWER.encode(&crypto::kdf("irch web access", &[&seed]));
+    let token = HEXLOWER.encode(&crypto::kdf("chatir web access", &[&seed]));
     let (news, _) = broadcast::channel(256);
     let up = dir.join("offered");
     let w = Arc::new(Web { n, token, up, news, cap: Semaphore::new(256) });
@@ -66,31 +62,28 @@ pub async fn run(
     let ep = match relays {
         Some(r) => {
             let pin = r.first().map(|u| format!(";r={u}")).unwrap_or_default();
-            let r = match r.first() {
-                Some(u) => vec![u.clone()],
-                None => RELAYS.map(|u| u.parse().expect("relay")).to_vec(),
-            };
-            let key = crypto::kdf("irch web endpoint", &[&seed]);
-            let ep = Endpoint::builder(presets::Minimal)
+            // irnet's endpoint, as the node's: on the pinned relay, else
+            // the lab's (n0's only while that is down), where the page dials.
+            let lab = r.is_empty();
+            let key = crypto::kdf("chatir web endpoint", &[&seed]);
+            let ep = chatir_core::irnet::on(&r[..r.len().min(1)])
                 .secret_key(SecretKey::from_bytes(&key))
                 .alpns(vec![ALPN.to_vec()])
-                .relay_mode(RelayMode::custom(r))
-                // as the node's: the network's proxy, the system's roots
-                .proxy_from_env()
-                .ca_tls_config(iroh::tls::CaTlsConfig::system())
-                .crypto_provider(crypto::pq())
                 .bind()
                 .await?;
+            if lab {
+                tokio::spawn(chatir_core::irnet::fallback(ep.clone()));
+            }
             let id = BASE32_NOPAD.encode(ep.id().as_bytes()).to_lowercase();
             said += &format!("{LINK}#{id};t={}{pin}\n", w.token);
             Some(ep)
         }
         None => None,
     };
-    // Each opens your irch: printed to a terminal, not to a service's log.
+    // Each opens your chatir: printed to a terminal, not to a service's log.
     std::fs::write(dir.join("web"), &said)?;
     match std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        true => print!("Open irch in a browser (keep these secret):\n{said}"),
+        true => print!("Open chatir in a browser (keep these secret):\n{said}"),
         false => {
             println!("web: its links are in {}", dir.join("web").display())
         }
@@ -121,7 +114,7 @@ pub async fn run(
 
 /// Core events as the app gets them, and its notices as "alert"s.
 async fn forward(w: Arc<Web>) {
-    use irch_core::Event::{Call, Changed};
+    use chatir_core::Event::{Call, Changed};
     let mut rx = w.n.subscribe();
     let say = |event, payload| {
         let _ = w.news.send(
@@ -136,9 +129,11 @@ async fn forward(w: Arc<Web>) {
                         say("alert", json!(x));
                     }
                 }
-                say("irch", json!(e));
+                say("chatir", json!(e));
             }
-            Err(RecvError::Lagged(_)) => say("irch", json!({ "t": "changed" })),
+            Err(RecvError::Lagged(_)) => {
+                say("chatir", json!({ "t": "changed" }))
+            }
             Err(RecvError::Closed) => break,
         }
     }
@@ -288,13 +283,14 @@ async fn route(
     match (q.method.as_str(), cmd) {
         ("GET", "events") => {
             let changed: Arc<str> =
-                r#"{"event":"irch","payload":{"t":"changed"}}"#.into();
+                r#"{"event":"chatir","payload":{"t":"changed"}}"#.into();
             let bytes = |s: Arc<str>| s.as_bytes().to_vec();
             down(o, w.news.subscribe(), bytes, Some(changed)).await
         }
         ("GET", "tune") => {
-            let bytes =
-                |(who, f): (irch_core::Id, Vec<u8>)| [&who.0[..], &f].concat();
+            let bytes = |(who, f): (chatir_core::Id, Vec<u8>)| {
+                [&who.0[..], &f].concat()
+            };
             down(o, w.n.media(), bytes, None).await
         }
         ("POST", cmd) => match post(w, cmd, &q).await {
@@ -370,7 +366,7 @@ fn hex32(s: &str) -> bool {
 
 async fn post(w: &Web, cmd: &str, q: &Req) -> Result<Value> {
     match cmd {
-        "irch" => {
+        "chatir" => {
             let c: api::Call = serde_json::from_slice(&q.body)?;
             // Only what the page uploaded is shared: no other path here.
             let mut sealed = None;

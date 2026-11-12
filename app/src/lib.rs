@@ -1,10 +1,10 @@
-//! irch on desktops and phones: the page in `ui/` over one command.
+//! chatir on desktops and phones: the page in `ui/` over one command.
 
 #[cfg(target_os = "android")]
 mod android;
 
 use anyhow::Context;
-use irch_core::{Ch, Config, File, Id, Net, Node, Notice, api};
+use chatir_core::{Ch, Config, File, Id, Net, Node, Notice, api};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +25,7 @@ static FG: std::sync::atomic::AtomicBool =
 static VIEW: std::sync::Mutex<Option<(Id, Ch)>> = std::sync::Mutex::new(None);
 
 /// Out of sight a minute, the node stops: its links' keepalives and relay
-/// pings cost battery and packets; a push wakes it (desktops: irpush).
+/// pings cost battery and packets; a push wakes it (desktops: pushir).
 #[cfg(any(desktop, target_os = "android"))]
 async fn seen(app: &AppHandle, fg: bool) {
     use std::sync::atomic::Ordering::SeqCst;
@@ -63,7 +63,7 @@ async fn doze(app: AppHandle) {
 }
 
 /// Asleep, out of sight and out of calls (desktops: only while their
-/// irpush lane is on a relay; else they stay up in the tray). True if it
+/// pushir lane is on a relay; else they stay up in the tray). True if it
 /// stopped.
 #[cfg(any(desktop, target_os = "android"))]
 async fn nap() -> bool {
@@ -89,8 +89,8 @@ fn sight(app: &AppHandle) {
     tauri::async_runtime::spawn(async move { seen(&app, fg).await });
 }
 
-/// Desktop: irch sleeps out of sight, its irpush lane up (the device's
-/// mailbox, irpush's daemon, or its own on our relay).
+/// Desktop: chatir sleeps out of sight, its pushir lane up (the device's
+/// mailbox, pushir's daemon, or its own on our relay).
 /// What comes asleep is shown from the phonebook; a call or a catch-up
 /// starts the node, which connects as it is answered. One per profile.
 #[cfg(desktop)]
@@ -113,8 +113,8 @@ async fn hear(app: AppHandle, n: Arc<Node>) {
         }
         *h = Some(dir.clone());
     }
-    let mut rx = irch_core::push::listen(&dir);
-    if let Some(url) = n.irpush().await {
+    let mut rx = chatir_core::push::listen(&dir);
+    if let Some(url) = n.pushir().await {
         n.set_push(Some(url)).await;
     }
     drop(n); // asleep, a node goes
@@ -172,14 +172,14 @@ fn config(
     link: Option<String>,
     notes: Option<std::path::PathBuf>,
 ) -> anyhow::Result<Config> {
-    let net = match (std::env::var("IRCH_RELAY"), std::env::var_os("IRCH_LAN"))
-    {
-        (Ok(r), _) => {
-            Net::Relay(r.split(',').map(str::parse).collect::<Result<_, _>>()?)
-        }
-        (_, Some(_)) => Net::Lan,
-        _ => Net::Default,
-    };
+    let net =
+        match (std::env::var("CHATIR_RELAY"), std::env::var_os("CHATIR_LAN")) {
+            (Ok(r), _) => Net::Relay(
+                r.split(',').map(str::parse).collect::<Result<_, _>>()?,
+            ),
+            (_, Some(_)) => Net::Lan,
+            _ => Net::Default,
+        };
     let (name, serve) = ("anon".into(), false);
     Ok(Config { dir, name, net, link, serve, notes, big: None })
 }
@@ -201,7 +201,7 @@ static PICKED: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(vec![]);
 
 #[tauri::command]
-async fn irch(
+async fn chatir(
     app: AppHandle,
     s: State<'_, App>,
     call: api::Call,
@@ -264,7 +264,7 @@ fn tray(app: &tauri::App) {
     if let Some(f) = first.filter(|f| !f.exists() && !NIXOS) {
         let _ = auto.enable().and_then(|()| Ok(std::fs::write(f, "")?));
     } else if auto.is_enabled().unwrap_or(false) {
-        let _ = auto.enable(); // irch may have moved
+        let _ = auto.enable(); // chatir may have moved
     }
     let on = auto.is_enabled().unwrap_or(false);
     // Linux: a tray only with the library it loads (else it aborts).
@@ -276,7 +276,7 @@ fn tray(app: &tauri::App) {
     let lib = true;
     let built = lib.then(|| {
         let open =
-            MenuItem::with_id(app, "open", "Open irch", true, None::<&str>)?;
+            MenuItem::with_id(app, "open", "Open chatir", true, None::<&str>)?;
         let login = CheckMenuItem::with_id(
             app,
             "login",
@@ -286,14 +286,14 @@ fn tray(app: &tauri::App) {
             None::<&str>,
         )?;
         let quit =
-            MenuItem::with_id(app, "quit", "Quit irch", true, None::<&str>)?;
+            MenuItem::with_id(app, "quit", "Quit chatir", true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&open, &login, &quit])?;
         let icon = app.default_window_icon().cloned().ok_or(
             tauri::Error::InvalidIcon(std::io::Error::other("no icon")),
         )?;
-        tauri::tray::TrayIconBuilder::with_id("irch")
+        tauri::tray::TrayIconBuilder::with_id("chatir")
             .icon(icon)
-            .tooltip("irch")
+            .tooltip("chatir")
             .menu(&menu)
             .show_menu_on_left_click(false)
             .on_menu_event(move |app, e| match e.id.as_ref() {
@@ -382,7 +382,7 @@ fn root(app: &AppHandle) -> anyhow::Result<std::path::PathBuf> {
 }
 
 fn home(app: &AppHandle) -> anyhow::Result<std::path::PathBuf> {
-    Ok(irch_core::profile(&root(app)?))
+    Ok(chatir_core::profile(&root(app)?))
 }
 
 async fn stop(s: &App) {
@@ -441,7 +441,7 @@ async fn sign_out(app: AppHandle, s: State<'_, App>) -> Result<(), String> {
     stop(&s).await;
     let (r, dir) = (root(&app).map_err(err)?, home(&app).map_err(err)?);
     if dir == r {
-        forget(&r, &irch_core::MINE);
+        forget(&r, &chatir_core::MINE);
     } else {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(r.join("profile"));
@@ -493,7 +493,7 @@ async fn save(
     {
         let dir = app.path().document_dir().map_err(|e| e.to_string())?;
         let f = n.save(&space, &file, &dir).await.map_err(err)?;
-        Ok(f.display().to_string()) // Files › irch
+        Ok(f.display().to_string()) // Files › chatir
     }
 }
 
@@ -569,10 +569,10 @@ async fn tune(s: State<'_, App>, to: Channel<Body>) -> Result<(), String> {
 }
 
 /// Built by package.nix: NixOS keeps it up to date.
-const NIXOS: bool = option_env!("IRCH_NIXOS").is_some();
+const NIXOS: bool = option_env!("CHATIR_NIXOS").is_some();
 
 async fn newer(app: &AppHandle) -> anyhow::Result<Option<String>> {
-    irch_core::release::newer(&app.package_info().version.to_string()).await
+    chatir_core::release::newer(&app.package_info().version.to_string()).await
 }
 
 /// A storage node here: the released CLI, as this user's service.
@@ -580,14 +580,14 @@ async fn newer(app: &AppHandle) -> anyhow::Result<Option<String>> {
 async fn serve_here(app: AppHandle) -> Result<(), String> {
     let run = async {
         anyhow::ensure!(cfg!(desktop), "phones sleep: run one on a computer");
-        anyhow::ensure!(!NIXOS, "on NixOS: services.irch.enable = true");
+        anyhow::ensure!(!NIXOS, "on NixOS: services.chatir.enable = true");
         let dir = app.path().app_local_data_dir()?.join("bin");
         std::fs::create_dir_all(&dir)?;
-        let exe = dir.join(format!("irch{}", std::env::consts::EXE_SUFFIX));
+        let exe = dir.join(format!("chatir{}", std::env::consts::EXE_SUFFIX));
         let (cli, v) =
-            (irch_core::release::cli(), irch_core::release::latest());
-        let bin = irch_core::release::fetch(&cli, &v.await?).await?;
-        irch_core::release::put(&exe, &bin)?;
+            (chatir_core::release::cli(), chatir_core::release::latest());
+        let bin = chatir_core::release::fetch(&cli, &v.await?).await?;
+        chatir_core::release::put(&exe, &bin)?;
         let out = tokio::task::spawn_blocking(move || {
             std::process::Command::new(exe).arg("--install").output()
         });
@@ -603,9 +603,9 @@ async fn serve_here(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn stop_here(app: AppHandle) -> Result<(), String> {
     let run = async {
-        anyhow::ensure!(!NIXOS, "on NixOS: services.irch.enable = false");
+        anyhow::ensure!(!NIXOS, "on NixOS: services.chatir.enable = false");
         let dir = app.path().app_local_data_dir()?.join("bin");
-        let exe = dir.join(format!("irch{}", std::env::consts::EXE_SUFFIX));
+        let exe = dir.join(format!("chatir{}", std::env::consts::EXE_SUFFIX));
         let out = tokio::task::spawn_blocking(move || {
             std::process::Command::new(exe).arg("--uninstall").output()
         });
@@ -641,8 +641,8 @@ async fn upgrade(
         {
             app.restart();
         }
-        browse(irch_core::release::LATEST).map_err(err)?;
-        Ok(Some("irch's release page is open: install it from there".into()))
+        browse(chatir_core::release::LATEST).map_err(err)?;
+        Ok(Some("chatir's release page is open: install it from there".into()))
     }
     #[cfg(target_os = "android")]
     {
@@ -795,7 +795,7 @@ fn qr(text: String) -> Result<String, String> {
 /// MathML; the page checks the tags.
 #[tauri::command]
 async fn math(src: String, display: bool) -> Result<String, String> {
-    let m = move || irch_math::mathml(&src, display);
+    let m = move || chatir_math::mathml(&src, display);
     tauri::async_runtime::spawn_blocking(m).await.map_err(|e| e.to_string())?
 }
 
@@ -814,7 +814,7 @@ async fn share(app: AppHandle, text: String) -> Result<(), String> {
 pub fn run() {
     // Media allowed: the page asks only on a click; the OS may ask too.
     let b = tauri::Builder::default();
-    // One irch per device: a second launch hands its link to the first.
+    // One chatir per device: a second launch hands its link to the first.
     #[cfg(desktop)]
     let b = b.plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)));
     #[cfg(desktop)]
@@ -840,7 +840,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        // Closed, irch stays in the tray: still told of messages and calls.
+        // Closed, chatir stays in the tray: still told of messages and calls.
         .on_window_event(|w, e| match e {
             tauri::WindowEvent::CloseRequested { api, .. }
                 if TRAY.load(std::sync::atomic::Ordering::SeqCst) =>
@@ -865,7 +865,7 @@ pub fn run() {
                 if let Some(s) = w.inner().settings() {
                     s.set_enable_media_stream(true);
                     if cfg!(debug_assertions)
-                        && std::env::var_os("IRCH_TEST_JS").is_some()
+                        && std::env::var_os("CHATIR_TEST_JS").is_some()
                     {
                         s.set_enable_mock_capture_devices(true);
                         s.set_enable_write_console_messages_to_stdout(true);
@@ -875,7 +875,7 @@ pub fn run() {
         }
         #[cfg(debug_assertions)]
         if let (Some(f), Some(w)) =
-            (std::env::var_os("IRCH_TEST_JS"), app.get_webview_window("main"))
+            (std::env::var_os("CHATIR_TEST_JS"), app.get_webview_window("main"))
         {
             let js = std::fs::read_to_string(f)?;
             tauri::async_runtime::spawn(async move {
@@ -908,7 +908,7 @@ pub fn run() {
         Ok(())
     });
     let b = b.invoke_handler(tauri::generate_handler![
-        irch,
+        chatir,
         link,
         qr,
         math,
@@ -991,7 +991,7 @@ async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
 
 /// Core events to the page; lagging, it refreshes everything.
 fn forward(app: AppHandle, n: Arc<Node>) {
-    use irch_core::Event::{Call, Changed};
+    use chatir_core::Event::{Call, Changed};
     // Weak: a node stopped (on Android, out of sight) goes, and this ends.
     let (mut rx, n) = (n.subscribe(), Arc::downgrade(&n));
     tauri::async_runtime::spawn(async move {
@@ -999,7 +999,7 @@ fn forward(app: AppHandle, n: Arc<Node>) {
             let e = match rx.recv().await {
                 Ok(e) => e,
                 Err(RecvError::Lagged(_)) => {
-                    let _ = app.emit("irch", json!({ "t": "changed" }));
+                    let _ = app.emit("chatir", json!({ "t": "changed" }));
                     continue;
                 }
                 Err(RecvError::Closed) => break,
@@ -1011,7 +1011,7 @@ fn forward(app: AppHandle, n: Arc<Node>) {
                     notify(&app, &x).await;
                 }
             }
-            let _ = app.emit("irch", e);
+            let _ = app.emit("chatir", e);
         }
     });
 }
@@ -1023,7 +1023,7 @@ fn alerts(n: &Node, front: bool) -> Vec<Notice> {
 }
 
 /// In a call, or ringing for one, or neither: Android's voice path and
-/// the lock screen follow (android.rs, IrchPlugin.kt).
+/// the lock screen follow (android.rs, ChatirPlugin.kt).
 #[tauri::command]
 async fn in_call(app: AppHandle, on: bool) {
     #[cfg(target_os = "android")]
@@ -1067,7 +1067,7 @@ fn veiled(app: &AppHandle, x: &Notice) -> Notice {
 fn veil(mut x: Notice, hide: bool, quiet: bool) -> Notice {
     x.quiet = quiet;
     if hide {
-        x.title = "irch".into();
+        x.title = "chatir".into();
         x.body = if x.ring { "Incoming call" } else { "New message" }.into();
     }
     x
@@ -1080,7 +1080,7 @@ async fn notify(app: &AppHandle, x: &Notice) {
     }
 }
 
-/// A banner unless in front (the page chimes); a call also raises irch.
+/// A banner unless in front (the page chimes); a call also raises chatir.
 #[cfg(not(target_os = "android"))]
 async fn notify(app: &AppHandle, x: &Notice) {
     use tauri_plugin_notification::NotificationExt;
@@ -1113,12 +1113,12 @@ async fn notify(app: &AppHandle, x: &Notice) {
 /// Logs stay in the app's private directory, never the system log.
 fn log_to(dir: &std::path::Path) {
     let _ = std::fs::create_dir_all(dir);
-    let Ok(f) = std::fs::File::create(dir.join("irch.log")) else { return };
-    // irch's warnings; of its libraries, errors: a phone's network is a
+    let Ok(f) = std::fs::File::create(dir.join("chatir.log")) else { return };
+    // chatir's warnings; of its libraries, errors: a phone's network is a
     // stream of warnings, each a write.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
-            "error,irch_core=warn,irch_app=warn,irch=warn".into()
+            "error,chatir_core=warn,chatir_app=warn,chatir=warn".into()
         });
     let log =
         tracing_subscriber::fmt().with_ansi(false).with_env_filter(filter);

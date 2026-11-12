@@ -1,4 +1,4 @@
-package dev.irch.chat
+package center.cxn.chatir
 
 import android.app.Notification
 import android.app.PendingIntent
@@ -71,14 +71,14 @@ fun postMessage(ctx: Context, tag: String, title: String, body: String,
 
 val answers: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
 
-/** An irch://call link without a shown Answer's token only rings. */
+/** An chatir://call link without a shown Answer's token only rings. */
 fun answerable(i: Intent?) {
   if (i == null) return
-  val u = i.data?.takeIf { it.scheme == "irch" } ?: return
+  val u = i.data?.takeIf { it.scheme == "chatir" } ?: return
   if (u.host != "call" && u.host != "ring") return
   val ok = u.host == "call" && answers.remove(u.getQueryParameter("k") ?: "")
   val verb = if (ok) "call" else u.host
-  i.setData(Uri.parse("irch://$verb${u.path}"))
+  i.setData(Uri.parse("chatir://$verb${u.path}"))
 }
 
 /** Rings like a phone; only Answer joins, the screen or a tap asks first. */
@@ -95,7 +95,7 @@ fun postCall(ctx: Context, space: String, room: String, who: String,
     // Only this notification's token answers; other links just ring.
     val k = java.util.UUID.randomUUID().toString()
     if (verb == "call") answers.add(k)
-    val uri = Uri.parse("irch://$verb/$space/$room?k=$k")
+    val uri = Uri.parse("chatir://$verb/$space/$room?k=$k")
     val i = Intent(Intent.ACTION_VIEW, uri, ctx, MainActivity::class.java)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     PendingIntent.getActivity(ctx, tag.hashCode() + code, i, flags)

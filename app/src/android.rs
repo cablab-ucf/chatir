@@ -1,11 +1,11 @@
-//! Android: `IrchPlugin.kt` sees network changes iroh cannot; `Push.kt` wakes.
+//! Android: `ChatirPlugin.kt` sees network changes iroh cannot; `Push.kt` wakes.
 
-extern crate irpush; // org.irpush.Native, for irpush's Android library
+extern crate pushir; // org.pushir.Native, for pushir's Android library
 
 use anyhow::Context;
-use irch_core::push;
-use irch_core::wake::News;
-use irch_core::{Node, Notice};
+use chatir_core::push;
+use chatir_core::wake::News;
+use chatir_core::{Node, Notice};
 use jni::errors::LogErrorAndDefault as Log;
 use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::{Env, EnvUnowned};
@@ -20,10 +20,10 @@ use tauri::{Manager, Wry};
 pub struct Bridge(PluginHandle<Wry>);
 
 pub fn init() -> TauriPlugin<Wry> {
-    Builder::new("irch")
+    Builder::new("chatir")
         .setup(|app, api| {
-            let h =
-                api.register_android_plugin("dev.irch.chat", "IrchPlugin")?;
+            let h = api
+                .register_android_plugin("center.cxn.chatir", "ChatirPlugin")?;
             app.manage(Bridge(h));
             Ok(())
         })
@@ -42,10 +42,10 @@ struct Text<'a> {
 
 /// Via the browser: Play Protect takes apps that install apps for malware.
 pub async fn upgrade(app: &tauri::AppHandle) -> anyhow::Result<String> {
-    let url = format!("{}/download/irch.apk", irch_core::release::LATEST);
+    let url = format!("{}/download/chatir.apk", chatir_core::release::LATEST);
     let bridge = app.try_state::<Bridge>().context("no bridge")?;
     bridge.call("browse", Url { url: &url }).await;
-    Ok("Your browser downloads irch: open it to install".into())
+    Ok("Your browser downloads chatir: open it to install".into())
 }
 
 pub async fn notify_check(
@@ -168,7 +168,7 @@ static NEWS: std::sync::Mutex<Vec<News>> = std::sync::Mutex::new(vec![]);
 
 /// Notices as JSON: at once, or (`full`) after catching up.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_run<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_run<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     ctx: JObject<'l>,
@@ -182,7 +182,7 @@ pub extern "system" fn Java_dev_irch_chat_Wake_run<'l>(
 /// A call declined from its notification: said by the node the ring
 /// started, so its caller hangs up and our other devices stop ringing.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_decline<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_decline<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     space: JString<'l>,
@@ -203,7 +203,7 @@ pub extern "system" fn Java_dev_irch_chat_Wake_decline<'l>(
 
 /// Rung through a storage node, else on our lane alone (`live`).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_live<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_live<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     ctx: JObject<'l>,
@@ -222,7 +222,7 @@ fn text(e: &Env, s: &JString) -> String {
 }
 
 fn profile(e: &Env, dir: &JString) -> PathBuf {
-    irch_core::profile(std::path::Path::new(&text(e, dir)))
+    chatir_core::profile(std::path::Path::new(&text(e, dir)))
 }
 
 fn reply<'l, T: Serialize + Default>(
@@ -252,7 +252,7 @@ fn hold(env: &Env, ctx: &JObject) {
 
 /// The activity is starting, and tao brings its own context.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_release<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_release<'l>(
     _: EnvUnowned<'l>,
     _: JClass<'l>,
 ) {
@@ -289,7 +289,7 @@ async fn told(dir: PathBuf, full: bool) -> anyhow::Result<Vec<Notice>> {
             spaces.into_iter().filter(|s| n.loud(s) && n.calls(s).is_empty());
         v.extend(ended.map(|space| Notice {
             space,
-            room: irch_core::state::DM,
+            room: chatir_core::state::DM,
             title: String::new(),
             body: String::new(),
             ring: false,
@@ -334,7 +334,7 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
         return Ok(());
     }
     let n = node(dir).await?;
-    let route = n.irpush().await;
+    let route = n.pushir().await;
     n.set_push(route).await;
     *TOLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(lane);
     // A minute to tell the spaces, then asleep (unless in sight).
@@ -345,9 +345,9 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// irch's slot on the phone's mailbox, for irpush's library.
+/// chatir's slot on the phone's mailbox, for pushir's library.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_slot<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_slot<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     dir: JString<'l>,
@@ -359,9 +359,9 @@ pub extern "system" fn Java_dev_irch_chat_Wake_slot<'l>(
     .resolve::<Log>()
 }
 
-/// The phone's mailbox id, from irpush's library ("" until known).
+/// The phone's mailbox id, from pushir's library ("" until known).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_share<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_share<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     id: JString<'l>,
@@ -373,10 +373,10 @@ pub extern "system" fn Java_dev_irch_chat_Wake_share<'l>(
     .resolve::<Log>()
 }
 
-/// What irpush brought for irch: to its node if one runs, else its notices
+/// What pushir brought for chatir: to its node if one runs, else its notices
 /// and whether to catch up.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_irch_chat_Wake_ring<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     ctx: JObject<'l>,
@@ -402,7 +402,7 @@ pub extern "system" fn Java_dev_irch_chat_Wake_ring<'l>(
 }
 
 /// What a ring brings, to show now, and whether to catch up for it. With
-/// irch in use its node takes it; else no node starts (`Node::woken`).
+/// chatir in use its node takes it; else no node starts (`Node::woken`).
 #[derive(serde::Serialize, Default)]
 struct Shown {
     show: Vec<Notice>,

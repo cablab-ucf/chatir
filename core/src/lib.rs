@@ -1,4 +1,4 @@
-//! irch: a space is a grow-only set of sealed ops on members' devices,
+//! chatir: a space is a grow-only set of sealed ops on members' devices,
 //! folded deterministically, reconciled over iroh.
 
 pub mod api;
@@ -19,6 +19,7 @@ pub mod usage;
 pub mod voice;
 pub mod wake;
 
+pub use irnet;
 pub use node::{
     Config, Event, Level, Net, Node, Notice, host_name, http, storage_name,
 };
@@ -83,12 +84,12 @@ impl Id {
     }
 }
 
-/// This computer's storage node code, from `irch --install` or nixos.nix.
+/// This computer's storage node code, from `chatir --install` or nixos.nix.
 pub fn local_storage() -> Option<String> {
     // /run is root's on Linux; elsewhere (C:\\run) anyone could plant one.
-    let run = cfg!(target_os = "linux").then(|| "/run/irch/code".into());
-    let p = std::env::var_os("IRCH_CODE_FILE").map(Into::into).or(run);
-    let mine = dirs::data_dir().map(|d| d.join("irch-serve").join("code"));
+    let run = cfg!(target_os = "linux").then(|| "/run/chatir/code".into());
+    let p = std::env::var_os("CHATIR_CODE_FILE").map(Into::into).or(run);
+    let mine = dirs::data_dir().map(|d| d.join("chatir-serve").join("code"));
     let read = |p| std::fs::read_to_string(p).ok();
     let code = p.and_then(read).or_else(|| mine.and_then(read))?;
     let code = code.trim().to_string();
@@ -116,7 +117,7 @@ pub const MINE: [&str; 18] = [
     "blobs",
     "offered",
     "wake.json",
-    "irch.log",
+    "chatir.log",
     // Ring tokens' secret: kept, it would tie the next identity here to this.
     "bell",
     "bells",

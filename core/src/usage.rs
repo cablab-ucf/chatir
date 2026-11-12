@@ -48,7 +48,7 @@ pub fn counted(ep: &iroh::Endpoint) -> Value {
 #[test]
 fn notes_and_trims() {
     let n = u64::from_le_bytes(crate::crypto::rand());
-    let d = std::env::temp_dir().join(format!("irch-usage-{n}"));
+    let d = std::env::temp_dir().join(format!("chatir-usage-{n}"));
     std::fs::create_dir_all(&d).unwrap();
     note(&d, "up", json!({}));
     note(&d, "down", json!({ "s": 3 }));

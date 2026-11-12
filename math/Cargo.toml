@@ -1,6 +1,6 @@
 [package]
-name = "irch-math"
-description = "Typst math as MathML, for irch's messages"
+name = "chatir-math"
+description = "Typst math as MathML, for chatir's messages"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

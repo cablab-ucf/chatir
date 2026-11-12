@@ -1,4 +1,4 @@
-package dev.irch.chat
+package center.cxn.chatir
 
 import android.app.Service
 import android.content.Context
@@ -8,12 +8,12 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import org.irpush.Irpush
+import org.pushir.Pushir
 import org.json.JSONArray
 
 /** Rust without Tauri: a push may come when no activity is running. */
 object Wake {
-  init { System.loadLibrary("irch_app") }
+  init { System.loadLibrary("chatir_app") }
 
   @JvmStatic external fun run(ctx: Context, dir: String, full: Boolean): String
 
@@ -26,27 +26,27 @@ object Wake {
   /** Hand Android's context back before the activity's runtime takes it. */
   @JvmStatic external fun release()
 
-  /** irch's slot on the phone's mailbox (random, kept). */
+  /** chatir's slot on the phone's mailbox (random, kept). */
   @JvmStatic external fun slot(dir: String): ByteArray
 
-  /** The phone's mailbox id, from irpush's library ("" until known). */
+  /** The phone's mailbox id, from pushir's library ("" until known). */
   @JvmStatic external fun share(id: String)
 
-  /** What irpush brought: to irch's node if it runs, else
+  /** What pushir brought: to chatir's node if it runs, else
    *  `{show: notices, catch: whether to catch up}`. */
   @JvmStatic external fun ring(ctx: Context, dir: String, data: ByteArray): String
 }
 
-/** The phone's one mailbox, shared with every irpush app (irpush's library:
- *  its owner holds the socket and its heartbeats). A ring wakes irch here,
+/** The phone's one mailbox, shared with every pushir app (pushir's library:
+ *  its owner holds the socket and its heartbeats). A ring wakes chatir here,
  *  running or not. */
-class IrchApp : android.app.Application() {
+class ChatirApp : android.app.Application() {
   override fun onCreate() {
     super.onCreate()
     val dir = dataDir.absolutePath
     Wake.share("")
-    val seen = getSharedPreferences("irch-push", 0)
-    Irpush.start(this, "irch_app", Wake.slot(dir), onId = { id ->
+    val seen = getSharedPreferences("chatir-push", 0)
+    Pushir.start(this, "chatir_app", Wake.slot(dir), onId = { id ->
       Wake.share(id)
       // A new mailbox: members told where.
       if (seen.getString("id", null) != id) {
@@ -62,15 +62,15 @@ class IrchApp : android.app.Application() {
 }
 
 /** A push lends a few foreground seconds to start a service; refused
- *  (Android 12+, battery optimized), irch catches up in those seconds. */
+ *  (Android 12+, battery optimized), chatir catches up in those seconds. */
 fun wake(ctx: Context) {
-  val i = Intent(ctx, IrchWake::class.java)
+  val i = Intent(ctx, ChatirWake::class.java)
   runCatching { ctx.startForegroundService(i) }.onFailure {
     Thread { catchUp(ctx) }.start()
   }
 }
 
-/** A ring's notices shown; true if irch must catch up for it (a message
+/** A ring's notices shown; true if chatir must catch up for it (a message
  *  too big to carry, a DM to take): most need no node at all. */
 fun show(ctx: Context, json: String): Boolean = runCatching {
   val got = org.json.JSONObject(json)
@@ -79,10 +79,10 @@ fun show(ctx: Context, json: String): Boolean = runCatching {
   got.getBoolean("catch")
 }.getOrDefault(true)
 
-/** CPU held awake: asleep, Android would freeze irch mid-sync. */
+/** CPU held awake: asleep, Android would freeze chatir mid-sync. */
 fun catchUp(ctx: Context) {
   val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-  val lock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "irch:catch-up")
+  val lock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "chatir:catch-up")
   lock.acquire(60_000)
   try {
     for (full in listOf(false, true)) runCatching {
@@ -95,7 +95,7 @@ fun catchUp(ctx: Context) {
   }
 }
 
-class IrchWake : Service() {
+class ChatirWake : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, id: Int): Int {
@@ -123,7 +123,7 @@ class IrchWake : Service() {
 
 const val SYNCING = "syncing"
 
-/** irch's lane told, and its route to a storage node that takes it. */
+/** chatir's lane told, and its route to a storage node that takes it. */
 fun live(ctx: Context) {
   val dir = ctx.dataDir.absolutePath
   Thread { runCatching { Wake.live(ctx.applicationContext, dir) } }.start()

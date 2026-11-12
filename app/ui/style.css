@@ -1,4 +1,4 @@
-/* irch: neon on black. No external fonts or assets (CSP). */
+/* chatir: neon on black. No external fonts or assets (CSP). */
 
 :root {
   --bg-1: #000;
@@ -1224,7 +1224,7 @@ dialog .m-foot .spacer { flex: 1; }
   .toolbar { right: 8px; }
 }
 
-/* ===== irch additions ===== */
+/* ===== chatir additions ===== */
 .channel.dm { gap: 8px; }
 .channel.dm.shut { opacity: 0.5; }
 .space.shut { padding-left: 20px; }

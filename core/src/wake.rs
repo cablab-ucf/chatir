@@ -1,7 +1,7 @@
 //! Ringing a sleeping phone through a push server: each space gets its own
 //! ring token, from one kept secret, the space and its epoch: after a
 //! rekey, whoever it left out rings nothing. Members ring the push server
-//! with it (QUIC); irpush hands it on. With no push server, a phone's lane
+//! with it (QUIC); pushir hands it on. With no push server, a phone's lane
 //! alone is rung, by a labelled event (node.rs).
 
 use crate::crypto::kdf;
@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::time::timeout;
 
-pub const ALPN: &[u8] = b"irch/wake/1";
+pub const ALPN: &[u8] = b"chatir/wake/1";
 const SLOW: Duration = Duration::from_secs(15);
 /// A space's id and one sealed op.
 pub(crate) const MAX: usize = 64 * 1024;
@@ -39,11 +39,11 @@ fn secret(dir: &Path) -> Result<[u8; 16]> {
 
 /// A space's ring token for a push server to know us by.
 pub fn push_token(dir: &Path, space: &Id, tag: &[u8; 8]) -> Result<[u8; 16]> {
-    let k = kdf("irch bell", &[&secret(dir)?, &space.0, tag]);
+    let k = kdf("chatir bell", &[&secret(dir)?, &space.0, tag]);
     Ok(k[..16].try_into()?)
 }
 
-/// A push server rung (`irch:ring:`; relays https only: any member names
+/// A push server rung (`chatir:ring:`; relays https only: any member names
 /// them); taken, it hands the ring on to the phone.
 pub async fn ring(
     ep: &Endpoint,

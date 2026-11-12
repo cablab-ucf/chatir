@@ -1,4 +1,4 @@
-use irch_core::{Node, api};
+use chatir_core::{Node, api};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};

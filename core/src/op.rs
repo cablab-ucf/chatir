@@ -87,7 +87,7 @@ pub struct Link {
 }
 
 /// A message's bytes: 16,000 characters at four bytes each, as the
-/// composer allows. Too big for one irpush datagram, an op goes over a
+/// composer allows. Too big for one pushir datagram, an op goes over a
 /// direct link (`GOSSIP_MAX`), whole: never split.
 pub const MAX_TEXT: usize = 64_000;
 pub const MAX_NAME: usize = 64;
@@ -245,7 +245,7 @@ impl Invite {
 
     /// Bound to the owner: a forged owner is another, empty space.
     pub fn id(&self) -> Id {
-        Id(kdf("irch space", &[&self.owner.0, &self.nonce]))
+        Id(kdf("chatir space", &[&self.owner.0, &self.nonce]))
     }
 
     /// A contact card: a DM with its own owner, met in to start real ones.
@@ -264,12 +264,12 @@ impl Invite {
 
 pub fn code<T: Serialize>(kind: &str, v: &T) -> String {
     let b = postcard::to_allocvec(v).expect("encodes");
-    format!("irch:{kind}:{}", B32.encode(&b).to_lowercase())
+    format!("chatir:{kind}:{}", B32.encode(&b).to_lowercase())
 }
 
 pub fn uncode<T: DeserializeOwned>(kind: &str, s: &str) -> Result<T> {
-    let body = s.trim().strip_prefix(&format!("irch:{kind}:"));
-    let body = body.ok_or_else(|| anyhow!("not an irch {kind} code"))?;
+    let body = s.trim().strip_prefix(&format!("chatir:{kind}:"));
+    let body = body.ok_or_else(|| anyhow!("not an chatir {kind} code"))?;
     let b = B32.decode(body.as_bytes()).context("damaged code")?;
     postcard::from_bytes(&b).context("damaged code")
 }
@@ -301,7 +301,7 @@ pub struct Signed {
 }
 
 pub fn tag(key: &Key) -> [u8; 8] {
-    kdf("irch epoch", &[key])[..8].try_into().expect("8 bytes")
+    kdf("chatir epoch", &[key])[..8].try_into().expect("8 bytes")
 }
 
 /// Before this, ops signed without their epoch (v1) still count: history.
@@ -317,8 +317,8 @@ fn tbs(
     op: &Op,
 ) -> Vec<u8> {
     let b = match v {
-        1 => postcard::to_allocvec(&("irch op", space, ts, d, op)),
-        _ => postcard::to_allocvec(&("irch op 2", space, e, ts, d, op)),
+        1 => postcard::to_allocvec(&("chatir op", space, ts, d, op)),
+        _ => postcard::to_allocvec(&("chatir op 2", space, e, ts, d, op)),
     };
     b.expect("op")
 }

@@ -1,4 +1,4 @@
-package dev.irch.chat
+package center.cxn.chatir
 
 import android.app.KeyguardManager
 import android.content.Intent
@@ -21,7 +21,7 @@ class MainActivity : TauriActivity() {
     // The UI is dark: light system-bar icons whatever the system theme.
     val bars = SystemBarStyle.dark(Color.TRANSPARENT)
     enableEdgeToEdge(bars, bars)
-    Wake.release() // a push may have started irch first
+    Wake.release() // a push may have started chatir first
     answerable(intent)
     overLock(ringing(intent))
     super.onCreate(savedInstanceState)
@@ -52,11 +52,11 @@ class MainActivity : TauriActivity() {
   }
 
   private fun ringing(i: Intent?) = i?.data?.let {
-    it.scheme == "irch" && (it.host == "ring" || it.host == "call")
+    it.scheme == "chatir" && (it.host == "ring" || it.host == "call")
   } == true
 
   /** A ringing call, or one under way: shown over the lock screen, the
-   *  screen lit and kept on. Only then, never for the rest of irch. */
+   *  screen lit and kept on. Only then, never for the rest of chatir. */
   fun overLock(on: Boolean) {
     if (Build.VERSION.SDK_INT >= 27) {
       setShowWhenLocked(on)
@@ -69,20 +69,20 @@ class MainActivity : TauriActivity() {
     }
     val keep = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
     if (on) window.addFlags(keep) else window.clearFlags(keep)
-    // Over a locked phone, the call alone: no way into the rest of irch.
+    // Over a locked phone, the call alone: no way into the rest of chatir.
     val locked = on && getSystemService(KeyguardManager::class.java)
       .isKeyguardLocked
     web?.evaluateJavascript(
       "document.documentElement.classList.toggle('lockscreen', $locked)", null)
   }
 
-  // Back closes what the page has open; else irch goes to the background,
+  // Back closes what the page has open; else chatir goes to the background,
   // as finishing would stop the node.
   override fun onWebViewCreate(webView: WebView) {
     web = webView
     val back = object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
-        webView.evaluateJavascript("window.irchBack?.() === true") { handled ->
+        webView.evaluateJavascript("window.chatirBack?.() === true") { handled ->
           if (handled != "true") moveTaskToBack(true)
         }
       }

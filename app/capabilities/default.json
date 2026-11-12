@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the page may do: call irch, copy text.",
+  "description": "What the page may do: call chatir, copy text.",
   "windows": ["main"],
   "permissions": ["core:default", "clipboard-manager:allow-write-text"]
 }

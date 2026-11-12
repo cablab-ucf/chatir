@@ -59,16 +59,16 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo test -p irch-core
-      - run: cargo build --release -p irch -p irch-app
+      - run: cargo test -p chatir-core
+      - run: cargo build --release -p chatir -p chatir-app
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: irch-${{ runner.os }}
+          name: chatir-${{ runner.os }}
           path: |
-            target/release/irch
-            target/release/irch.exe
-            target/release/irch-app
-            target/release/irch-app.exe
+            target/release/chatir
+            target/release/chatir.exe
+            target/release/chatir-app
+            target/release/chatir-app.exe
           retention-days: 14
 
   android:
@@ -84,7 +84,7 @@ jobs:
           /opt/hostedtoolcache/CodeQL /usr/local/share/boost
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true # app/gen/android/irpush
+          submodules: true # app/gen/android/pushir
       - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -100,7 +100,7 @@ jobs:
         working-directory: app
         run: NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo tauri android build
           --ci --debug --apk --target aarch64 --target x86_64
-      - run: mv app/gen/android/app/build/outputs/apk/*/*/*.apk irch.apk
+      - run: mv app/gen/android/app/build/outputs/apk/*/*/*.apk chatir.apk
       - name: Let the emulator use KVM
         run: sudo chmod 666 /dev/kvm
       - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
@@ -109,11 +109,11 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: sh app/smoke.sh irch.apk evidence
+          script: sh app/smoke.sh chatir.apk evidence
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: irch-android
-          path: irch.apk
+          name: chatir-android
+          path: chatir.apk
           retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -135,7 +135,7 @@ jobs:
           targets: aarch64-apple-ios
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - uses: ./.github/actions/cargo-tauri
-      - name: The Xcode project, with irch's icons
+      - name: The Xcode project, with chatir's icons
         working-directory: app
         run: |
           brew install xcodegen
@@ -144,9 +144,9 @@ jobs:
       - name: An unsigned IPA, which AltStore or SideStore signs
         working-directory: app
         run: cargo tauri ios build --ci --no-sign --target aarch64
-      - run: mv app/gen/apple/build/arm64/irch.ipa irch.ipa
+      - run: mv app/gen/apple/build/arm64/chatir.ipa chatir.ipa
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: irch-ios
-          path: irch.ipa
+          name: chatir-ios
+          path: chatir.ipa
           retention-days: 14

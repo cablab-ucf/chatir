@@ -13,11 +13,11 @@ nearly silent and makes a NAT'd device reachable by id.
 
 | state | holds | wakes by |
 |---|---|---|
-| asleep | its irpush lane (one TCP socket) | an event or ring on the lane |
+| asleep | its pushir lane (one TCP socket) | an event or ring on the lane |
 | awake, idle | the lane; iroh closed a minute after last use | a dial frame |
 | syncing, file, call | direct QUIC, closed when quiet | |
 
-- Every device has a lane: irch's slot on the device's irpush mailbox
+- Every device has a lane: chatir's slot on the device's pushir mailbox
   (Android's library or a desktop's daemon, shared by its apps), else its
   own mailbox.
 - Frames are `kind ‖ 32 bytes ‖ rest`: an op under its space's label, its
@@ -31,7 +31,7 @@ Relays are open; abuse is bounded by per-client rates on relayed traffic,
 connection caps and idle timeouts. Privacy never rested on relay access:
 ops are sealed end to end, the relay hop is post-quantum TLS. Whoever runs
 a relay hands out keys that lift its rate limit. Order: a storage node's
-irpush relay, irpush.cxn.center, iroh.cxn.center, n0's; a minute without
+pushir relay, irpush.cxn.center, iroh.cxn.center, n0's; a minute without
 one, the next; the best again every half hour.
 
 ## Waking: only for what would show
@@ -65,7 +65,7 @@ the seed). A short code (`k7m-x9q-p3a`, ~45 bits) is stretched with
 Argon2id into a throwaway iroh identity and a proof, answered for 60 s,
 one try. The taker sends a fresh X-Wing key; the long code comes back
 sealed to it. An optional password adds an Argon2id-keyed layer. It is
-the irpair library, one pairing for every app; `core/src/code.rs` adapts it.
+the pairir library, one pairing for every app; `core/src/code.rs` adapts it.
 
 ## Open directions
 

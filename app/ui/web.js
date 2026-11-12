@@ -1,5 +1,5 @@
-// irch in a browser: what the app's shell gives the page, from your own
-// node over HTTP (irch --web; tui/src/web.rs). Calls are POSTs; events
+// chatir in a browser: what the app's shell gives the page, from your own
+// node over HTTP (chatir --web; tui/src/web.rs). Calls are POSTs; events
 // and call frames stream down while the page is in sight or in a call,
 // and nothing is said otherwise: no polls, no pings. Opened at the node
 // (http://127.0.0.1:4724/#<token>), the token is the fragment; through
@@ -105,13 +105,13 @@
 
   const no = (what) => () => { throw what; };
   const calls = {
-    irch: ({ call }) => post("irch", JSON.stringify(call)),
+    chatir: ({ call }) => post("chatir", JSON.stringify(call)),
     upload: (b, o) => post("upload", bytes(b), o?.headers),
     media,
     tune: ({ to }) => stream("api/tune", (f) => to.onmessage(f.buffer)),
     // Fetched whole, then the browser's own download.
     save: async ({ space, file }) => {
-      const b = bytes({ data: await calls.irch({ call: { cmd: "file",
+      const b = bytes({ data: await calls.chatir({ call: { cmd: "file",
         space, file } }) });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([b]));
@@ -130,7 +130,7 @@
     hush: () => null,
     log: () => null,
     profiles: no("profiles are the node's own"),
-    link: no("link the node itself: irch --link"),
+    link: no("link the node itself: chatir --link"),
   };
   window.__TAURI__ = {
     core: {

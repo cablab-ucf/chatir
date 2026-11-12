@@ -1,13 +1,13 @@
 [package]
-name = "irch"
-description = "irch in a terminal, or headless as a storage node"
+name = "chatir"
+description = "chatir in a terminal, or headless as a storage node"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-irch-core.workspace = true
+chatir-core.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true, features = ["signal", "io-std", "io-util", "net", "sync"] }
 tracing-subscriber.workspace = true

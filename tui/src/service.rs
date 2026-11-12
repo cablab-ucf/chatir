@@ -22,16 +22,16 @@ fn home(rest: &str) -> Result<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn unit() -> Result<PathBuf> {
-    home(".config/systemd/user/irch-serve.service")
+    home(".config/systemd/user/chatir-serve.service")
 }
 
 #[cfg(target_os = "macos")]
 fn plist() -> Result<PathBuf> {
-    home("Library/LaunchAgents/dev.irch.serve.plist")
+    home("Library/LaunchAgents/dev.chatir.serve.plist")
 }
 
 #[cfg(target_os = "windows")]
-const TASK: &str = "irch storage node";
+const TASK: &str = "chatir storage node";
 
 pub fn install(exe: &Path) -> Result<()> {
     let exe = exe.to_str().context("an odd path")?;
@@ -42,15 +42,15 @@ pub fn install(exe: &Path) -> Result<()> {
         std::fs::write(
             &f,
             format!(
-                "[Unit]\nDescription=irch storage node\n\
+                "[Unit]\nDescription=chatir storage node\n\
              Wants=network-online.target\nAfter=network-online.target\n\n\
              [Service]\nExecStart=\"{exe}\" --serve\nRestart=always\n\
              RestartSec=5\n\n[Install]\nWantedBy=default.target\n"
             ),
         )?;
         run("systemctl", &["--user", "daemon-reload"])?;
-        run("systemctl", &["--user", "enable", "--now", "irch-serve"])?;
-        run("systemctl", &["--user", "restart", "irch-serve"])?;
+        run("systemctl", &["--user", "enable", "--now", "chatir-serve"])?;
+        run("systemctl", &["--user", "restart", "chatir-serve"])?;
         // At boot, not just login: allowed for oneself on most systems.
         if run("loginctl", &["enable-linger"]).is_err() {
             println!("(It starts when you log in: `loginctl enable-linger`");
@@ -66,7 +66,7 @@ pub fn install(exe: &Path) -> Result<()> {
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist \
              version=\"1.0\"><dict>\n<key>Label</key>\
-             <string>dev.irch.serve</string>\n<key>ProgramArguments</key>\
+             <string>dev.chatir.serve</string>\n<key>ProgramArguments</key>\
              <array><string>{exe}</string><string>--serve</string></array>\n\
              <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n\
              </dict></plist>\n"
@@ -91,13 +91,13 @@ pub fn install(exe: &Path) -> Result<()> {
         run("schtasks", &["/Run", "/TN", TASK])?;
     }
     let code = dirs::data_dir().context("no data dir")?;
-    let code = code.join("irch-serve").join("code");
+    let code = code.join("chatir-serve").join("code");
     for _ in 0..60 {
         if let Ok(c) = std::fs::read_to_string(&code) {
             println!("A storage node runs here from now on, kept up to date.");
-            println!("Its code, for the people you store for (irch on this");
+            println!("Its code, for the people you store for (chatir on this");
             println!("computer pairs with it by itself):\n\n{}", c.trim());
-            println!("\nIts phones are woken through it (irpush), no Google.");
+            println!("\nIts phones are woken through it (pushir), no Google.");
             return Ok(());
         }
         std::thread::sleep(Duration::from_secs(1));
@@ -108,7 +108,8 @@ pub fn install(exe: &Path) -> Result<()> {
 pub fn uninstall() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let _ = run("systemctl", &["--user", "disable", "--now", "irch-serve"]);
+        let _ =
+            run("systemctl", &["--user", "disable", "--now", "chatir-serve"]);
         std::fs::remove_file(unit()?)?;
     }
     #[cfg(target_os = "macos")]

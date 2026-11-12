@@ -93,7 +93,7 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
 
 #[test]
 fn torn_tail() {
-    let p = std::env::temp_dir().join(format!("irch-{}.log", crate::now()));
+    let p = std::env::temp_dir().join(format!("chatir-{}.log", crate::now()));
     let mut l = Log::open(&p, |_, _, _| {}).unwrap();
     l.append(0, b"one", false).unwrap();
     l.append(2, b"two", true).unwrap();

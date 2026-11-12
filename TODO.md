@@ -1,12 +1,12 @@
 # TODO
 
-Design: [PLAN.md](PLAN.md). irpush's own list: irpush's TODO.md.
+Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 
 ## Next: servers anyone can have
 - [ ] **Storage nodes fan out large channels**: a phone sends one copy to
       its storage node, which sends it on to every device of the space
       (one upload, not a thousand; the relay sees nothing it did not)
-- [ ] **Push-button VPS**: a provider's API token in, an irpush relay and
+- [ ] **Push-button VPS**: a provider's API token in, an pushir relay and
       a storage node out (free or cheap tiers), told to your devices
 - [ ] **A personal desktop as that server**, reachable from anywhere
       through iroh: no router settings, no open ports
@@ -20,7 +20,7 @@ Design: [PLAN.md](PLAN.md). irpush's own list: irpush's TODO.md.
 - [ ] DM calls: the callee dials the caller, not "lower id dials"
 
 ## Lanes
-- [ ] A desktop daemon's relay is assumed irpush's (`irpush::relay`)
+- [ ] A desktop daemon's relay is assumed pushir's (`pushir::relay`)
 
 ## Delivery
 - [ ] One DM per person: one row, histories merged; `dm` and calls use the
@@ -31,7 +31,7 @@ Design: [PLAN.md](PLAN.md). irpush's own list: irpush's TODO.md.
 - [ ] Measure traffic on real devices (Network use)
 
 ## Done (for context)
-- [x] Small ops as irpush events on each device's lane; acks are MACs
+- [x] Small ops as pushir events on each device's lane; acks are MACs
 - [x] iroh only while a link needs it, woken by a dial frame
 - [x] Notification levels per account; Silent per device
 - [x] Short codes for invites and device links

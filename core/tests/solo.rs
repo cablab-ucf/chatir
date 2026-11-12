@@ -1,28 +1,28 @@
-//! Android with no storage node: the phone's mailbox (held by irpush's
+//! Android with no storage node: the phone's mailbox (held by pushir's
 //! library, here as by another app) is its lane. Members send it labelled
 //! events, and a sleeping phone shows what came from its phonebook, no node
 //! started. Its relay is not theirs: every frame crosses relays. A process
-//! of its own (`push::share` and `IRPUSH_RELAY` are process-wide): every
-//! phone here shares one mailbox (each its own slot, all heard as one),
+//! of its own (`push::share` and `PUSHIR_RELAY` are process-wide): every
+//! phone here shares one mailbox (each its own lane, all heard as one),
 //! and each test takes the frames its spaces label.
 
-use irch_core::{Ch, Config, Id, Net, Node, Notice, Op, state::DM};
+use chatir_core::{Ch, Config, Id, Net, Node, Notice, Op, state::DM};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 type Frame = Vec<u8>;
 
-/// What the mailbox heard for irch, as `Push.kt` hands it to `Wake.ring`.
+/// What the mailbox heard for chatir, as `Push.kt` hands it to `Wake.ring`.
 static RANG: Mutex<Vec<Frame>> = Mutex::new(vec![]);
 
 fn dir(name: &str) -> PathBuf {
     let t = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
-    std::env::temp_dir().join(format!("irch-solo-{t}-{name}"))
+    std::env::temp_dir().join(format!("chatir-solo-{t}-{name}"))
 }
 
 /// Members' relay (A: every iroh endpoint, their lanes), and the phone's
-/// mailbox on another (B, irpush's). Up once for every test.
+/// mailbox on another (B, pushir's). Up once for every test.
 fn relay() -> Net {
     static AT: OnceLock<String> = OnceLock::new();
     let at = AT.get_or_init(|| {
@@ -40,14 +40,12 @@ fn relay() -> Net {
                 let at = format!("http://{}/", a.http_addr().unwrap());
                 let on = format!("http://{}/", b.http_addr().unwrap());
                 // SAFETY: set once, before any node starts.
-                unsafe { std::env::set_var("IRPUSH_RELAY", &on) };
+                unsafe { std::env::set_var("PUSHIR_RELAY", &on) };
                 let key = iroh::SecretKey::generate();
-                irch_core::push::share(&key.public().to_string());
+                chatir_core::push::share(&key.public().to_string());
                 tokio::spawn(async move {
-                    let on =
-                        |_, d: &[u8]| RANG.lock().unwrap().push(d.to_vec());
-                    let r = irpush::relay();
-                    irpush::listen(&r, &key, Duration::from_secs(60), on).await
+                    let on = |d: &[u8]| RANG.lock().unwrap().push(d.to_vec());
+                    pushir::listen(&pushir::relay().unwrap(), &key, on).await
                 });
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 tx.send(at).unwrap();
@@ -62,20 +60,27 @@ fn relay() -> Net {
 /// Frames taken (`rung`): a ring comes again until acked.
 static TAKEN: Mutex<Vec<Vec<u8>>> = Mutex::new(vec![]);
 
-/// An op's frame for the phone at `db`, not taken yet: one its spaces label.
-fn ours(db: &Path, f: &Frame) -> bool {
-    matches!(Node::news(db, f), Some(Some(_)))
-        && !TAKEN.lock().unwrap().contains(f)
+/// What frame `f` says to the phone at `db`: sealed for its lane alone.
+fn read(db: &Path, f: &Frame) -> Option<Frame> {
+    pushir::open(&chatir_core::push::secret(db).ok()?, f)
 }
 
-/// The next frame the phone at `db` reads as news.
+/// An op's frame for the phone at `db`, not taken yet: one its spaces label.
+fn ours(db: &Path, f: &Frame) -> bool {
+    read(db, f).is_some_and(|m| {
+        matches!(Node::news(db, &m), Some(Some(_)))
+            && !TAKEN.lock().unwrap().contains(&m)
+    })
+}
+
+/// The next message the phone at `db` reads as news.
 async fn rung(db: &Path) -> Frame {
     for _ in 0..400 {
         let got = {
             let mut r = RANG.lock().unwrap();
             r.iter().position(|f| ours(db, f)).map(|i| r.remove(i))
         };
-        if let Some(f) = got {
+        if let Some(f) = got.and_then(|f| read(db, &f)) {
             TAKEN.lock().unwrap().push(f.clone());
             return f;
         }
@@ -100,7 +105,7 @@ async fn node(dir: &Path, name: &str, phone: bool) -> Arc<Node> {
     let net = relay();
     if !phone {
         std::fs::create_dir_all(dir).unwrap();
-        irch_core::push::ours(dir, &net, false).await.unwrap();
+        chatir_core::push::ours(dir, &net, false).await.unwrap();
     }
     let (dir, name) = (dir.into(), name.into());
     let (link, serve, notes, big) = (None, false, None, None);
@@ -129,8 +134,8 @@ async fn until(what: &str, f: impl Fn() -> bool) {
 /// as loud as `how` says, and a lane of its own to send from.
 fn told(a: &Node, id: &Id, b: &Node, how: &str) -> bool {
     let p = a.view(id, |s| s.pushes_of(Some(&b.id()))).unwrap_or_default();
-    let lane = |u: &String| u.starts_with("irch:ev:") && u.contains(how);
-    irch_core::push::lane_at(a.dir()).is_some()
+    let lane = |u: &String| u.contains("pushir:") && u.contains(how);
+    chatir_core::push::lane_at(a.dir()).is_some()
         && p.iter().any(|p| lane(&p.1))
         && !b.pushing()
 }
@@ -246,7 +251,13 @@ async fn a_ring_comes_again_and_shows_once() {
     a.call(Some((dm, DM))).await.unwrap();
     let call = rung(&db).await;
     for f in [&said, &call] {
-        until("again", || RANG.lock().unwrap().iter().any(|g| g == f)).await;
+        until("again", || {
+            RANG.lock()
+                .unwrap()
+                .iter()
+                .any(|g| read(&db, g).as_ref() == Some(f))
+        })
+        .await;
     }
     assert_eq!(woken(&db, &said).0.expect("shown").body, "lunch?");
     assert!(woken(&db, &call).0.expect("rings").ring);
@@ -325,8 +336,8 @@ async fn a_reply_to_you_is_a_mention_while_asleep() {
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
     let mine = b.publish(&id, post(ch, "anyone up?", None)).await.unwrap();
     until("a has it", || texts(&a, &id, &ch) == ["anyone up?"]).await;
-    b.set_level(&id, irch_core::Level::Mentions);
-    until("a has b's lane", || told(&a, &id, &b, "irch:mentions")).await;
+    b.set_level(&id, chatir_core::Level::Mentions);
+    until("a has b's lane", || told(&a, &id, &b, "chatir:mentions")).await;
     let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
     until("b knows a", named).await;
     b.shutdown().await;
