@@ -71,7 +71,7 @@ fun postMessage(ctx: Context, tag: String, title: String, body: String,
 
 val answers: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
 
-/** An chatir://call link without a shown Answer's token only rings. */
+/** A chatir://call link without a shown Answer's token only rings. */
 fun answerable(i: Intent?) {
   if (i == null) return
   val u = i.data?.takeIf { it.scheme == "chatir" } ?: return

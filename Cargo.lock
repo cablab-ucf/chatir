@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "chatir"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chatir-core",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "chatir-app"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chatir-core",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "chatir-core"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "chatir-math"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "typst",
  "typst-html",

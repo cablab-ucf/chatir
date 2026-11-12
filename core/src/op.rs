@@ -269,7 +269,7 @@ pub fn code<T: Serialize>(kind: &str, v: &T) -> String {
 
 pub fn uncode<T: DeserializeOwned>(kind: &str, s: &str) -> Result<T> {
     let body = s.trim().strip_prefix(&format!("chatir:{kind}:"));
-    let body = body.ok_or_else(|| anyhow!("not an chatir {kind} code"))?;
+    let body = body.ok_or_else(|| anyhow!("not a chatir {kind} code"))?;
     let b = B32.decode(body.as_bytes()).context("damaged code")?;
     postcard::from_bytes(&b).context("damaged code")
 }

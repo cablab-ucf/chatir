@@ -2297,8 +2297,8 @@ async function shortCode(space) {
   clearInterval(tick);
 }
 
-/** A typed short code (`k7m-x9q-p3a`): the full code it stands for. */
-const SHORT = /^\s*[0-9a-z]{3}[-\s]?[0-9a-z]{3}[-\s]?[0-9a-z]{3}\s*$/i;
+/** A typed short code (`k7m-x9q-p3a-b2c`): the full code it stands for. */
+const SHORT = /^\s*[0-9a-z]{3}([-\s]?[0-9a-z]{3}){3}\s*$/i;
 async function long(code) {
   if (!SHORT.test(code)) return code;
   toast("Asking for that code's invite…", false, 30e3);
@@ -2402,7 +2402,7 @@ async function joinFlow(card) {
     sub: "Paste their contact code (Contacts › My contact code).",
     label: "Contact code" } : { title: "Join a space",
     sub: "Paste an invite someone shared with you, or type its short code.",
-    label: "Invite", placeholder: "chatir:join:… or k7m-x9q-p3a", ok: "Join",
+    label: "Invite", placeholder: "chatir:join:… or k7m-x9q-p3a-b2c", ok: "Join",
     maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code && !card) code = await long(code);
@@ -2412,7 +2412,7 @@ async function joinFlow(card) {
 /** What the invite is to, and from whom, before anything is sent. */
 async function joinCode(code) {
   const p = await rpc("peek", { code }).catch(() => null);
-  if (!p) return toast("That is not an chatir invite", true);
+  if (!p) return toast("That is not a chatir invite", true);
   if (p.card) return addCard(code, p);
   if (!p.joined) {
     const ok = await modal((finish) => h("div", {},
@@ -2447,7 +2447,7 @@ async function linkFlow() {
     sub: "On your other device, open My Account › Link a device and paste " +
       "its code here, or type its short code. This device becomes you, " +
       "with all your spaces.",
-    label: "Link code", placeholder: "chatir:link:… or k7m-x9q-p3a", ok: "Link",
+    label: "Link code", placeholder: "chatir:link:… or k7m-x9q-p3a-b2c", ok: "Link",
     maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code) code = await long(code);

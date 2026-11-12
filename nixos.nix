@@ -79,6 +79,17 @@ in {
           Type = "oneshot"; User = "chatir-update";
           WorkingDirectory = "/var/lib/chatir-app";
           StateDirectory = "chatir-app"; StateDirectoryMode = "0755";
+          # It reads the network before any signature is checked, and what
+          # it builds is what everyone here runs: its own state, the nix
+          # daemon's socket, and nothing else.
+          NoNewPrivileges = true; ProtectSystem = "strict"; ProtectHome = true;
+          PrivateTmp = true; PrivateDevices = true; CapabilityBoundingSet = "";
+          ProtectKernelTunables = true; ProtectKernelModules = true;
+          ProtectKernelLogs = true; ProtectControlGroups = true;
+          ProtectClock = true; ProtectHostname = true; LockPersonality = true;
+          RestrictSUIDSGID = true; RestrictRealtime = true;
+          RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+          SystemCallArchitectures = "native";
         };
         script = ''
           v=$(curl -fsSL ${latest}/latest/download/latest.json | jq -r .version)
