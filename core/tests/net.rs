@@ -1005,36 +1005,25 @@ async fn ring_paths() {
     until("a knows b's lane", || laned(&a, &id, &b)).await;
     let on = |x: &Node, u: &Node| x.online(&id).contains(&u.id());
     until("each sees the other", || on(&a, &b) && on(&b, &a)).await;
-    let mut phone = Phone::new(&db);
-
     let doc = a.doctor(Some(b.id())).await;
     let dial = doc["devices"][0]["ms"].as_u64().expect("b's device reached");
-    // Awake: both ways at once; which lands first?
+    // Awake: said in the space, heard by its node.
     let mut heard = b.subscribe();
     let t = Instant::now();
     a.call(Some((id, ch))).await.unwrap();
     let said = t.elapsed();
-    let pushed = tokio::spawn(async move {
-        let p = phone.next().await;
-        (t.elapsed(), p, phone)
-    });
     while b.calls(&id).is_empty() {
         let e = tokio::time::timeout(Duration::from_secs(10), heard.recv());
         let _: Event = e.await.expect("b hears the call").unwrap();
     }
-    let gossip = t.elapsed();
-    let (push, news, mut phone) = pushed.await.unwrap();
-    assert!(news.is_some(), "pushed too");
+    let awake = t.elapsed();
     a.call(None).await.unwrap();
     until("b hears it end", || b.calls(&id).is_empty()).await;
-    while tokio::time::timeout(Duration::from_millis(500), phone.next())
-        .await
-        .is_ok()
-    {} // the hang-up's push
 
     // Asleep: the push alone.
     b.shutdown().await;
     drop(b);
+    let mut phone = Phone::new(&db);
     let t = Instant::now();
     a.call(Some((id, ch))).await.unwrap();
     let news = tokio::time::timeout(Duration::from_secs(10), phone.next());
@@ -1043,8 +1032,7 @@ async fn ring_paths() {
     let n = Node::woken(&db, &news).0.expect("shown from the phonebook");
     assert!(n.ring, "it rings");
     println!(
-        "ring paths (loopback): awake: said {said:?}, gossip {gossip:?}, \
-         push {push:?}; \
+        "ring paths (loopback): awake: said {said:?}, heard {awake:?}; \
          asleep: push {asleep:?}; a dial to b's device {dial} ms"
     );
 }

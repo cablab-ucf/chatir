@@ -60,7 +60,7 @@ struct Cli {
     #[arg(long)]
     update: bool,
     /// How reaching someone (a name or id; else your devices) goes now,
-    /// as JSON: their devices and push servers, each timed. Rings nothing
+    /// as JSON: their devices, each timed. Rings nothing
     #[arg(long, value_name = "WHO", num_args = 0..=1, default_missing_value = "")]
     doctor: Option<String>,
 }
