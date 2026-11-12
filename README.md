@@ -88,7 +88,8 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   reads go only to devices that are up.
 - **Storage nodes** keep ciphertext, never keys, so messages wait while
   everyone is offline; they keep only epochs their owners name. A phone is
-  rung on its lane by whoever writes (retried at 3, 10, 45 s); one away
+  rung on its lane by whoever writes (retried at 3, 10, 45 s), and the
+  lab's relay keeps a frame until its mailbox has it (64, a day); one away
   longer catches up with its storage nodes as it opens. A storage node
   tells its devices the relay their lanes go on, if it runs one.
 - **Calls** are a QUIC mesh: Opus datagrams; video in the best codec all
