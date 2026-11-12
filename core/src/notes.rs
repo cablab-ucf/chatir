@@ -100,8 +100,10 @@ fn tame(s: &str) -> String {
         format!("{ind}{}", l.collect::<String>())
     };
     // No tag either: a viewer that renders HTML would load what it names.
-    let s = s.replace('<', "\\<");
-    let s = s.replace("![", "\\![").replace("```", "\\`\\`\\`");
+    // Escapes that a backslash before them cannot undo: an entity, and the
+    // image's bracket rather than its `!`.
+    let s = s.replace('<', "&lt;");
+    let s = s.replace("![", "!\\[").replace("```", "\\`\\`\\`");
     let s = s.replace("~~~", "\\~~~");
     s.lines().map(line).collect::<Vec<_>>().join("\n")
 }
@@ -219,8 +221,10 @@ fn messages_and_threads_become_markdown() {
     assert_eq!(plain("a](x)\n![b"), "a\\]\\(x\\) \\!\\[b");
     assert_eq!(
         tame("![x](https://t/p.png)\n```dataviewjs"),
-        "\\![x](https://t/p.png)\n\\`\\`\\`dataviewjs"
+        "!\\[x](https://t/p.png)\n\\`\\`\\`dataviewjs"
     );
+    // A backslash of the sender's own undoes neither.
+    assert_eq!(tame("\\![x](u) \\<img>"), "\\!\\[x](u) \\&lt;img>");
     // No task, event or time of its own for loroh.
     let t = "- [ ] pay due:2030-01-01\n  > 1. go **at**:2030-01-01\n*ok* 3.";
     let ok =

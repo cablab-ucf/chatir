@@ -243,9 +243,12 @@ impl Invite {
         Self { owner, nonce, key, name: name.into(), dm, peers }
     }
 
-    /// Bound to the owner: a forged owner is another, empty space.
+    /// Bound to the owner, and a DM to whom it is with: a forged owner, or
+    /// a group's invite passed off as a DM (a contact card's `alien` rule,
+    /// a keeper's say), is another, empty space. A group's id has no `dm`.
     pub fn id(&self) -> Id {
-        Id(kdf("chatir space", &[&self.owner.0, &self.nonce]))
+        let dm = self.dm.as_ref().map_or(&[][..], |d| &d.0[..]);
+        Id(kdf("chatir space", &[&self.owner.0, &self.nonce, dm]))
     }
 
     /// A contact card: a DM with its own owner, met in to start real ones.

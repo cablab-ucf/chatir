@@ -6,7 +6,7 @@ use crate::op::{File, Invite, Link, Op, Role, Signed};
 use crate::{Ch, Id};
 use iroh::{EndpointAddr, EndpointId};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::take;
 
 /// Author clock, then id; also the paging cursor.
@@ -88,6 +88,8 @@ pub struct State {
     pub dm: Option<Id>,
     hint: String,
     control: BTreeMap<Pos, (Id, Op)>,
+    // Each author's profiles in `control`: the newest few alone.
+    profiles_at: HashMap<Id, BTreeSet<Pos>>,
     posts: HashMap<Ch, BTreeMap<Pos, Post>>,
     index: HashMap<Id, (Ch, Pos)>,
     // Re-sealed by others, one op may come under several epochs.
@@ -175,11 +177,7 @@ impl State {
             }
             Op::React { target, emoji, on } => {
                 let r = self.reacts.entry(target).or_default();
-                // 20 kinds per person and message: no wall of reactions.
-                let mine = r.iter().filter(|((a, _), v)| *a == s.author && v.1);
-                let full = on && mine.count() >= 20;
                 match r.get(&(s.author, emoji.clone())) {
-                    None if full => (false, false),
                     Some((p, _)) if *p >= at => (false, false),
                     _ => (
                         r.insert((s.author, emoji), (at, on)) != Some((at, on)),
@@ -237,6 +235,21 @@ impl State {
             | Op::Ringing { .. }
             | Op::Gone => (false, false),
             op => {
+                // Every refold walks `control`: a member's flood of
+                // profiles (each one a key) keeps four, the newest, so it
+                // costs no walk over all of them.
+                if matches!(op, Op::Profile { .. }) {
+                    let mine = self.profiles_at.entry(s.author).or_default();
+                    mine.insert(at);
+                    if mine.len() > 4
+                        && let Some(old) = mine.pop_first()
+                    {
+                        if old == at {
+                            return (false, false);
+                        }
+                        self.control.remove(&old);
+                    }
+                }
                 let new = self.control.insert(at, (s.author, op)).is_none();
                 (new, new)
             }
@@ -643,10 +656,13 @@ impl State {
         self.stored.get(&(*node, *space)).copied().unwrap_or(false)
     }
 
+    /// Whose device `d` is: a device another member claims too is
+    /// neither's (an op's device is signed by its author alone).
     pub fn owner_of(&self, d: &EndpointId) -> Option<Id> {
-        let mine =
-            self.devices.iter().filter(|((x, a), _)| x == d && !self.out(a));
-        mine.max_by_key(|(_, t)| **t).map(|((_, a), _)| *a)
+        let mut mine =
+            self.devices.keys().filter(|(x, a)| x == d && !self.out(a));
+        let a = mine.next()?.1;
+        mine.next().is_none().then_some(a)
     }
 
     /// `user`'s devices, and when each last wrote (never ahead of now).
@@ -773,9 +789,19 @@ impl State {
             })
         });
         let mut reactions: BTreeMap<String, Vec<Id>> = BTreeMap::new();
-        for ((u, emoji), (at, on)) in self.reacts.get(&id).into_iter().flatten()
-        {
-            if *on && self.role(u) != Role::Banned && !self.stale_at(at, u) {
+        let mut on: Vec<_> = (self.reacts.get(&id).into_iter().flatten())
+            .filter(|((u, _), (at, on))| {
+                *on && self.role(u) != Role::Banned && !self.stale_at(at, u)
+            })
+            .collect();
+        // 20 kinds per person and message, the earliest: no wall of
+        // reactions, and the same 20 whatever order they came in.
+        on.sort_unstable_by_key(|((u, _), (at, _))| (*u, *at));
+        let mut n: HashMap<Id, usize> = HashMap::new();
+        for ((u, emoji), _) in on {
+            let c = n.entry(*u).or_default();
+            *c += 1;
+            if *c <= 20 {
                 reactions.entry(emoji.clone()).or_default().push(*u);
             }
         }
@@ -788,10 +814,9 @@ impl State {
         });
         // Only a thread with replies costs its count.
         // Its sender's preview of a link in it, no one else's.
-        let preview = self
-            .previews
-            .get(&(id, p.author))
-            .filter(|(at, _)| !self.stale_at(at, &p.author));
+        let preview = self.previews.get(&(id, p.author)).filter(|(at, l)| {
+            !self.stale_at(at, &p.author) && text.contains(&l.url)
+        });
         let preview = preview.map(|x| x.1.clone());
         let tc = id.thread();
         let t = self.posts.get(&tc).and_then(|_| self.thread(&tc));
