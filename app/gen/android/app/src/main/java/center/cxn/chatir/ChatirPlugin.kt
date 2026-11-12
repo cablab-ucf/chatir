@@ -132,6 +132,9 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
           activity.packageName)
       activity.startActivity(i)
     } else if (!unrestricted(activity)) unrestrict()
+    // The app holding the phone's pushir connection (pasa, perhaps), not
+    // killed either: our rings come through it.
+    else if (org.pushir.Pushir.ask(activity)) Unit
     else if (!fullScreen(activity)) runCatching {
       val uri = android.net.Uri.parse("package:" + activity.packageName)
       activity.startActivity(Intent(
