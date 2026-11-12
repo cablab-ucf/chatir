@@ -1,0 +1,1313 @@
+//! Several nodes on this machine, talking over real QUIC.
+
+use irch_core::{Ch, Config, Event, Id, Invite, Net, Node, Op};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tokio::sync::broadcast::Receiver;
+
+// A clock alone is not enough: macOS's ticks in microseconds, and tests
+// start nodes together.
+fn dir(name: &str) -> std::path::PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let t = t.unwrap().as_nanos();
+    std::env::temp_dir().join(format!("irch-test-{t}-{n}-{name}"))
+}
+
+async fn start(
+    dir: &std::path::Path,
+    name: &str,
+    link: Option<String>,
+    serve: bool,
+) -> Arc<Node> {
+    on(dir, name, link, serve, Net::Direct).await
+}
+
+async fn on(
+    dir: &std::path::Path,
+    name: &str,
+    link: Option<String>,
+    serve: bool,
+    net: Net,
+) -> Arc<Node> {
+    let filter = tracing_subscriber::EnvFilter::from_default_env();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_test_writer()
+        .try_init();
+    let cfg = Config {
+        dir: dir.into(),
+        name: name.into(),
+        net,
+        link,
+        serve,
+        notes: None,
+        big: None,
+    };
+    Node::start(cfg).await.unwrap()
+}
+
+/// Pair `a` with storage node `s`, which then keeps `spaces` too.
+async fn pair(a: &Arc<Node>, s: &Node, spaces: &[Id]) -> String {
+    let code = s.storage_code().await.unwrap();
+    a.add_storage(&code).await.unwrap();
+    let (addr, _): (iroh::EndpointAddr, [u8; 16]) =
+        irch_core::op::uncode("host", &code).unwrap();
+    for id in spaces {
+        a.store(id, &addr.id, true).await.unwrap();
+    }
+    code
+}
+
+async fn node(name: &str) -> Arc<Node> {
+    start(&dir(name), name, None, false).await
+}
+
+/// A local relay, given to storage nodes as systemd would (LoadCredential,
+/// never the Nix store), and a phone at `d` with its mailbox there.
+async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let mut cfg = ServerConfig::default();
+    cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    let relay = Server::spawn(cfg).await.unwrap();
+    let at = format!("http://{}/", relay.http_addr().unwrap());
+    let creds = dir("creds");
+    std::fs::create_dir_all(&creds).unwrap();
+    std::fs::write(creds.join("push-relay"), format!("{at}\n")).unwrap();
+    // SAFETY: storage nodes read it as they start; no test wants another.
+    unsafe { std::env::set_var("CREDENTIALS_DIRECTORY", &creds) };
+    let net = Net::Relay(vec![at.parse().unwrap()]);
+    irch_core::push::ours(d, &net, false).await.unwrap();
+    relay
+}
+
+/// A phone with no node: what irpush brings its lane, as ops' news
+/// (acks and dials passed over), read from its phonebook.
+struct Phone(
+    std::path::PathBuf,
+    tokio::sync::mpsc::UnboundedReceiver<irch_core::push::Heard>,
+);
+
+impl Phone {
+    fn new(d: &std::path::Path) -> Self {
+        Self(d.into(), irch_core::push::listen(d))
+    }
+
+    async fn next(&mut self) -> Option<irch_core::wake::News> {
+        loop {
+            let f = self.1.recv().await?;
+            if let Some(Some(n)) = Node::news(&self.0, &f) {
+                return Some(n);
+            }
+        }
+    }
+}
+
+async fn until(what: &str, f: impl Fn() -> bool) {
+    // Forty seconds: a busy machine runs every test at once.
+    for _ in 0..800 {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+fn general(n: &Node, id: &Id) -> Ch {
+    n.view(id, |s| s.channels()[0].0).unwrap()
+}
+
+fn texts(n: &Node, id: &Id, ch: &Ch) -> Vec<String> {
+    let m = n.view(id, |s| s.messages(ch, None, 100)).unwrap_or_default();
+    m.into_iter().map(|m| m.text).collect()
+}
+
+async fn say(n: &Arc<Node>, id: &Id, ch: Ch, text: &str) -> Id {
+    let op =
+        Op::Post { channel: ch, text: text.into(), reply: None, files: vec![] };
+    n.publish(id, op).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_sync_and_live() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("home").await.unwrap();
+    let ch = general(&a, &id);
+    let hello = say(&a, &id, ch, "hello").await;
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("history", || texts(&b, &id, &ch) == ["hello"]).await;
+    assert_eq!(b.view(&id, |s| s.name().to_string()).unwrap(), "home");
+    assert_eq!(
+        b.unread(&id, &ch),
+        (0, 0),
+        "history before joining starts read"
+    );
+
+    let reply = Op::Post {
+        channel: ch,
+        text: "@a hi".into(),
+        reply: Some(hello),
+        files: vec![],
+    };
+    b.publish(&id, reply).await.unwrap();
+    until("live reply", || texts(&a, &id, &ch).len() == 2).await;
+    let m = a.view(&id, |s| s.messages(&ch, None, 9)).unwrap();
+    assert_eq!(m[1].quote.as_ref().unwrap().text, "hello");
+    assert_eq!(a.unread(&id, &ch), (1, 1));
+    a.mark_read(&id, &ch);
+    assert_eq!(a.unread(&id, &ch), (0, 0));
+
+    let react = Op::React { target: hello, emoji: "🎉".into(), on: true };
+    b.publish(&id, react).await.unwrap();
+    until("reaction", || {
+        let m = a.view(&id, |s| s.messages(&ch, None, 9)).unwrap();
+        m[0].reactions == [("🎉".to_string(), vec![b.id()])]
+    })
+    .await;
+    let names = || {
+        let n = a.view(&id, |s| s.members().into_iter().map(|m| m.name));
+        n.into_iter().flatten().collect::<Vec<_>>()
+    };
+    until("both named", || names() == ["a", "b"]).await;
+
+    // Typing is said as it starts and as the input empties, once each; one
+    // said before gossip joins them reaches nobody, so start over until heard.
+    until("neighbors", || a.peers(&id) > 0 && b.peers(&id) > 0).await;
+    let mut ev = b.subscribe();
+    let mut heard = async |on: bool| loop {
+        if let Ok(Event::Typing { user, on: o, .. }) = ev.recv().await
+            && o == on
+        {
+            return user;
+        }
+    };
+    let typing = async {
+        loop {
+            a.typing(&id, ch, false).await;
+            a.typing(&id, ch, true).await;
+            let one = Duration::from_secs(1);
+            if let Ok(user) = tokio::time::timeout(one, heard(true)).await {
+                return user;
+            }
+        }
+    };
+    let who =
+        tokio::time::timeout(Duration::from_secs(10), typing).await.unwrap();
+    assert_eq!(who, a.id());
+    a.typing(&id, ch, true).await; // said already: nothing goes
+    a.typing(&id, ch, false).await;
+    let ten = Duration::from_secs(10);
+    let stopped = tokio::time::timeout(ten, heard(false)).await.unwrap();
+    assert_eq!(stopped, a.id(), "and stopped, once the input is empty");
+    let edit = Op::Edit { target: hello, text: Some("hello!".into()) };
+    assert!(b.publish(&id, edit.clone()).await.is_ok(), "anyone may send it");
+    a.publish(&id, edit).await.unwrap();
+    until("edit", || texts(&b, &id, &ch)[0] == "hello!").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ban_rekeys_and_history_survives() {
+    let (a, b, c) = (node("a").await, node("b").await, node("c").await);
+    let id = a.create("club").await.unwrap();
+    let ch = general(&a, &id);
+    say(&a, &id, ch, "before").await;
+    let code = a.invite(&id).await.unwrap();
+    b.join(&code).await.unwrap();
+    c.join(&code).await.unwrap();
+    let keyed = |u: Id| a.view(&id, |s| s.kem(&u).is_some()) == Some(true);
+    until("profiles", || keyed(b.id()) && keyed(c.id())).await;
+
+    a.ban(&id, &b.id(), true).await.unwrap();
+    until("b locked out", || b.locked(&id)).await;
+    assert!(!c.locked(&id));
+    say(&a, &id, ch, "after").await;
+    until("c reads on", || texts(&c, &id, &ch) == ["before", "after"]).await;
+    assert!(
+        b.publish(
+            &id,
+            Op::Post {
+                channel: ch,
+                text: "x".into(),
+                reply: None,
+                files: vec![]
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert!(!a.invite(&id).await.unwrap().is_empty());
+
+    let d = node("d").await;
+    d.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("d sees all", || texts(&d, &id, &ch) == ["before", "after"]).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(texts(&b, &id, &ch), ["before"], "b never reads the new epoch");
+
+    a.ban(&id, &b.id(), false).await.unwrap();
+    assert!(b.locked(&id), "unbanned, b still lacks the key");
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    // An admin's rekey, jittered, may land just after: its box then does.
+    until("a fresh invite carries it", || !b.locked(&id)).await;
+    until("b reads on", || texts(&b, &id, &ch) == ["before", "after"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_invite_stays_dead_after_a_reset() {
+    let a = node("a").await;
+    let id = a.create("club").await.unwrap();
+    let ch = general(&a, &id);
+    let old = a.invite(&id).await.unwrap();
+    a.rekey(&id).await.unwrap(); // Reset invite links
+    let e = node("e").await;
+    // Its Profile goes out under the old key, unless the reset reaches it
+    // first (a fast machine), and joining is refused.
+    if let Err(err) = e.join(&old).await {
+        assert!(err.to_string().contains("ask for a new invite"), "{err}");
+    }
+    until("e learns it is out", || e.locked(&id)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let member = |u: Id| a.view(&id, |s| s.kem(&u).is_some()) == Some(true);
+    assert!(!member(e.id()), "a stale key makes no member");
+    a.rekey(&id).await.unwrap(); // was boxed to every member with a kem
+    say(&a, &id, ch, "secret").await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(e.locked(&id) && texts(&e, &id, &ch).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_space_id_alone_gets_nothing_stored() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let a = node("a").await;
+    let id = a.create("home").await.unwrap();
+    say(&a, &id, general(&a, &id), "kept").await;
+    let code = pair(&a, &s, &[id]).await;
+    let held =
+        |n: &Node| n.held().iter().find(|h| h.0 == id).map_or(0, |h| h.1);
+    until("storage holds it", || held(&s) == held(&a)).await;
+    let before = held(&a);
+    // x knows the space and the storage node, but not the key.
+    let (store, _): (iroh::EndpointAddr, [u8; 16]) =
+        irch_core::op::uncode("host", &code).unwrap();
+    let mut inv = Invite::decode(&a.invite(&id).await.unwrap()).unwrap();
+    (inv.key, inv.peers) = ([7; 32], vec![store]);
+    let x = node("x").await;
+    x.join(&inv.encode()).await.unwrap();
+    say(&x, &id, Ch([1; 8]), "junk").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!((held(&a), held(&s)), (before, before));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_messages() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("b's key", || {
+        a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true)
+    })
+    .await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    assert_eq!(a.dm(&id, &b.id()).await.unwrap(), dm, "one DM per pair");
+    say(&a, &dm, irch_core::state::DM, "psst").await;
+    until("b got the DM", || texts(&b, &dm, &irch_core::state::DM) == ["psst"])
+        .await;
+    assert!(b.spaces().contains(&dm));
+    a.hide(&dm, true);
+    assert!(a.hidden(&dm) && a.spaces().contains(&dm), "closed, not gone");
+    say(&b, &dm, irch_core::state::DM, "hey").await;
+    until("a got the answer", || {
+        texts(&a, &dm, &irch_core::state::DM).len() == 2
+    })
+    .await;
+    assert!(!a.hidden(&dm), "back with its next message");
+    a.hide(&dm, true);
+    a.dm(&id, &b.id()).await.unwrap();
+    assert!(!a.hidden(&dm), "back when opened");
+}
+
+/// A contact code: a DM with no space in common, and gone with the DM.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_contact_code_starts_a_dm() {
+    let (a, b) = (node("a").await, node("b").await);
+    let code = a.contact().await.unwrap();
+    assert_eq!(a.contact().await.unwrap().len(), code.len(), "one card");
+    let card = b.join(&code).await.unwrap();
+    let dm = || b.spaces().into_iter().find(|s| !b.card(s) && *s != card);
+    until("b has a DM", || dm().is_some()).await;
+    let dm = dm().unwrap();
+    say(&b, &dm, irch_core::state::DM, "found you").await;
+    until("a got it", || {
+        texts(&a, &dm, &irch_core::state::DM) == ["found you"]
+    })
+    .await;
+    // Another holder gets a DM too, and learns nothing of b.
+    let c = node("c").await;
+    c.join(&code).await.unwrap();
+    let theirs = || c.spaces().into_iter().find(|s| !c.card(s) && *s != card);
+    until("c has a DM", || theirs().is_some()).await;
+    let met = |s: &irch_core::state::State| {
+        s.profile(&b.id()).is_some() || !s.devices_of(&b.id()).is_empty()
+    };
+    assert_eq!(c.view(&card, met), Some(false), "holders never meet");
+    b.leave(&dm).await.unwrap();
+    assert!(!b.spaces().contains(&card), "the card went with it");
+}
+
+/// A space muted on one device is muted on all of ours: the level is said
+/// in our own space, which every device of ours (and our storage node)
+/// keeps, and each device's push then tells members so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_level_set_on_one_device_holds_on_all() {
+    use irch_core::Level;
+    let a = node("a").await;
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    let id = a.create("hub").await.unwrap();
+    until("a2 is in it", || a2.spaces().contains(&id)).await;
+    assert_eq!(a2.level(&id), Level::All);
+    a.set_level(&id, Level::Mentions);
+    until("a2 has it too", || a2.level(&id) == Level::Mentions).await;
+    a2.set_level(&id, Level::Off);
+    until("and back to a", || a.level(&id) == Level::Off).await;
+}
+
+/// Answering is no call: the caller is not rung by its callee joining, nor
+/// the callee by the caller it just answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn answering_rings_neither_side() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    say(&a, &dm, irch_core::state::DM, "call?").await;
+    until("b in the DM", || b.spaces().contains(&dm)).await;
+    let rings = |n: &Node| n.notices().into_iter().filter(|x| x.ring).count();
+    rings(&a);
+    a.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    until("b sees a's call", || !b.calls(&dm).is_empty()).await;
+    assert_eq!(rings(&b), 1, "b is rung");
+    b.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    let both = |n: &Node| n.calls(&dm).values().flatten().count() == 2;
+    until("both in the call", || both(&a) && both(&b)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(rings(&a), 0, "the caller is not rung by its answer");
+    assert_eq!(rings(&b), 0, "nor the callee again");
+}
+
+/// Answered elsewhere, a call rings none of the caller's own devices.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_rings_none_of_the_callers_devices() {
+    let (a, b) = (node("a").await, node("b").await);
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    say(&a, &dm, irch_core::state::DM, "psst").await;
+    until("all in the DM", || {
+        b.spaces().contains(&dm) && a2.spaces().contains(&dm)
+    })
+    .await;
+    a2.notices();
+    a.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    until("a2 sees a's call", || !a2.calls(&dm).is_empty()).await;
+    b.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    let both = || a2.calls(&dm).values().flatten().count() == 2;
+    until("a2 sees b answer", both).await;
+    let rings = a2.notices().into_iter().filter(|x| x.ring).count();
+    assert_eq!(rings, 0, "a's phone stays quiet");
+}
+
+/// A DM's very first message is news, though it came before b was in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_dm_notifies() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let _ = b.notices(); // the hub's history: quiet
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    say(&a, &dm, irch_core::state::DM, "are you there?").await;
+    until("b got the DM", || !texts(&b, &dm, &irch_core::state::DM).is_empty())
+        .await;
+    let n = b.notices();
+    assert_eq!(
+        n.iter().map(|n| &*n.body).collect::<Vec<_>>(),
+        ["are you there?"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dm_call_rings_once() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    say(&a, &dm, irch_core::state::DM, "psst").await;
+    until("b in the DM", || b.spaces().contains(&dm)).await;
+    b.notices(); // the message, told
+    b.call(Some((id, general(&b, &id)))).await.unwrap(); // call waiting
+    a.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    until("b sees the call", || !b.calls(&dm).is_empty()).await;
+    // The DM's rings (b's call in the hub, a space of two, rings for a).
+    let rings = |n: &Node| {
+        n.notices().into_iter().filter(|x| x.ring && x.space == dm).count()
+    };
+    assert_eq!(rings(&b), 1, "a DM call rings");
+    assert_eq!(rings(&b), 0, "once");
+    assert_eq!(rings(&a), 0, "not the caller");
+    // The caller hears that b's device has it, and that it rings there.
+    let dmc = irch_core::state::DM;
+    until("a knows b has it", || a.reach(&dm, &b.id()).is_some()).await;
+    assert!(!a.rings(&dm, &b.id(), &dmc), "not yet said");
+    // Said again and again, as the app does, until the DM's gossip forms.
+    for _ in 0..80 {
+        b.ringing(&dm, dmc).await;
+        if a.rings(&dm, &b.id(), &dmc) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(a.rings(&dm, &b.id(), &dmc), "a hears it ring");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_finds_its_storage_node_back() {
+    let (db, ds) = (dir("b"), dir("s"));
+    let a = node("a").await;
+    let s = start(&ds, "s", None, true).await;
+    let b = start(&db, "b", None, false).await;
+    let id = a.create("lab").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    pair(&a, &s, &[id]).await;
+    until("s keeps it", || s.held().iter().any(|h| h.0 == id)).await;
+    let hosted = || b.view(&id, |st| !st.hosts().is_empty()) == Some(true);
+    until("b knows the storage node", hosted).await;
+    for n in [&a, &b, &s] {
+        n.shutdown().await;
+    }
+    drop((a, b, s));
+    tokio::time::sleep(Duration::from_secs(6)).await; // their ports, free
+
+    // b is back first, and no one answers; then the storage node, which
+    // cannot know where b is now: b must try again.
+    let b = start(&db, "b", None, false).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(b.peers(&id), 0, "no one to find");
+    let _s = start(&ds, "s", None, true).await;
+    until("b finds it again", || b.peers(&id) > 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn storage_keeps_only_the_spaces_chosen() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let a = node("a").await;
+    let (kept, not) =
+        (a.create("lab").await.unwrap(), a.create("x").await.unwrap());
+    say(&a, &kept, general(&a, &kept), "keep me").await;
+    say(&a, &not, general(&a, &not), "not me").await;
+    let code = pair(&a, &s, &[kept]).await;
+    let has = |id: Id| s.held().iter().any(|h| h.0 == id);
+    until("the chosen space is kept", || has(kept)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!has(not), "a space not chosen stays off the storage node");
+    let (addr, _): (iroh::EndpointAddr, [u8; 16]) =
+        irch_core::op::uncode("host", &code).unwrap();
+    a.store(&not, &addr.id, true).await.unwrap();
+    until("and once chosen, kept too", || has(not)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offered_files_go_from_device_to_members_only() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("home").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    // Past what storage nodes take: kept here, served from here.
+    let big: Vec<u8> = (0..30u32 << 20).map(|i| (i % 251) as u8).collect();
+    let src = dir("src").join("big.bin");
+    std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+    std::fs::write(&src, &big).unwrap();
+    let f = a.offer(&id, &src, None).await.unwrap();
+    assert!(f.offered() && f.size == big.len() as u64 && f.name == "big.bin");
+    // Said to be a byte, to open in place: refused before any of it comes.
+    let tiny = irch_core::File { size: 1, ..f.clone() };
+    assert!(b.file(&id, &tiny).await.is_err(), "not the size it says");
+    let saved = b.save(&id, &f, &dir("saved")).await.unwrap();
+    assert!(std::fs::read(&saved).unwrap() == big, "b has it, whole");
+    // x knows the space, the hash and a's address, but holds no key.
+    let mut inv = Invite::decode(&a.invite(&id).await.unwrap()).unwrap();
+    inv.key = [7; 32];
+    let x = node("x").await;
+    x.join(&inv.encode()).await.unwrap();
+    let out = dir("x");
+    assert!(x.save(&id, &f, &out).await.is_err(), "no member, no file");
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing left");
+    // b edits what it saved: what b serves on is still what a shared.
+    std::fs::write(&saved, vec![0; big.len()]).unwrap();
+    let c = node("c").await;
+    c.join(&b.invite(&id).await.unwrap()).await.unwrap();
+    let knows = || b.view(&id, |s| s.kem(&c.id()).is_some()) == Some(true);
+    until("b knows c", knows).await;
+    a.shutdown().await;
+    let got = c.save(&id, &f, &dir("c")).await.unwrap();
+    assert!(std::fs::read(got).unwrap() == big, "from b, as shared");
+    // Stopped: no longer listed, nor served from b to this space's others.
+    assert!(b.sharing().iter().any(|x| x.0 == f.hash && x.1 == id));
+    b.unshare(&f.hash).await.unwrap();
+    assert!(b.sharing().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn storage_node_and_restart() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let (a, bdir) = (node("a").await, dir("b"));
+    let b = start(&bdir, "b", None, false).await;
+    let id = a.create("home").await.unwrap();
+    let ch = general(&a, &id);
+    pair(&a, &s, &[id]).await;
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("b joined", || {
+        a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true)
+    })
+    .await;
+    b.shutdown().await;
+    drop(b);
+
+    say(&a, &id, ch, "while you were away").await;
+    let held =
+        |n: &Node| n.held().iter().find(|h| h.0 == id).map_or(0, |h| h.1);
+    until("storage holds it all", || held(&s) == held(&a)).await;
+    a.shutdown().await;
+    drop(a);
+
+    let b = start(&bdir, "b", None, false).await;
+    until("b caught up from storage", || {
+        texts(&b, &id, &ch).contains(&"while you were away".to_string())
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn link_a_device() {
+    let a = node("a").await;
+    let id = a.create("home").await.unwrap();
+    let ch = general(&a, &id);
+    say(&a, &id, ch, "mine").await;
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    assert_eq!(a2.id(), a.id());
+    until("a2 has the space", || texts(&a2, &id, &ch) == ["mine"]).await;
+    assert_eq!(a2.name(), "a");
+    say(&a2, &id, ch, "from my phone").await;
+    until("a sees it", || texts(&a, &id, &ch).len() == 2).await;
+    let other = a2.create("second").await.unwrap();
+    until("a joins it too", || a.spaces().contains(&other)).await;
+    a2.leave(&other).await.unwrap();
+    until("a leaves too", || !a.spaces().contains(&other)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn link_while_offline_through_storage() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let a = node("a").await;
+    let id = a.create("home").await.unwrap();
+    let ch = general(&a, &id);
+    say(&a, &id, ch, "kept safe").await;
+    pair(&a, &s, &[id]).await;
+    let held =
+        |n: &Node, id: &Id| n.held().iter().find(|h| h.0 == *id).map(|h| h.1);
+    until("storage holds both spaces", || {
+        s.held().len() == 2 && held(&s, &id) == held(&a, &id)
+    })
+    .await;
+    let code = a.link_code().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    a.shutdown().await;
+    let a2 = start(&dir("a2"), "phone", Some(code), false).await;
+    until("a2 restored from storage", || texts(&a2, &id, &ch) == ["kept safe"])
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attachments_live_on_storage_too() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("home").await.unwrap();
+    let ch = general(&a, &id);
+    pair(&a, &s, &[id]).await;
+    let code = a.invite(&id).await.unwrap();
+    b.join(&code).await.unwrap();
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i * 7) as u8).collect();
+    let f = a.attach(&id, "cat.png", &data).await.unwrap();
+    let files = vec![f.clone()];
+    let op = Op::Post { channel: ch, text: String::new(), reply: None, files };
+    a.publish(&id, op).await.unwrap();
+    let first = |n: &Node| {
+        let m = n.view(&id, |s| s.messages(&ch, None, 9)).unwrap_or_default();
+        m.into_iter().find_map(|m| m.files.first().cloned())
+    };
+    until("b sees the file", || first(&b).is_some()).await;
+    assert_eq!(first(&b).unwrap(), f);
+    assert_eq!(b.file(&id, &f).await.unwrap(), data, "fetched from a");
+    let out = dir("saved");
+    let evil = irch_core::File { name: "../../.cat.png".into(), ..f.clone() };
+    let p1 = b.save(&id, &evil, &out).await.unwrap();
+    let p2 = b.save(&id, &evil, &out).await.unwrap();
+    assert_eq!(
+        (p1.parent(), p1.file_name()),
+        (Some(&*out), Some("cat.png".as_ref()))
+    );
+    assert_eq!(p2.file_name(), Some("cat (1).png".as_ref()));
+    assert_eq!(std::fs::read(p2).unwrap(), data);
+    let held = |n: &Node| n.held().iter().find(|h| h.0 == id).map(|h| h.1);
+    until("storage caught up", || held(&s) == held(&a)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    a.shutdown().await;
+    b.shutdown().await;
+    let c = node("c").await;
+    c.join(&code).await.unwrap();
+    until("c sees the file", || first(&c).is_some()).await;
+    assert_eq!(c.file(&id, &f).await.unwrap(), data, "fetched from storage");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn calls_carry_frames_between_members_only() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("home").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let (mut at_a, mut at_b) = (a.media(), b.media());
+    a.call(Some((id, ch))).await.unwrap();
+    b.call(Some((id, ch))).await.unwrap();
+    let n = |x: &Node| x.calls(&id).get(&ch).map_or(0, Vec::len);
+    until("both in the call", || n(&a) == 2 && n(&b) == 2).await;
+    // Video goes in groups, from a keyframe; audio as datagrams.
+    let hear = async |from: &Arc<Node>, rx: &mut Receiver<_>, tries| {
+        for _ in 0..tries {
+            from.send_media(&[2, 9]);
+            from.send_media(&[1, 8]);
+            from.send_media(&[0, 7]);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut got = vec![];
+            while let Ok((who, f)) = rx.try_recv() {
+                got.push((who, f));
+            }
+            if got.iter().any(|(w, f)| *w == from.id() && f == &[0, 7])
+                && got.iter().any(|(w, f)| *w == from.id() && f == &[1, 8])
+            {
+                return true;
+            }
+        }
+        false
+    };
+    assert!(hear(&a, &mut at_b, 200).await, "b hears a");
+    assert!(hear(&b, &mut at_a, 200).await, "a hears b");
+
+    a.ban(&id, &b.id(), true).await.unwrap();
+    until("b out of a's call", || n(&a) == 1).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    while at_a.try_recv().is_ok() {}
+    assert!(!hear(&b, &mut at_a, 40).await, "a banned member is unheard");
+    a.call(None).await.unwrap();
+    assert!(a.calls(&id).is_empty() && a.in_call().is_none());
+}
+
+/// Every storage node is a push server through irpush, no Google: a
+/// phone registers with its own unasked, and each ring lands on the
+/// phone's mailbox, sealed to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_storage_node_rings_a_phone_through_irpush() {
+    let db = dir("b");
+    let relay = push_relay(&db).await;
+    let at = format!("http://{}", relay.http_addr().unwrap());
+    let s = start(&dir("s"), "s", None, true).await;
+    let da = dir("a");
+    let a = start(&da, "a", None, false).await;
+    let b = start(&db, "b", None, false).await;
+    let id = a.create("hub").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    pair(&b, &s, &[]).await;
+    let url = b.irpush().await.expect("taken by its storage node");
+    assert_eq!(b.irpush().await, Some(url.clone()), "kept");
+    b.set_push(Some(url)).await;
+    assert!(b.pushing(), "its storage node took the route");
+    // Its relay is theirs too, as a sync with it ends.
+    pair(&a, &s, &[id]).await;
+    let has = |d: &std::path::Path| {
+        std::fs::read_to_string(d.join("relays"))
+            .is_ok_and(|l| l.starts_with(&at))
+    };
+    until("b has its storage node's relay", || has(&db)).await;
+    until("a has it, unpaired", || has(&da)).await;
+    let ring = |p: &(iroh::EndpointId, String)| p.1.starts_with("irch:ring:");
+    let told = || a.view(&id, |s| s.pushes_of(None).iter().any(ring));
+    until("a knows b's push server", || told() == Some(true)).await;
+    let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
+    until("b knows a", named).await;
+    b.shutdown().await;
+    drop(b);
+
+    let mut phone = Phone::new(&db);
+    say(&a, &id, ch, "hi").await;
+    let news = tokio::time::timeout(Duration::from_secs(10), phone.next());
+    let news = news.await.expect("pushed within seconds").unwrap();
+    let n = Node::woken(&db, &news).0.expect("shown from the phonebook");
+    assert_eq!((n.space, &n.body[..]), (id, "hi"));
+}
+
+/// Presence costs one op per change, never a timer: `Here` as a device
+/// joins the mesh, answered once by each device there (with its call, if
+/// any); `Gone` as it leaves.
+#[tokio::test(flavor = "multi_thread")]
+async fn presence_rides_on_state_changes() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let on = |x: &Node, u: &Node| x.online(&id).contains(&u.id());
+    until("each sees the other", || on(&a, &b) && on(&b, &a)).await;
+    a.call(Some((id, general(&a, &id)))).await.unwrap();
+    until("b sees a's call", || !b.calls(&id).is_empty()).await;
+    let c = node("c").await;
+    c.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let late = || on(&c, &a) && on(&c, &b) && !c.calls(&id).is_empty();
+    until("c, late, hears who is here and the call", late).await;
+    b.shutdown().await;
+    until("b gone", || !on(&a, &b) && !on(&c, &b)).await;
+}
+
+/// A member's photo waits on the space's storage node, though it is not
+/// theirs: everyone sees it while its sender is away.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_photo_waits_on_the_spaces_storage_node() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let (a, b, c) = (node("a").await, node("b").await, node("c").await);
+    let id = a.create("lab").await.unwrap();
+    pair(&a, &s, &[id]).await;
+    for n in [&b, &c] {
+        n.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    }
+    let held = || b.view(&id, |st| st.holds().len()) == Some(1);
+    until("b learns how s keeps small files", held).await;
+    let f = b.attach(&id, "cat.png", b"a photo").await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await; // s fetches it
+    b.shutdown().await;
+    drop(b);
+    assert_eq!(c.file(&id, &f).await.unwrap(), b"a photo", "from s");
+}
+
+/// A file whose only holder is away: said plainly, and soon, not after
+/// minutes of asking every device in turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_nobody_online_has_fails_soon_and_says_why() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("lab").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let f = a.attach(&id, "cat.png", b"a photo").await.unwrap();
+    a.shutdown().await;
+    drop(a);
+    let t = std::time::Instant::now();
+    let e = b.file(&id, &f).await.unwrap_err().to_string();
+    assert!(e.contains("nobody who has it is reachable now"), "{e}");
+    assert!(t.elapsed() < Duration::from_secs(25), "{:?}", t.elapsed());
+}
+
+/// A call in a fresh DM: both sides gossip in it, the callee sees the
+/// call, and once it answers, each hears the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dm_call_connects_both_ways() {
+    use irch_core::state::DM;
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    until("b in the DM", || b.spaces().contains(&dm)).await;
+    until("a gossips in the DM", || a.peers(&dm) > 0).await;
+    until("b gossips in the DM", || b.peers(&dm) > 0).await;
+    let (mut at_a, mut at_b) = (a.media(), b.media());
+    a.call(Some((dm, DM))).await.unwrap();
+    until("b sees the call", || !b.calls(&dm).is_empty()).await;
+    b.call(Some((dm, DM))).await.unwrap();
+    let n = |x: &Node| x.calls(&dm).get(&DM).map_or(0, Vec::len);
+    until("both in the call", || n(&a) == 2 && n(&b) == 2).await;
+    let hear = async |from: &Arc<Node>, rx: &mut Receiver<_>| {
+        for _ in 0..200 {
+            from.send_media(&[0, 7]);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            while let Ok((who, f)) = rx.try_recv() {
+                if who == from.id() && f == [0, 7] {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+    assert!(hear(&a, &mut at_b).await, "b hears a");
+    assert!(hear(&b, &mut at_a).await, "a hears b");
+}
+
+/// ✓✓ only once their device has it: not when it merely went out, nor
+/// when only a storage node or a stale gossip neighbor might hold it.
+#[tokio::test(flavor = "multi_thread")]
+async fn delivered_means_on_their_device() {
+    use irch_core::state::DM;
+    let db = dir("b");
+    let a = node("a").await;
+    let b = start(&db, "b", None, false).await;
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    until("b in the DM", || b.spaces().contains(&dm)).await;
+    until("a gossips in the DM", || a.peers(&dm) > 0).await;
+    let b_id = b.id();
+    b.shutdown().await;
+    drop(b);
+    let at = || a.reach(&dm, &b_id).unwrap_or(0);
+    say(&a, &dm, DM, "you there?").await;
+    let ts = a.view(&dm, |s| s.messages(&DM, None, 1)).unwrap()[0].ts;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(at() < ts, "out, but not on b's device");
+    let b = start(&db, "b", None, false).await;
+    until("b has it", || texts(&b, &dm, &DM) == ["you there?"]).await;
+    until("✓✓ once it does", || at() >= ts).await;
+}
+
+/// Read in a DM, its sender sees so (Signal's ticks); invisible, not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dm_read_is_told_to_its_sender() {
+    use irch_core::state::DM;
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    until("b in the DM", || b.spaces().contains(&dm)).await;
+    say(&a, &dm, DM, "hi").await;
+    until("b has it", || texts(&b, &dm, &DM) == ["hi"]).await;
+    let read = || a.view(&dm, |s| s.read_by(&b.id(), &DM)).unwrap_or(0);
+    assert_eq!(read(), 0);
+    b.mark_read(&dm, &DM);
+    until("a sees it read", || read() > 0).await;
+    let was = read();
+    b.set_invisible(true).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    say(&a, &dm, DM, "there?").await;
+    until("b has it", || texts(&b, &dm, &DM).len() == 2).await;
+    b.mark_read(&dm, &DM);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(read(), was, "invisible: not told");
+}
+
+/// Both open a DM with the other at once: they end up in one, the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_dms_at_once_become_one() {
+    use irch_core::state::DM;
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let ka = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    let kb = || b.view(&id, |s| s.kem(&a.id()).is_some()) == Some(true);
+    until("keys both ways", || ka() && kb()).await;
+    let (ia, ib) = (a.id(), b.id());
+    let (da, db) = tokio::join!(a.dm(&id, &ib), b.dm(&id, &ia));
+    assert_ne!(da.unwrap(), db.unwrap(), "two DMs, as before");
+    // Asked again, each names the same one, and both are in it.
+    let same = async || {
+        for _ in 0..400 {
+            let (x, y) = (a.dm(&id, &ib).await, b.dm(&id, &ia).await);
+            if let (Ok(x), Ok(y)) = (x, y)
+                && x == y
+                && a.peers(&x) > 0
+            {
+                return Some(x);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        None
+    };
+    same().await.expect("one DM for both");
+    // Listed once each side: the other, empty, is not.
+    let listed = |n: &Node| {
+        let dms = n.spaces().into_iter();
+        let dms = dms.filter(|s| n.view(s, |s| s.dm.is_some()) == Some(true));
+        dms.filter(|s| n.listed(s)).collect::<Vec<_>>()
+    };
+    // Both settle on one, the same (the lowest both are in, which may be
+    // another than first named, as the other lands).
+    let once = || listed(&a).len() == 1 && listed(&a) == listed(&b);
+    until("each lists one, the same", once).await;
+    let dm = listed(&a)[0];
+    say(&a, &dm, DM, "found you").await;
+    until("b reads it", || texts(&b, &dm, &DM) == ["found you"]).await;
+}
+
+/// A call in a small space's channel rings like a DM's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_spaces_call_rings() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("friends").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    until("b gossips", || b.peers(&id) > 0).await;
+    b.notices();
+    a.call(Some((id, ch))).await.unwrap();
+    until("b sees the call", || !b.calls(&id).is_empty()).await;
+    let rings: Vec<_> = b.notices().into_iter().filter(|n| n.ring).collect();
+    assert_eq!(rings.len(), 1, "it rings");
+    assert!(b.loud(&id));
+}
+
+/// Which way a call's ring reaches the callee, and how fast: the call
+/// said in the space (gossip), a push through its storage node (irpush),
+/// and what dialing its device takes (the doctor). On loopback the times
+/// are each path's own cost; `--nocapture` prints them.
+#[tokio::test(flavor = "multi_thread")]
+async fn ring_paths() {
+    use std::time::Instant;
+    let db = dir("b");
+    let _relay = push_relay(&db).await;
+    let s = start(&dir("s"), "s", None, true).await;
+    let (a, b) = (node("a").await, start(&db, "b", None, false).await);
+    let id = a.create("duo").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    pair(&b, &s, &[]).await;
+    let url = b.irpush().await.expect("taken by its storage node");
+    b.set_push(Some(url)).await;
+    let ring = |p: &(iroh::EndpointId, String)| p.1.starts_with("irch:ring:");
+    let told = || a.view(&id, |s| s.pushes_of(None).iter().any(ring));
+    until("a knows b's push server", || told() == Some(true)).await;
+    let on = |x: &Node, u: &Node| x.online(&id).contains(&u.id());
+    until("each sees the other", || on(&a, &b) && on(&b, &a)).await;
+    let mut phone = Phone::new(&db);
+
+    let doc = a.doctor(Some(b.id())).await;
+    let dial = doc["devices"][0]["ms"].as_u64().expect("b's device reached");
+    let server = doc["push"][0]["ms"].as_u64().expect("its push server");
+    // Awake: both ways at once; which lands first?
+    let mut heard = b.subscribe();
+    let t = Instant::now();
+    a.call(Some((id, ch))).await.unwrap();
+    let said = t.elapsed();
+    let pushed = tokio::spawn(async move {
+        let p = phone.next().await;
+        (t.elapsed(), p, phone)
+    });
+    while b.calls(&id).is_empty() {
+        let e = tokio::time::timeout(Duration::from_secs(10), heard.recv());
+        let _: Event = e.await.expect("b hears the call").unwrap();
+    }
+    let gossip = t.elapsed();
+    let (push, news, mut phone) = pushed.await.unwrap();
+    assert!(news.is_some(), "pushed too");
+    a.call(None).await.unwrap();
+    until("b hears it end", || b.calls(&id).is_empty()).await;
+    while tokio::time::timeout(Duration::from_millis(500), phone.next())
+        .await
+        .is_ok()
+    {} // the hang-up's push
+
+    // Asleep: the push alone.
+    b.shutdown().await;
+    drop(b);
+    let t = Instant::now();
+    a.call(Some((id, ch))).await.unwrap();
+    let news = tokio::time::timeout(Duration::from_secs(10), phone.next());
+    let news = news.await.expect("pushed within seconds").unwrap();
+    let asleep = t.elapsed();
+    let n = Node::woken(&db, &news).0.expect("shown from the phonebook");
+    assert!(n.ring, "it rings");
+    println!(
+        "ring paths (loopback): awake: said {said:?}, gossip {gossip:?}, \
+         push {push:?}; \
+         asleep: push {asleep:?}; a dial to b's device {dial} ms, \
+         to its push server {server} ms"
+    );
+}
+
+/// A phone registers with each of its storage nodes as a push server, so
+/// a ring gets through while any one of them is up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ring_gets_through_while_any_push_server_is_up() {
+    let db = dir("b");
+    let _relay = push_relay(&db).await;
+    let (s1, s2) = (
+        start(&dir("s1"), "s1", None, true).await,
+        start(&dir("s2"), "s2", None, true).await,
+    );
+    let (a, b) = (node("a").await, start(&db, "b", None, false).await);
+    let id = a.create("duo").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    pair(&b, &s1, &[]).await;
+    pair(&b, &s2, &[]).await;
+    let url = b.irpush().await.expect("taken by a storage node");
+    b.set_push(Some(url)).await;
+    let codes = || {
+        let p = a.view(&id, |s| s.pushes_of(Some(&b.id()))).unwrap_or_default();
+        let rings = |u: &str| u.matches("irch:ring:").count();
+        p.iter().map(|x| rings(&x.1)).max().unwrap_or(0)
+    };
+    until("a rings b through both", || codes() == 2).await;
+    b.shutdown().await;
+    drop(b);
+    s1.shutdown().await;
+    drop(s1);
+    let mut phone = Phone::new(&db);
+    say(&a, &id, ch, "still here?").await;
+    let news = tokio::time::timeout(Duration::from_secs(20), phone.next());
+    let news = news.await.expect("pushed through s2").unwrap();
+    let n = Node::woken(&db, &news).0.expect("shown");
+    assert_eq!(n.body, "still here?");
+    drop(s2);
+}
+
+/// Declined, a DM call says so: its caller hears who declined, and the
+/// callee's other devices (here, a linked one) hear it too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declined_call_tells_the_caller() {
+    use irch_core::state::DM;
+    let (a, b) = (node("a").await, node("b").await);
+    let b2 = start(&dir("b2"), "b", Some(b.link_code().await), false).await;
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    say(&a, &dm, DM, "psst").await;
+    until("b in the DM", || b.spaces().contains(&dm) && b.peers(&dm) > 0).await;
+    until("b2 in the DM", || b2.spaces().contains(&dm) && b2.peers(&dm) > 0)
+        .await;
+    let (mut ha, mut hb2) = (a.subscribe(), b2.subscribe());
+    a.call(Some((dm, DM))).await.unwrap();
+    until("b sees the call", || !b.calls(&dm).is_empty()).await;
+    let declined = async |rx: &mut tokio::sync::broadcast::Receiver<Event>| {
+        loop {
+            let e = tokio::time::timeout(Duration::from_millis(250), rx.recv());
+            if let Ok(Ok(Event::Declined { space, channel, user })) = e.await {
+                return (space, channel, user);
+            }
+        }
+    };
+    // Said until the DM's gossip carries it, as calls are.
+    let heard = async {
+        loop {
+            b.decline(&dm, DM).await;
+            if let Ok(d) = tokio::time::timeout(
+                Duration::from_millis(500),
+                declined(&mut ha),
+            )
+            .await
+            {
+                return d;
+            }
+        }
+    };
+    let got = tokio::time::timeout(Duration::from_secs(20), heard).await;
+    assert_eq!(got.expect("a hears it"), (dm, DM, b.id()));
+    let mine = async {
+        loop {
+            b.decline(&dm, DM).await;
+            if let Ok(d) = tokio::time::timeout(
+                Duration::from_millis(500),
+                declined(&mut hb2),
+            )
+            .await
+            {
+                return d;
+            }
+        }
+    };
+    let mine = tokio::time::timeout(Duration::from_secs(20), mine).await;
+    assert_eq!(mine.expect("b2 hears it").2, b.id());
+}
+
+/// Text handed to one of our own devices goes straight to it, from it
+/// only; nobody else can hand ours anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn text_is_handed_to_one_of_our_devices() {
+    let a = node("a").await;
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    let b = node("b").await;
+    let both = || {
+        a.devices().iter().any(|d| d.0 == a2.device())
+            && a2.devices().iter().any(|d| d.0 == a.device())
+    };
+    until("each knows the other device", both).await;
+    let mut rx = a2.subscribe();
+    a.hand(a2.device(), "https://example.org/x").await.unwrap();
+    let got = async {
+        loop {
+            if let Ok(Event::Handed { from, text, .. }) = rx.recv().await {
+                return (from, text);
+            }
+        }
+    };
+    let got = tokio::time::timeout(Duration::from_secs(10), got).await;
+    assert_eq!(got.unwrap(), (a.device(), "https://example.org/x".into()));
+    assert!(b.hand(a2.device(), "hi").await.is_err(), "not b's device");
+}
+
+/// A small space holds no gossip mesh: ops go straight to each of its
+/// devices, and posts, presence and a call's ring all arrive.
+#[tokio::test(flavor = "multi_thread")]
+async fn ops_go_straight_to_each_device() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("duo").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let knows =
+        || a.view(&id, |s| s.owner_of(&b.device()).is_some()) == Some(true);
+    until("a knows b's device", knows).await;
+    until("each reached the other", || a.peers(&id) > 0 && b.peers(&id) > 0)
+        .await;
+    say(&a, &id, ch, "straight to you").await;
+    until("b has it", || texts(&b, &id, &ch) == ["straight to you"]).await;
+    say(&b, &id, ch, "and back").await;
+    until("a has it", || texts(&a, &id, &ch).len() == 2).await;
+    a.call(Some((id, ch))).await.unwrap();
+    until("b hears the call", || !b.calls(&id).is_empty()).await;
+}
+
+/// Notes to self: our own space, on every device of ours, nobody else's.
+#[tokio::test(flavor = "multi_thread")]
+async fn notes_to_self_reach_our_devices_only() {
+    let a = node("a").await;
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    let b = node("b").await;
+    let own = a.own();
+    assert_eq!(a2.own(), own, "the same space on each device");
+    let ch = irch_core::state::DM;
+    say(&a, &own, ch, "the wifi password").await;
+    until("a2 has it", || texts(&a2, &own, &ch) == ["the wifi password"]).await;
+    assert!(b.view(&own, |_| ()).is_none(), "not b's");
+}
+
+/// How far ours went: a storage node acks it (kept), a member's device
+/// acks it (delivered), each straight back on the link it came by.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_says_how_far_it_went() {
+    let s = start(&dir("s"), "s", None, true).await;
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("duo").await.unwrap();
+    let ch = general(&a, &id);
+    pair(&a, &s, &[id]).await;
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let knows =
+        || a.view(&id, |s| s.owner_of(&b.device()).is_some()) == Some(true);
+    until("a knows b's device", knows).await;
+    let m = say(&a, &id, ch, "how far?").await;
+    let ts = a.view(&id, |s| s.messages(&ch, None, 10)).unwrap();
+    let ts = ts.iter().find(|x| x.id == m).unwrap().ts;
+    until("b's device has it", || {
+        a.reach(&id, &b.id()).is_some_and(|r| r >= ts)
+    })
+    .await;
+    until("a storage node keeps it", || a.kept(&id) >= ts).await;
+    assert!(a.connected() || a.peers(&id) > 0);
+}
+
+/// Untouched, a device says so once; touched, it is back.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_untouched_device_goes_idle() {
+    let (a, b) = (node("a").await, node("b").await);
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("met", || a.peers(&id) > 0 && b.peers(&id) > 0).await;
+    let ch = general(&b, &id);
+    say(&b, &id, ch, "hi").await;
+    until("a hears b", || texts(&a, &id, &ch).len() == 1).await;
+    b.rest().await;
+    until("idle", || a.idle(&id).contains(&b.id())).await;
+    b.active().await;
+    until("back", || !a.idle(&id).contains(&b.id())).await;
+}
+
+/// Nothing open, a device's iroh sleeps, its lane still up; a member
+/// dialing it knocks there first, and it wakes for the link.
+#[tokio::test(flavor = "multi_thread")]
+async fn iroh_sleeps_and_a_dial_wakes_it() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let mut cfg = ServerConfig::default();
+    cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    let relay = Server::spawn(cfg).await.unwrap();
+    let url = format!("http://{}/", relay.http_addr().unwrap());
+    let net = || Net::Relay(vec![url.parse().unwrap()]);
+    let a = on(&dir("a"), "a", None, false, net()).await;
+    let b = on(&dir("b"), "b", None, false, net()).await;
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let ch = general(&a, &id);
+    for i in 0.. {
+        say(&b, &id, ch, &format!("{i}")).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if b.events().0 > 0 && a.events().0 > 0 && b.quiet().await {
+            break;
+        }
+        say(&a, &id, ch, &format!("{i}")).await;
+        assert!(i < 120, "b's iroh never slept");
+    }
+    assert!(!b.iroh_up(), "asleep");
+    let n = texts(&a, &id, &ch).len();
+    say(&b, &id, ch, "by lane, iroh asleep").await;
+    until("a hears b", || texts(&a, &id, &ch).len() > n).await;
+    let d = a.doctor(Some(b.id())).await;
+    let ms = d["devices"][0]["ms"].clone();
+    assert!(ms.is_u64(), "a dial knocked b awake: {d}");
+    assert!(b.iroh_up(), "awake");
+}
+
+/// On one relay, small ops go as irpush events (one datagram each, acked
+/// the same way), with no link dialed for them.
+#[tokio::test(flavor = "multi_thread")]
+async fn small_ops_go_as_events() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let mut cfg = ServerConfig::default();
+    cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    let relay = Server::spawn(cfg).await.unwrap();
+    let url = format!("http://{}/", relay.http_addr().unwrap());
+    let net = || Net::Relay(vec![url.parse().unwrap()]);
+    let a = on(&dir("a"), "a", None, false, net()).await;
+    let b = on(&dir("b"), "b", None, false, net()).await;
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let ch = general(&a, &id);
+    for i in 0.. {
+        say(&a, &id, ch, &format!("{i}")).await;
+        say(&b, &id, ch, &format!("{i}")).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if a.events().0 > 0 && b.events().0 > 0 {
+            break;
+        }
+        assert!(i < 60, "no events");
+    }
+    let n = texts(&a, &id, &ch).len();
+    let m = say(&a, &id, ch, "by event").await;
+    until("b has it", || texts(&b, &id, &ch).len() > n).await;
+    let ts = a.view(&id, |s| s.messages(&ch, None, 99)).unwrap();
+    let ts = ts.iter().find(|x| x.id == m).unwrap().ts;
+    until("acked", || a.reach(&id, &b.id()).is_some_and(|r| r >= ts)).await;
+    assert_eq!(a.events().1, 0, "none dialed after all");
+    // Too long for a datagram: whole, over a direct link.
+    let long = "é long message ".repeat(1000);
+    say(&a, &id, ch, &long).await;
+    until("b has it whole", || texts(&b, &id, &ch).contains(&long)).await;
+}

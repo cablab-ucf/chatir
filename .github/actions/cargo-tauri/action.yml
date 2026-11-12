@@ -1,0 +1,26 @@
+# cargo-tauri 2.12.4 as Tauri builds it, checked against these hashes.
+# Compiled here it took 4 to 10 minutes a job: 959 crates, for a CLI.
+name: cargo-tauri
+description: Tauri's own cargo-tauri build, its hash checked
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        case $RUNNER_OS-$RUNNER_ARCH in
+          Linux-X64) f=x86_64-unknown-linux-gnu.tgz
+            h=820ae3c7580ca637cad15f65638960ee2a96e5a491e224691c86d6f25e6c9e8a ;;
+          Linux-ARM64) f=aarch64-unknown-linux-gnu.tgz
+            h=4f601b9f462c3d3d10ce67b6ae963f099f6a5a3253920dae95a253abd558d723 ;;
+          macOS-ARM64) f=aarch64-apple-darwin.zip
+            h=f71a34ada728ca2d1a51c28d6d21639e1e080898ec69ec8d49c5da3b7e8bc1be ;;
+          Windows-X64) f=x86_64-pc-windows-msvc.zip
+            h=3e8687fb184bd7f10ebd8642f7715f79f4a605c0694c142a21507e8a24dc0f8b ;;
+        esac
+        u=https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4
+        mkdir ct && cd ct && curl -sSfLo a $u/cargo-tauri-$f
+        [ "$(cmake -E sha256sum a | cut -c1-64)" = "$h" ] ||
+          { echo "::error::cargo-tauri-$f: not the build pinned"; exit 1; }
+        cmake -E tar xf a && chmod +x cargo-tauri* && mkdir -p ~/.cargo/bin
+        mv cargo-tauri* ~/.cargo/bin/

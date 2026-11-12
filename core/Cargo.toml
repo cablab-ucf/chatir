@@ -1,0 +1,60 @@
+[package]
+name = "irch-core"
+description = "Peer-to-peer, end-to-end encrypted community chat over iroh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+blake3 = "1"
+chacha20poly1305 = "0.11"
+data-encoding = "2"
+getrandom = "0.4"
+dirs = "7"
+iroh = { version = "1.4", default-features = false, features = [
+  "tls-aws-lc-rs", "metrics",
+] }
+iroh-gossip = { version = "0.102", default-features = false, features = ["net"] }
+noq-proto = { version = "1.4", default-features = false }
+# Files kept on their sender's device: verified, resumable, any size.
+iroh-blobs = { version = "0.104.0", default-features = false, features = ["fs-store"] }
+iroh-mdns-address-lookup = "0.6"
+# Releases are checked against the key every irch trusts.
+minisign-verify = "0.3"
+n0-future = "0.3"
+postcard = { version = "1", features = ["use-std"] }
+# Every TLS and QUIC handshake: aws-lc-rs, X25519MLKEM768 first.
+rustls = { version = "0.23", default-features = false, features = [
+  "aws_lc_rs", "prefer-post-quantum",
+] }
+# Storage nodes wake phones; already built for iroh, TLS as iroh sets it.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+x-wing = { version = "0.1", features = ["getrandom"] }
+# Short codes: one minute, one try, sealed to X-Wing (code.rs).
+irpair = { git = "https://github.com/cab-ucf/irpair", rev = "58096f7a4bfb4e5b5a62e9a3920eb365d1bfdcf0" }
+# One relay mailbox per device, shared by its apps: lanes and rings.
+irpush = { git = "https://github.com/cab-ucf/irpush", rev = "551e860311d551eb73faaaf8a21abdbe1fa57fea" }
+
+# A call's voice, native: the echo canceller hears what plays.
+cpal = { version = "0.18", optional = true }
+sonora = { version = "0.3", optional = true }
+unsafe-libopus = { version = "0.2", optional = true }
+
+[features]
+voice = ["dep:cpal", "dep:sonora", "dep:unsafe-libopus"]
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Desktops trust what the system trusts: a network that inspects TLS too.
+iroh = { version = "1.4", default-features = false, features = ["platform-verifier"] }
+
+[dev-dependencies]
+iroh-relay = { version = "1.4", default-features = false, features = [
+  "server", "tls-aws-lc-rs",
+] }
+tracing-subscriber.workspace = true

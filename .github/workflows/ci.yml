@@ -1,0 +1,152 @@
+# By hand only, never on its own: releases test themselves before they
+# publish. `audit` checks the dependencies against RustSec's advisories.
+name: ci
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0 # its files are large and no later run uses them
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  TAURI_DEPS: >-
+    libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev
+    libjavascriptcoregtk-4.1-dev librsvg2-dev libasound2-dev
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with: { tool: cargo-audit@0.22.2 }
+      - run: cargo audit
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: sudo apt-get update && sudo apt-get install -y $TAURI_DEPS
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: node --test app/tests/*.test.mjs
+      - run: shellcheck -S warning install.sh
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo test -p irch-core
+      - run: cargo build --release -p irch -p irch-app
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: irch-${{ runner.os }}
+          path: |
+            target/release/irch
+            target/release/irch.exe
+            target/release/irch-app
+            target/release/irch-app.exe
+          retention-days: 14
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # Only the debug variant is signed, so installable: optimize its Rust.
+      CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+      CARGO_PROFILE_DEV_DEBUG: "false"
+    steps:
+      - name: Room for the build and a system image
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true # app/gen/android/irpush
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: ./.github/actions/cargo-tauri
+      - name: APK for arm64 phones and x86_64 emulators
+        working-directory: app
+        run: NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo tauri android build
+          --ci --debug --apk --target aarch64 --target x86_64
+      - run: mv app/gen/android/app/build/outputs/apk/*/*/*.apk irch.apk
+      - name: Let the emulator use KVM
+        run: sudo chmod 666 /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: sh app/smoke.sh irch.apk evidence
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: irch-android
+          path: irch.apk
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: android-evidence
+          path: evidence
+          retention-days: 14
+          if-no-files-found: ignore
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: ./.github/actions/cargo-tauri
+      - name: The Xcode project, with irch's icons
+        working-directory: app
+        run: |
+          brew install xcodegen
+          cargo tauri ios init --ci
+          cargo tauri icon icons/icon.png
+      - name: An unsigned IPA, which AltStore or SideStore signs
+        working-directory: app
+        run: cargo tauri ios build --ci --no-sign --target aarch64
+      - run: mv app/gen/apple/build/arm64/irch.ipa irch.ipa
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: irch-ios
+          path: irch.ipa
+          retention-days: 14

@@ -1,0 +1,386 @@
+# A tag vX.Y.Z (or a run naming one, tagged here) publishes a signed release.
+# Builds hold no secrets and a read-only token: a dependency's build script
+# can steal nothing. Only `publish`, in the `release` Environment (Settings
+# › Environments: required reviewers; tags v* protected), signs and uploads.
+# Its secrets: TAURI_SIGNING_PRIVATE_KEY(_PASSWORD), ANDROID_KEYSTORE
+# (base64), ANDROID_KEYSTORE_PASSWORD. Apple's, once the variable
+# APPLE_TEAM_ID is set, likewise only after a build, in `release`: APPLE_
+# CERTIFICATE (base64 .p12), _CERTIFICATE_PASSWORD, _SIGNING_IDENTITY, _ID,
+# _PASSWORD; APPLE_API_KEY, _API_ISSUER, _API_KEY_P8.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release's tag, vX.Y.Z
+        required: true
+permissions:
+  contents: read
+# One run to a tag: a second dispatch waits, rather than build it twice.
+concurrency: release-${{ inputs.tag || github.ref_name }}
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # Beside the builds: nothing is signed or published until they pass.
+  test:
+    runs-on: ubuntu-latest
+    env: { CARGO_INCREMENTAL: 0, CARGO_PROFILE_DEV_DEBUG: line-tables-only }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      # Saved only by runs on main, restored by every job that builds. Never
+      # in apple, testflight or publish: what it restores would run beside
+      # the signing keys.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo test --locked -p irch-core -p irch-math
+          --features irch-core/voice
+      - run: node --test app/tests/*.test.mjs
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin, arch: aarch64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev
+          libjavascriptcoregtk-4.1-dev librsvg2-dev libasound2-dev
+      - uses: ./.github/actions/cargo-tauri
+      # Only irch's own version: else it reaches sed, or updates forever.
+      - name: The tag is the version
+        shell: bash
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -qx "version = \"${TAG#v}\"" Cargo.toml
+          v='"version": "'${TAG#v}'"'
+          sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
+      # Unsigned (macOS: ad hoc): `apple` and `publish` sign, holding keys.
+      - name: The app
+        working-directory: app
+        shell: bash
+        run: cargo tauri build --target ${{ matrix.target }}
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      # Static on Linux, for any distribution; it updates itself.
+      - name: The terminal client and storage node, beside the app
+        shell: bash
+        env:
+          IRCH_RELEASE: "1"
+        run: |
+          t=${{ matrix.target }}
+          if [ "$RUNNER_OS" = Linux ]; then
+            t=${t/gnu/musl}
+            sudo apt-get install -y musl-tools && rustup target add $t
+            export "CC_${t//-/_}=musl-gcc"
+          fi
+          cargo build --release --locked -p irch --target $t
+          x=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
+          mkdir -p out && cp target/$t/release/irch$x out/irch-$t$x
+      - name: Gather what ships
+        shell: bash
+        run: |
+          b=target/${{ matrix.target }}/release/bundle
+          cp $b/appimage/*.AppImage $b/deb/*.deb $b/rpm/*.rpm \
+            $b/dmg/*.dmg $b/nsis/*-setup.exe $b/msi/*.msi out/ 2>/dev/null || true
+          # What macOS updates from: the .app, packed as tauri-action did.
+          if [ -d $b/macos/irch.app ]; then
+            tar -C $b/macos -czf out/irch_${{ matrix.arch }}.app.tar.gz irch.app
+          fi
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.target }}
+          path: out/*
+          retention-days: 3
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Room for the build
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true # app/gen/android/irpush
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: ./.github/actions/cargo-tauri
+      - name: The tag is the version
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -qx "version = \"${TAG#v}\"" Cargo.toml
+          v='"version": "'${TAG#v}'"'
+          sed -i "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
+      - working-directory: app
+        # Phones only: x86_64 is for emulators, which build their own.
+        run: NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo tauri android build
+          --ci --apk --target aarch64
+      - run: mkdir out && cp app/gen/android/app/build/outputs/apk/*/release/*.apk
+          out/unsigned.apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android
+          path: out/*
+          retention-days: 3
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/cargo-tauri
+      - name: The tag is the version
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -qx "version = \"${TAG#v}\"" Cargo.toml
+          v='"version": "'${TAG#v}'"'
+          sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
+      - name: The Xcode project, with irch's icons
+        working-directory: app
+        run: |
+          brew install xcodegen
+          cargo tauri ios init --ci
+          cargo tauri icon icons/icon.png
+      - name: An unsigned IPA, which AltStore or SideStore signs
+        working-directory: app
+        run: cargo tauri ios build --ci --no-sign --target aarch64
+      - run: mkdir out && mv app/gen/apple/build/arm64/irch.ipa out/irch.ipa
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios
+          path: out/*
+          retention-days: 3
+
+  # Developer ID: the built app signed, notarized, stapled; its .dmg made
+  # again around it. The certificate never meets a build.
+  apple:
+    needs: [test, desktop]
+    if: vars.APPLE_TEAM_ID != ''
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-aarch64-apple-darwin
+          path: out
+      - name: Signed by Apple
+        env:
+          P12: ${{ secrets.APPLE_CERTIFICATE }}
+          PW: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TEAM: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          k=$RUNNER_TEMP/irch.keychain-db
+          security create-keychain -p irch "$k"
+          security unlock-keychain -p irch "$k"
+          echo "$P12" | base64 -d > "$RUNNER_TEMP/irch.p12"
+          security import "$RUNNER_TEMP/irch.p12" -k "$k" -P "$PW" \
+            -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/irch.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k irch "$k"
+          security list-keychains -d user -s "$k"
+          cd out
+          tar -xzf irch_*.app.tar.gz
+          codesign --force --deep --timestamp --options runtime \
+            --entitlements ../app/Entitlements.plist -s "$ID" irch.app
+          ditto -c -k --keepParent irch.app irch.zip
+          xcrun notarytool submit irch.zip --wait --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" --team-id "$TEAM"
+          xcrun stapler staple irch.app
+          tar -czf irch_*.app.tar.gz irch.app
+          dmg=$(ls *.dmg) && rm "$dmg" irch.zip
+          mkdir dmg && mv irch.app dmg/ && ln -s /Applications dmg/
+          hdiutil create -volname irch -srcfolder dmg -format UDZO "$dmg"
+          rm -rf dmg
+          security delete-keychain "$k"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-aarch64-apple-darwin
+          path: out/*
+          overwrite: true
+          retention-days: 3
+
+  # TestFlight, given an App Store Connect key: APPLE_API_KEY (its id),
+  # APPLE_API_ISSUER, APPLE_API_KEY_P8 (the .p8's text). Apple signs only
+  # as it builds here, so the key waits for `release`'s reviewers.
+  testflight:
+    needs: [test, ios]
+    if: vars.APPLE_TEAM_ID != ''
+    runs-on: macos-latest
+    environment: release
+    env:
+      ASC: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.ASC == 'true'
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: env.ASC == 'true'
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios
+      - if: env.ASC == 'true'
+        uses: ./.github/actions/cargo-tauri
+      - name: Signed by Apple, to TestFlight
+        if: env.ASC == 'true'
+        working-directory: app
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          v='"version": "'${TAG#v}'"'
+          sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" tauri.conf.json
+          brew install xcodegen
+          cargo tauri ios init --ci
+          cargo tauri icon icons/icon.png
+          k=$HOME/.appstoreconnect/private_keys/AuthKey_$APPLE_API_KEY.p8
+          mkdir -p "${k%/*}" && echo "$P8" > "$k"
+          APPLE_API_KEY_PATH=$k cargo tauri ios build --ci --target aarch64 \
+            --export-method app-store-connect
+          xcrun altool --upload-app --type ios \
+            --file gen/apple/build/arm64/irch.ipa \
+            --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
+          rm -f "$k"
+
+  # The only job with irch's keys and a token that writes. It builds
+  # nothing: tauri's signer, Tauri's build, arrives before the key.
+  # An iPhone build that fails leaves out the IPA, not the release.
+  publish:
+    needs: [test, desktop, android, ios, apple]
+    if: ${{ !cancelled() && needs.test.result == 'success'
+      && needs.desktop.result == 'success'
+      && needs.android.result == 'success'
+      && needs.apple.result != 'failure' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cargo-tauri
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: art
+          merge-multiple: true
+      - name: Android's key on the APK
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/irch.jks"
+          "$tools/zipalign" -f 4 art/unsigned.apk a.apk
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/irch.jks" \
+            --ks-pass env:PW --ks-key-alias irch --out art/irch.apk a.apk
+          rm -f "$RUNNER_TEMP/irch.jks" art/unsigned.apk a.apk art/*.idsig
+      - name: The source (nixos.nix builds it), the installers, the icon
+        run: |
+          git archive --format=tar.gz -o art/source.tar.gz HEAD
+          cp install.sh install.ps1 art/
+          cp app/icons/icon.png art/irch.png
+      - name: irch's key on every file an update or nixos.nix checks
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+            ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cd art
+          for f in *; do
+            case $f in *.dmg | *.ipa | *.sh | *.ps1 | *.png) continue ;; esac
+            cargo tauri signer sign --app-version "${TAG#v}" "$f"
+          done
+      - name: The release
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --title "irch $TAG" --target "$GITHUB_SHA"
+          gh release upload "$TAG" art/* --clobber
+      - name: latest.json, which the app's updater reads
+        shell: python3 {0}
+        working-directory: art
+        run: |
+          import glob, json, os, re, time
+          tag, repo = os.environ["TAG"], os.environ["GH_REPO"]
+          url = f"https://github.com/{repo}/releases/download/{tag}/"
+          cpu = dict(amd64="x86_64", x64="x86_64", x86_64="x86_64",
+                     arm64="aarch64", aarch64="aarch64")
+          kinds = [(".app.tar.gz", "darwin", None),
+                   (".AppImage", "linux", "appimage"),
+                   (".deb", "linux", "deb"), (".rpm", "linux", "rpm"),
+                   ("-setup.exe", "windows", "nsis"),
+                   (".msi", "windows", "msi")]
+          out = {}
+          for sig in sorted(glob.glob("*.sig")):
+              name = sig[:-4]
+              # The CLI, source and APK update themselves.
+              if re.match(r"irch-(x86_64|aarch64)-|source|irch\.apk", name):
+                  continue
+              a = cpu[re.search("amd64|x86_64|x64|aarch64|arm64", name)[0]]
+              o, kind = next((o, k) for e, o, k in kinds if name.endswith(e))
+              entry = dict(signature=open(sig).read(), url=url + name)
+              if kind:
+                  out[f"{o}-{a}-{kind}"] = entry
+              if kind in (None, "appimage", "msi"):
+                  out[f"{o}-{a}"] = entry
+          json.dump(dict(version=tag.lstrip("v"), platforms=out,
+                         pub_date=time.strftime("%Y-%m-%dT%H:%M:%SZ")),
+                    open("latest.json", "w"), indent=2)
+      - run: gh release upload "$TAG" art/latest.json --clobber
+      - run: gh release edit "$TAG" --notes-file .github/release.md

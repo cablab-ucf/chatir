@@ -1,0 +1,137 @@
+package dev.irch.chat
+
+import android.app.Notification
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
+import android.net.Uri
+import android.provider.Settings
+import androidx.core.app.NotificationChannelCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.Person
+import org.json.JSONObject
+
+const val CHAT = "chat"
+const val CALLS = "calls"
+const val CALL = 1
+
+fun alert(ctx: Context, a: JSONObject) {
+  if (!notificationsAllowed(ctx)) return
+  val (space, room) = a.getString("space") to a.getString("room")
+  val (title, body) = a.getString("title") to a.getString("body")
+  val quiet = a.optBoolean("quiet")
+  if (a.optBoolean("hush")) hush(ctx, space)
+  else if (a.optBoolean("ring")) postCall(ctx, space, room, title, quiet)
+  else postMessage(ctx, space + room, title, body, quiet)
+}
+
+/** Silent (this device's switch): a channel of its own, no sound or buzz. */
+private fun channel(ctx: Context, id: String, name: String, sound: Uri,
+                    use: Int, buzz: LongArray, quiet: Boolean): String {
+  val audio = AudioAttributes.Builder().setUsage(use).build()
+  val high = NotificationManagerCompat.IMPORTANCE_HIGH
+  val c = if (quiet) "$id-silent" else id
+  NotificationManagerCompat.from(ctx).createNotificationChannel(
+    NotificationChannelCompat.Builder(c, high)
+      .setName(if (quiet) "$name (silent)" else name)
+      .setSound(if (quiet) null else sound, audio)
+      .setVibrationEnabled(!quiet).setVibrationPattern(buzz).build()
+  )
+  return c
+}
+
+/** Locked, only "New message" shows. */
+fun postMessage(ctx: Context, tag: String, title: String, body: String,
+                quiet: Boolean = false) {
+  // Its first channel left sound and vibration to the system: replaced.
+  NotificationManagerCompat.from(ctx).deleteNotificationChannel("messages")
+  val chat = channel(ctx, CHAT, "Messages",
+    Settings.System.DEFAULT_NOTIFICATION_URI, AudioAttributes.USAGE_NOTIFICATION,
+    longArrayOf(0, 250, 150, 250), quiet)
+  val hidden = NotificationCompat.Builder(ctx, chat)
+    .setSmallIcon(R.drawable.ic_stat)
+    .setContentTitle("New message")
+    .build()
+  val n = NotificationCompat.Builder(ctx, chat)
+    .setSmallIcon(R.drawable.ic_stat)
+    .setContentTitle(title)
+    .setContentText(body)
+    .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+    .setPublicVersion(hidden)
+    .setContentIntent(openAppIntent(ctx))
+    .setAutoCancel(true)
+    .build()
+  NotificationManagerCompat.from(ctx).notify(tag, 0, n)
+}
+
+val answers: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+
+/** An irch://call link without a shown Answer's token only rings. */
+fun answerable(i: Intent?) {
+  if (i == null) return
+  val u = i.data?.takeIf { it.scheme == "irch" } ?: return
+  if (u.host != "call" && u.host != "ring") return
+  val ok = u.host == "call" && answers.remove(u.getQueryParameter("k") ?: "")
+  val verb = if (ok) "call" else u.host
+  i.setData(Uri.parse("irch://$verb${u.path}"))
+}
+
+/** Rings like a phone; only Answer joins, the screen or a tap asks first. */
+fun postCall(ctx: Context, space: String, room: String, who: String,
+             quiet: Boolean = false) {
+  val calls = channel(ctx, CALLS, "Calls", Settings.System.DEFAULT_RINGTONE_URI,
+    AudioAttributes.USAGE_NOTIFICATION_RINGTONE, longArrayOf(0, 1000, 1000), quiet)
+  val tag = space + room
+  // Shown from its ring already: posted again, it would restart.
+  val nm = NotificationManagerCompat.from(ctx)
+  if (nm.activeNotifications.any { it.tag == tag && it.id == CALL }) return
+  val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+  val open = { verb: String, code: Int ->
+    // Only this notification's token answers; other links just ring.
+    val k = java.util.UUID.randomUUID().toString()
+    if (verb == "call") answers.add(k)
+    val uri = Uri.parse("irch://$verb/$space/$room?k=$k")
+    val i = Intent(Intent.ACTION_VIEW, uri, ctx, MainActivity::class.java)
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    PendingIntent.getActivity(ctx, tag.hashCode() + code, i, flags)
+  }
+  val decline = PendingIntent.getBroadcast(ctx, tag.hashCode(),
+    Intent(ctx, Decline::class.java).putExtra("tag", tag)
+      .putExtra("space", space).putExtra("room", room), flags)
+  val caller = Person.Builder().setName(who).setImportant(true).build()
+  val n = NotificationCompat.Builder(ctx, calls)
+    .setSmallIcon(R.drawable.ic_stat)
+    .setStyle(NotificationCompat.CallStyle
+      .forIncomingCall(caller, decline, open("call", 1)))
+    .setCategory(NotificationCompat.CATEGORY_CALL)
+    .setFullScreenIntent(open("ring", 2), true)
+    .setContentIntent(open("ring", 2))
+    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+    .setOngoing(true)
+    .setTimeoutAfter(45_000)
+    .build()
+  n.flags = n.flags or Notification.FLAG_INSISTENT
+  NotificationManagerCompat.from(ctx).notify(tag, CALL, n)
+}
+
+fun hush(ctx: Context, space: String = "") {
+  val nm = NotificationManagerCompat.from(ctx)
+  nm.activeNotifications.filter { it.id == CALL && it.tag.startsWith(space) }
+    .forEach { nm.cancel(it.tag, CALL) }
+}
+
+class Decline : BroadcastReceiver() {
+  override fun onReceive(ctx: Context, i: Intent) {
+    NotificationManagerCompat.from(ctx).cancel(i.getStringExtra("tag"), CALL)
+    val (space, room) = i.getStringExtra("space") to i.getStringExtra("room")
+    if (space != null && room != null) {
+      val done = goAsync()
+      Thread { Wake.decline(space, room); done.finish() }.start()
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# Everything in one pull request a month: crates and actions together.
+# Before merging it, run ci by hand (Actions › ci › Run workflow).
+version: 2
+multi-ecosystem-groups:
+  all:
+    schedule:
+      interval: monthly
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: all
+    ignore:
+      # Its API changes reach Android code no CI here compiles.
+      - dependency-name: jni
+        update-types: ["version-update:semver-major"]
+      # 0.2.190 on leaves in6_ifreq to macOS, which netdev needs on iOS.
+      - dependency-name: libc
+        versions: [">=0.2.190"]
+  - package-ecosystem: github-actions
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: all

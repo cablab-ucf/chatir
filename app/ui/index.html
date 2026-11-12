@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>irch</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./vendor/Temml-Local.css" />
+    <link rel="stylesheet" href="./vendor/typst-math.css" />
+    <!-- Markdown, code highlighting, LaTeX math: MIT; Typst's math CSS and
+         font: Apache-2.0, GUST (vendor/). -->
+    <script src="./vendor/markdown-it.min.js"></script>
+    <script src="./vendor/prism.js"></script>
+    <script src="./vendor/temml.min.js"></script>
+  </head>
+  <body>
+    <div id="boot">Starting irch…</div>
+    <div id="app">
+      <aside id="sidebar">
+        <button id="server-header"><span>irch</span></button>
+        <div id="health"></div>
+        <div id="channels"></div>
+        <div id="voice"></div>
+        <div id="user-panel"></div>
+      </aside>
+      <main id="chat">
+        <header id="chat-header">
+          <button class="hdr-btn" id="menu-btn" title="Channels"></button>
+          <div class="title"></div>
+          <div id="net" title="Peers connected directly. No servers."></div>
+          <button class="hdr-btn hidden" id="call-btn" title="Join call">
+          </button>
+          <button class="hdr-btn hidden" id="pins-btn" title="Pinned">
+          </button>
+          <button class="hdr-btn" id="search-btn" title="Search (Ctrl+F)">
+          </button>
+          <button class="hdr-btn on" id="members-btn" title="Members"></button>
+        </header>
+        <div id="call" class="hidden"></div>
+        <div id="scroller">
+          <div id="welcome"></div>
+          <div id="list"></div>
+        </div>
+        <button id="latest" class="hidden" title="Jump to latest"></button>
+        <div id="empty" class="hidden"></div>
+        <div id="composer">
+          <div id="locked" class="hidden">This space moved to a new key
+            without you. Ask a member for a new invite.</div>
+          <div id="reply-bar" class="hidden"></div>
+          <div id="files-bar" class="hidden"></div>
+          <div class="box">
+            <button id="attach-btn" title="Attach files"></button>
+            <button id="snap-btn" title="Take a photo and send it"></button>
+            <input id="picker" type="file" multiple hidden />
+            <button id="emoji-btn" title="Emoji"></button>
+            <textarea id="input" rows="1" maxlength="16000"
+              autocomplete="off"></textarea>
+            <button id="mic-btn" title="Voice message"></button>
+          </div>
+          <div id="typing"></div>
+        </div>
+      </main>
+      <aside id="members"></aside>
+    </div>
+    <div id="toasts" role="status" aria-live="polite"></div>
+    <dialog id="modal"></dialog>
+    <dialog id="ring"></dialog>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
