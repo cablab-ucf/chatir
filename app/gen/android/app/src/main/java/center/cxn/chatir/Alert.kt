@@ -121,7 +121,7 @@ fun postCall(ctx: Context, space: String, room: String, who: String,
 
 fun hush(ctx: Context, space: String = "") {
   val nm = NotificationManagerCompat.from(ctx)
-  nm.activeNotifications.filter { it.id == CALL && it.tag.startsWith(space) }
+  nm.activeNotifications.filter { it.id == CALL && it.tag?.startsWith(space) == true }
     .forEach { nm.cancel(it.tag, CALL) }
 }
 

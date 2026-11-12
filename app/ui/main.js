@@ -5,6 +5,12 @@ import { inline, markdown } from "./markdown.js";
 import * as av from "./call.js";
 import { ogg, unogg } from "./ogg.js";
 
+// Android, raised over a locked phone by a ringing call: the call alone,
+// before anything else is drawn (MainActivity.kt).
+if (window.chatirLock?.locked()) {
+  document.documentElement.classList.add("lockscreen");
+}
+
 let troubled = new Set();
 av.call.trouble = (why) => {
   if (troubled.has(why)) return;
@@ -480,7 +486,10 @@ async function loadMessages() {
     { space: s.id, channel: ch.id, before: null, limit });
   if (s.id !== S.sid || ch.id !== S.ch) return; // selection moved on
   const top = msgs[0];
-  const older = msgs.length < limit ? [] : S.msgs.filter((m) =>
+  // Older pages stay only if they still join the newest: a burst longer
+  // than a page since would leave a hole between them.
+  const joined = top && S.msgs.some((m) => m.id === top.id);
+  const older = msgs.length < limit || !joined ? [] : S.msgs.filter((m) =>
     m.ts < top.ts || (m.ts === top.ts && m.id < top.id));
   S.msgs = older.concat(msgs);
   S.more = msgs.length >= limit && (!older.length || S.more);
@@ -1519,7 +1528,8 @@ const inl = (tokens) => [...render(tokens, h("span", {})).childNodes];
 
 // ---------- attachments ----------
 
-const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+// No prototype: a file named a.constructor has no type.
+const MIME = { __proto__: null, png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
   gif: "image/gif", webp: "image/webp", avif: "image/avif", bmp: "image/bmp" };
 const mime = (name) => MIME[name.split(".").pop().toLowerCase()];
 const size = (n) => {
@@ -1628,7 +1638,7 @@ async function saveFile(f) {
   if (at) toast(ios ? "Saved: Files › chatir" : `Saved: ${at}`);
 }
 
-const MEDIA = { mp3: "audio/mpeg", ogg: "audio/ogg", oga: "audio/ogg",
+const MEDIA = { __proto__: null, mp3: "audio/mpeg", ogg: "audio/ogg", oga: "audio/ogg",
   opus: "audio/ogg", wav: "audio/wav", m4a: "audio/mp4", flac: "audio/flac",
   mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm",
   mov: "video/quicktime" };

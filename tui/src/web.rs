@@ -57,6 +57,12 @@ pub async fn run(
     let up = dir.join("offered");
     let w = Arc::new(Web { n, token, up, news, cap: Semaphore::new(256) });
     tokio::spawn(forward(w.clone()));
+    if !addr.ip().is_loopback() {
+        eprintln!(
+            "chatir: {addr} is not this machine alone: the page and its \
+             token cross that network in the clear"
+        );
+    }
     let tcp = tokio::net::TcpListener::bind(addr).await?;
     let mut said = format!("http://{addr}/#{}\n", w.token);
     let ep = match relays {
@@ -219,7 +225,8 @@ async fn answer(
     let head = format!(
         "HTTP/1.0 {status}\r\ncontent-type: {kind}\r\n{}cache-control: \
         no-cache\r\nx-content-type-options: nosniff\r\nreferrer-policy: \
-        no-referrer\r\ncontent-security-policy: {CSP}\r\n\r\n",
+        no-referrer\r\ncross-origin-resource-policy: same-origin\r\n\
+        content-security-policy: {CSP}\r\n\r\n",
         len.unwrap_or_default()
     );
     o.write_all(head.as_bytes()).await?;

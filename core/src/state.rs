@@ -100,7 +100,9 @@ pub struct State {
     pins: HashMap<Id, (Pos, Id, bool)>,
     // Each member's "read to here", per channel: never past its own time.
     reads: HashMap<(Id, Ch), u64>,
-    previews: HashMap<Id, (Pos, Id, Link)>,
+    // Per message and author: only its sender's shows, and nobody
+    // else's takes its place.
+    previews: HashMap<(Id, Id), (Pos, Link)>,
     labels: BTreeMap<EndpointId, String>,
     levels: BTreeMap<Id, crate::Level>,
     authors: HashMap<Id, u64>,
@@ -203,19 +205,21 @@ impl State {
                     false,
                 )
             }
-            Op::Preview { target, link } => match self.previews.get(&target) {
-                Some((p, ..)) if *p >= at => (false, false),
-                _ => {
-                    let l = Link {
-                        url: link.url,
-                        title: crate::op::clip(&link.title, 200),
-                        text: crate::op::clip(&link.text, 400),
-                        image: link.image.map(File::safe),
-                    };
-                    self.previews.insert(target, (at, s.author, l));
-                    (true, false)
+            Op::Preview { target, link } => {
+                match self.previews.get(&(target, s.author)) {
+                    Some((p, ..)) if *p >= at => (false, false),
+                    _ => {
+                        let l = Link {
+                            url: link.url,
+                            title: crate::op::clip(&link.title, 200),
+                            text: crate::op::clip(&link.text, 400),
+                            image: link.image.map(File::safe),
+                        };
+                        self.previews.insert((target, s.author), (at, l));
+                        (true, false)
+                    }
                 }
-            },
+            }
             Op::Push { url } => match self.pushes.get(&(s.author, s.device)) {
                 Some((p, _)) if *p >= at => (false, false),
                 _ => {
@@ -733,10 +737,14 @@ impl State {
                 && (*by == p.author
                     || t.is_none() && self.role(by) == Role::Admin)
         };
+        // Deleted stays deleted: no later edit brings it back, whoever
+        // deleted it.
+        if edits.clone().any(|e| ok(&e) && e.1.1.is_none()) {
+            return None;
+        }
         match edits.find(ok).map(|e| e.1) {
-            Some((_, None)) => None,
             Some((_, Some(t))) => Some((t, true)),
-            None => Some((&p.text, false)),
+            _ => Some((&p.text, false)),
         }
     }
 
@@ -782,9 +790,9 @@ impl State {
         // Its sender's preview of a link in it, no one else's.
         let preview = self
             .previews
-            .get(&id)
-            .filter(|(at, by, _)| *by == p.author && !self.stale_at(at, by));
-        let preview = preview.map(|x| x.2.clone());
+            .get(&(id, p.author))
+            .filter(|(at, _)| !self.stale_at(at, &p.author));
+        let preview = preview.map(|x| x.1.clone());
         let tc = id.thread();
         let t = self.posts.get(&tc).and_then(|_| self.thread(&tc));
         let thread = t.map_or(0, |t| t.count);
@@ -1312,6 +1320,56 @@ mod tests {
         assert!(st.horizon() >= 9);
         st.extend([op(12, a, rekey(2, &[o, a]))]);
         assert!(!st.leaks());
+    }
+
+    /// The owner retires (a stolen phone): an admin's rekey leaves them
+    /// out and counts, or the thief would hold every key to come. A member
+    /// who joined since the last rekey retires: that too calls for one.
+    #[test]
+    fn a_retired_owner_is_rekeyed_out() {
+        let [o, a, b] = people();
+        let mut st = State::new(&Invite::new(o, "", None));
+        let rekey = |t, to: &[Id]| Op::Rekey {
+            epoch: [t; 8],
+            boxes: to.iter().map(|u| (*u, vec![])).collect(),
+        };
+        let sealed =
+            |n, author, t, o| Signed { epoch: [t; 8], ..op(n, author, o) };
+        st.extend([
+            sealed(1, o, 0, rekey(1, &[o, a])),
+            sealed(2, o, 1, Op::Role { user: a, role: Role::Admin }),
+            sealed(3, b, 1, Op::Profile { name: "b".into(), kem: vec![1] }),
+            sealed(4, b, 1, Op::Burn),
+        ]);
+        assert!(st.leaks(), "b, in no epoch's list, held the key");
+        st.extend([sealed(5, a, 1, rekey(2, &[o, a]))]);
+        assert!(!st.leaks());
+        st.extend([sealed(6, o, 2, Op::Burn)]);
+        assert!(st.leaks(), "the owner's seed is someone else's now");
+        st.extend([sealed(7, a, 2, rekey(3, &[a]))]);
+        assert_eq!(st.epoch().unwrap().tag, [3; 8], "it counts");
+        assert!(!st.leaks());
+    }
+
+    /// One member naming devices by the thousand takes nobody's place.
+    #[test]
+    fn a_members_devices_are_its_latest_few() {
+        let [o, a, _] = people();
+        let mut st = State::new(&Invite::new(o, "", None));
+        let dev = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
+        let by = |n: u8, who, d| Signed {
+            device: dev(d),
+            ..op(n, who, post("x", None))
+        };
+        st.extend((1..=40).map(|n| by(n, a, n)));
+        st.extend([by(50, o, 99)]);
+        let d = st.devices(64);
+        assert_eq!(d.len(), 9, "a's latest eight, and o's");
+        assert!(
+            d.contains(&dev(99))
+                && d.contains(&dev(40))
+                && !d.contains(&dev(1))
+        );
     }
 
     #[test]

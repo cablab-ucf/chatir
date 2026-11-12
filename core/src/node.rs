@@ -174,7 +174,6 @@ struct Local {
     read: BTreeMap<(Id, Ch), u64>,
     joined: BTreeMap<Id, u64>,
     peers: BTreeMap<EndpointId, EndpointAddr>,
-    hosted: BTreeMap<Id, Vec<EndpointId>>,
     token: Option<[u8; 16]>,
 }
 
@@ -883,8 +882,6 @@ impl ProtocolHandler for Proto {
 
 #[derive(Serialize, Deserialize)]
 enum Ask {
-    Get(Id),
-    Put([u8; 16], Vec<u8>),
     // Fetch a sealed file from the asker and keep it (a password past 5 GB).
     Keep([u8; 16], Id, Option<String>),
     // A member's small sealed file, for a space this storage node keeps.
@@ -1003,13 +1000,9 @@ impl Node {
         let serve = cfg.serve.then(|| *local.token.get_or_insert_with(rand));
         let files = FsStore::load(cfg.dir.join("files")).await?;
         let own_inv = own_invite(&me, link.map(|l| l.1).unwrap_or_default());
-        let mut hosts: BTreeMap<Id, Host> = store::load(&cfg.dir.join("hosts"));
+        let hosts: BTreeMap<Id, Host> = store::load(&cfg.dir.join("hosts"));
         let budget = store::load(&cfg.dir.join("budget"));
         let shared = store::load(&cfg.dir.join("shared"));
-        // From before owners were told apart: one list, no one's.
-        for (id, d) in std::mem::take(&mut local.hosted) {
-            hosts.entry(id).or_default().users.insert(Id::default(), d);
-        }
         // Owners' devices are served across restarts: they pair, register.
         let users = hosts.values().flat_map(|h| h.users.values().flatten());
         let served: crate::push::Served =
@@ -3399,7 +3392,6 @@ impl Node {
             let Some((id, raw)) = b.split_first_chunk::<32>() else { continue };
             let Ok(sp) = self.get(&Id(*id)) else { continue };
             // A kept op, acked (space, its time): its sender shows it here.
-            // Older chatir never reads acks; it takes what it sent.
             let kept = self.take(&sp, from, raw).filter(|e| !e.live);
             if let (Some(e), Ok(mut a)) = (kept, c.open_uni().await) {
                 let _ =
@@ -3516,19 +3508,13 @@ impl Node {
 
     pub async fn storage_code(&self) -> Option<String> {
         let token = self.serve?;
-        // Its name rides along: older chatir reads the first two only.
         Some(code("host", &(self.at().await, token, storage_name())))
     }
 
     pub async fn add_storage(self: &Arc<Self>, code: &str) -> Result<()> {
         type Named = (EndpointAddr, [u8; 16], String);
-        let (addr, token, name) = match uncode::<Named>("host", code) {
-            Ok((a, t, n)) => (a, t, Some(n)),
-            Err(_) => {
-                let (a, t): (EndpointAddr, [u8; 16]) = uncode("host", code)?;
-                (a, t, None)
-            }
-        };
+        let (addr, token, name) = uncode::<Named>("host", code)?;
+        let name = Some(name);
         let own = self.get(&self.own)?;
         let op = Op::Storage { addr: addr.clone(), token, on: true };
         self.post(&own, op).await?;
@@ -3680,10 +3666,6 @@ impl Node {
         if let Some(token) = token.filter(|_| hold) {
             let _ = self.post(sp, Op::Hold { node: addr.id, token }).await;
         }
-    }
-
-    fn blob(&self, h: &Id) -> PathBuf {
-        self.dir.join("blobs").join(h.to_string())
     }
 
     /// Seal a file (in chunks, from disk) and keep its ciphertext here and
@@ -3971,52 +3953,16 @@ impl Node {
             return Ok(files.get_bytes(hash).await?.to_vec());
         }
         let len = crate::crypto::sealed_len(f.size).context("no such size")?;
-        let ct = match std::fs::read(self.blob(&f.hash)) {
-            Ok(ct) => ct,
-            Err(_) => match self.pull(space, &f.hash, len).await {
-                Ok(files) => {
-                    let (n, h) = (self.clone(), (*space, f.hash));
-                    tokio::spawn(async move {
-                        let _ = n.keep(&h.0, &h.1, None).await;
-                        n.hold(&h.0, &h.1).await;
-                    });
-                    files.get_bytes(hash).await?.to_vec()
-                }
-                // An older chatir's whole-sealed file, else the real reason.
-                Err(e) => self.legacy(space, f).await.map_err(|_| e)?,
-            },
-        };
-        if !ct.starts_with(crate::crypto::STREAM) {
-            let pt = crate::crypto::open(&f.key.0, b"chatir file", &ct);
-            return pt.context("damaged file");
-        }
+        let files = self.pull(space, &f.hash, len).await?;
+        let (n, h) = (self.clone(), (*space, f.hash));
+        tokio::spawn(async move {
+            let _ = n.keep(&h.0, &h.1, None).await;
+            n.hold(&h.0, &h.1).await;
+        });
+        let ct = files.get_bytes(hash).await?.to_vec();
         let mut pt = vec![];
         crate::crypto::open_stream(&f.key.0, &ct[..], &mut pt)?;
         Ok(pt)
-    }
-
-    /// Sealed whole, by an older chatir: asked for by hash, of all at once.
-    async fn legacy(&self, space: &Id, f: &File) -> Result<Vec<u8>> {
-        let sp = self.get(space)?;
-        let (mut peers, get) = (sp.nbrs(), Ask::Get(f.hash));
-        peers.extend(self.bootstrap(&sp));
-        let mut asks: n0_future::FuturesUnordered<_> = peers
-            .into_iter()
-            .map(|p| {
-                let ask = self.ask(p.into(), &get);
-                tokio::time::timeout(Duration::from_secs(5), ask)
-            })
-            .collect();
-        while let Some(r) = asks.next().await {
-            if let Ok(Ok(b)) = r
-                && blake3::hash(&b) == f.hash.0
-            {
-                std::fs::create_dir_all(self.dir.join("blobs"))?;
-                store::write(&self.blob(&f.hash), &b)?;
-                return Ok(b);
-            }
-        }
-        bail!("nobody reachable has that file now")
     }
 
     /// A sealed file too big to preview, opened straight into `to`.
@@ -4153,23 +4099,15 @@ impl Node {
         // A file's worth is read only after the head (and token), by storage.
         let mut head = [0u8; 17];
         rx.read_exact(&mut head).await?;
+        // The ask's kind, then its token: read before anything longer.
         let max = match (head[0], self.serve) {
-            (1 | 2, Some(t)) if same(&head[1..], &t) => PREVIEW + 16,
-            (1 | 2, _) => bail!("not a storage node of yours"),
-            (3, Some(_)) => 128,
-            _ => 64,
+            (0, Some(t)) if same(&head[1..], &t) => 1024,
+            (0, _) => bail!("not a storage node of yours"),
+            (1, Some(_)) => 128,
+            _ => bail!("not a storage node"),
         };
         let rest = sync::rest(&mut rx, max).await?;
         match postcard::from_bytes(&[&head[..], &rest].concat())? {
-            Ask::Get(h) if self.may_get(&from, &h) => {
-                tx.write_all(&std::fs::read(self.blob(&h)).unwrap_or_default())
-                    .await?
-            }
-            Ask::Get(_) => {}
-            Ask::Put(t, b) if self.serve.is_some_and(|s| same(&s, &t)) => {
-                std::fs::create_dir_all(self.dir.join("blobs"))?;
-                store::write(&self.blob(&Id(blake3::hash(&b).into())), &b)?;
-            }
             Ask::Keep(t, h, pw) if self.serve.is_some_and(|s| same(&s, &t)) => {
                 let size = self.verified(&[from], &h).await;
                 let size = size.context("not reachable, or not there")?.0;
@@ -4202,9 +4140,7 @@ impl Node {
                     }
                 }
             }
-            Ask::Put(..) | Ask::Keep(..) => {
-                bail!("not a storage node of yours")
-            }
+            Ask::Keep(..) => bail!("not a storage node of yours"),
             Ask::Hold(..) => bail!("not a space this storage node keeps"),
         }
         tx.finish()?;

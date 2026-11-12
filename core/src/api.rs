@@ -220,8 +220,11 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
                 "endpoint": n.device(),
                 "device_name": n.label(&n.device()),
                 "local_storage": crate::local_storage()
-                    .and_then(|c| uncode::<(EndpointAddr, [u8; 16])>("host", &c).ok())
-                    .map(|(a, _)| a.id),
+                    .and_then(|c| {
+                        type Host = (EndpointAddr, [u8; 16], String);
+                        uncode::<Host>("host", &c).ok()
+                    })
+                    .map(|h| h.0.id),
             })
         }
         Call::SetName { name } => json!(n.set_name(&name).await?),

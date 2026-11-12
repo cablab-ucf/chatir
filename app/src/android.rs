@@ -334,8 +334,8 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
         return Ok(());
     }
     let n = node(dir).await?;
-    let route = n.pushir().await;
-    n.set_push(route).await;
+    let lane = n.pushir().await;
+    n.set_push(lane).await;
     *TOLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(lane);
     // A minute to tell the spaces, then asleep (unless in sight).
     tokio::spawn(async {
@@ -345,16 +345,17 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// chatir's slot on the phone's mailbox, for pushir's library.
+/// chatir's lane secret on the phone's mailbox, for pushir's library; empty
+/// if it cannot be kept (never zeros: a secret anyone knows).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_center_cxn_chatir_Wake_slot<'l>(
+pub extern "system" fn Java_center_cxn_chatir_Wake_lane<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
     dir: JString<'l>,
 ) -> JByteArray<'l> {
     env.with_env(|e| {
-        let slot = push::slot(&profile(e, &dir)).unwrap_or_default();
-        e.byte_array_from_slice(&slot)
+        let k = push::secret(&profile(e, &dir));
+        e.byte_array_from_slice(k.as_ref().map_or(&[][..], |k| &k[..]))
     })
     .resolve::<Log>()
 }

@@ -304,23 +304,10 @@ pub fn tag(key: &Key) -> [u8; 8] {
     kdf("chatir epoch", &[key])[..8].try_into().expect("8 bytes")
 }
 
-/// Before this, ops signed without their epoch (v1) still count: history.
-pub const CUTOVER: u64 = 1_794_700_800_000;
-
-/// v2 signs the epoch too, so nobody re-seals an op under another key.
-fn tbs(
-    v: u8,
-    space: &Id,
-    e: &[u8; 8],
-    ts: u64,
-    d: &EndpointId,
-    op: &Op,
-) -> Vec<u8> {
-    let b = match v {
-        1 => postcard::to_allocvec(&("chatir op", space, ts, d, op)),
-        _ => postcard::to_allocvec(&("chatir op 2", space, e, ts, d, op)),
-    };
-    b.expect("op")
+/// What an op's author signs: the epoch too, so nobody re-seals an op
+/// under another key.
+fn tbs(space: &Id, e: &[u8; 8], ts: u64, d: &EndpointId, op: &Op) -> Vec<u8> {
+    postcard::to_allocvec(&("chatir op", space, e, ts, d, op)).expect("op")
 }
 
 fn aad(space: &Id, e: &Env) -> Vec<u8> {
@@ -340,7 +327,7 @@ pub fn seal(
     op: Op,
 ) -> (Signed, Vec<u8>) {
     let epoch = tag(key);
-    let msg = tbs(2, space, &epoch, ts, &device, &op);
+    let msg = tbs(space, &epoch, ts, &device, &op);
     let author = Id(*user.public().as_bytes());
     let mut e = Env { epoch, ts, live: op.live(), ct: vec![] };
     let inner = Inner { author, device, sig: user.sign(&msg), op };
@@ -351,8 +338,8 @@ pub fn seal(
     (s, postcard::to_allocvec(&e).expect("env"))
 }
 
-/// Decrypt and verify, or with `known`, re-read one checked as that
-/// version. Returns the version its signature has.
+/// Decrypt and verify, or with `known` (from our own log), re-read one
+/// checked before. Returns its signature's version.
 pub fn open(
     space: &Id,
     key: &Key,
@@ -362,15 +349,14 @@ pub fn open(
     let pt = crypto::open(key, &aad(space, e), &e.ct)?;
     let i: Inner = postcard::from_bytes(&pt).ok()?;
     let pk = PublicKey::from_bytes(&i.author.0).ok()?;
-    let msg = |v| tbs(v, space, &e.epoch, e.ts, &i.device, &i.op);
-    let ok = |v: &u8| known.is_some() || pk.verify(&msg(*v), &i.sig).is_ok();
-    let old = known.is_some() || e.ts < CUTOVER;
-    let v = known.into_iter().chain([2]).chain(old.then_some(1)).find(ok)?;
+    let msg = tbs(space, &e.epoch, e.ts, &i.device, &i.op);
+    (known.is_some() || pk.verify(&msg, &i.sig).is_ok()).then_some(())?;
+    let v = known.unwrap_or(2);
     if i.op.live() != e.live || !fits(&i.op) {
         return None;
     }
     let (id, author, device, op) =
-        (op_id(&i.author, &msg(v)), i.author, i.device, i.op);
+        (op_id(&i.author, &msg), i.author, i.device, i.op);
     Some((Signed { id, author, device, ts: e.ts, op, epoch: e.epoch }, v))
 }
 
@@ -396,24 +382,9 @@ fn sealed() {
 }
 
 #[test]
-fn old_signatures_count_only_before_the_cutover() {
+fn an_op_too_big_to_show_is_dropped() {
     let (sk, dev) = (SecretKey::generate(), SecretKey::generate().public());
     let (sp, key) = (Id([1; 32]), crypto::rand());
-    let v1 = |ts| {
-        let op = Op::Here;
-        let sig = sk.sign(&tbs(1, &sp, &tag(&key), ts, &dev, &op));
-        let author = Id(*sk.public().as_bytes());
-        let i = Inner { author, device: dev, sig, op };
-        let mut e = Env { epoch: tag(&key), ts, live: true, ct: vec![] };
-        e.ct = crypto::seal(
-            &key,
-            &aad(&sp, &e),
-            &postcard::to_allocvec(&i).unwrap(),
-        );
-        e
-    };
-    assert_eq!(open(&sp, &key, &v1(CUTOVER - 1), None).map(|s| s.1), Some(1));
-    assert!(open(&sp, &key, &v1(CUTOVER), None).is_none());
     // Too big to show anyone: dropped wherever it lands.
     let big = Op::Post {
         channel: Ch([1; 8]),

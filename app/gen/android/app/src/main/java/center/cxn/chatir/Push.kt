@@ -15,26 +15,27 @@ import org.json.JSONArray
 object Wake {
   init { System.loadLibrary("chatir_app") }
 
-  @JvmStatic external fun run(ctx: Context, dir: String, full: Boolean): String
+  @JvmStatic external fun run(ctx: Context, dir: String, full: Boolean): String?
 
   /** A call declined from its notification: its caller hears so. */
   @JvmStatic external fun decline(space: String, room: String)
 
   /** Rung through a storage node, else on our lane alone. */
-  @JvmStatic external fun live(ctx: Context, dir: String): String
+  @JvmStatic external fun live(ctx: Context, dir: String): String?
 
   /** Hand Android's context back before the activity's runtime takes it. */
   @JvmStatic external fun release()
 
-  /** chatir's slot on the phone's mailbox (random, kept). */
-  @JvmStatic external fun slot(dir: String): ByteArray
+  /** chatir's lane secret on the phone's mailbox (32 random bytes, kept);
+   *  empty if it could not be kept. */
+  @JvmStatic external fun lane(dir: String): ByteArray
 
   /** The phone's mailbox id, from pushir's library ("" until known). */
   @JvmStatic external fun share(id: String)
 
   /** What pushir brought: to chatir's node if it runs, else
    *  `{show: notices, catch: whether to catch up}`. */
-  @JvmStatic external fun ring(ctx: Context, dir: String, data: ByteArray): String
+  @JvmStatic external fun ring(ctx: Context, dir: String, data: ByteArray): String?
 }
 
 /** The phone's one mailbox, shared with every pushir app (pushir's library:
@@ -46,7 +47,10 @@ class ChatirApp : android.app.Application() {
     val dir = dataDir.absolutePath
     Wake.share("")
     val seen = getSharedPreferences("chatir-push", 0)
-    Pushir.start(this, "chatir_app", Wake.slot(dir), onId = { id ->
+    // No secret (a full disk), no lane: never one that anyone could guess.
+    val secret = Wake.lane(dir)
+    if (secret.size != 32) return
+    Pushir.start(this, "chatir_app", secret, onId = { id ->
       Wake.share(id)
       // A new mailbox: members told where.
       if (seen.getString("id", null) != id) {
@@ -55,7 +59,9 @@ class ChatirApp : android.app.Application() {
       }
     }) { d ->
       Thread {
-        if (show(this, Wake.ring(applicationContext, dir, d))) wake(this)
+        // Empty: the mailbox is back from a gap. A node that runs catches
+        // up; asleep, the relay hands on what it kept.
+        if (show(this, Wake.ring(applicationContext, dir, d) ?: "")) wake(this)
       }.start()
     }
   }
@@ -83,11 +89,11 @@ fun show(ctx: Context, json: String): Boolean = runCatching {
 fun catchUp(ctx: Context) {
   val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
   val lock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "chatir:catch-up")
-  lock.acquire(60_000)
+  lock.acquire(180_000) // a short service's whole time: released below
   try {
     for (full in listOf(false, true)) runCatching {
       val dir = ctx.dataDir.absolutePath
-      val got = JSONArray(Wake.run(ctx.applicationContext, dir, full))
+      val got = JSONArray(Wake.run(ctx.applicationContext, dir, full) ?: "[]")
       for (k in 0 until got.length()) alert(ctx, got.getJSONObject(k))
     }
   } finally {
@@ -118,6 +124,7 @@ class ChatirWake : Service() {
   }
 
   // Android ends a short service after 3 minutes; ours ends sooner.
+  override fun onTimeout(startId: Int) = stopSelf()
   override fun onTimeout(startId: Int, fgsType: Int) = stopSelf()
 }
 

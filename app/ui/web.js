@@ -6,7 +6,15 @@
 // irweb's page, its worker adds it.
 (() => {
   if (window.__TAURI__) return;
-  const token = /^#([0-9a-f]{64})$/.exec(location.hash)?.[1];
+  // Out of the address bar at once (history, sync, extensions read it
+  // there), kept for this tab alone.
+  let token = /^#([0-9a-f]{64})$/.exec(location.hash)?.[1];
+  try {
+    if (token) {
+      sessionStorage.setItem("token", token);
+      history.replaceState(null, "", location.pathname);
+    } else token = sessionStorage.getItem("token") ?? undefined;
+  } catch { /* no storage: the fragment stays */ }
   const head = token ? { "irweb-access": token } : {};
   const bytes = (b) => b?.data == null ? b
     : Uint8Array.from(atob(b.data), (c) => c.charCodeAt(0));

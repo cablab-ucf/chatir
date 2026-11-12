@@ -16,6 +16,9 @@ import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : TauriActivity() {
   private var web: WebView? = null
+  // Over a locked phone now: the page asks as it loads (`chatirLock`), for
+  // a call that rings before there is a page to tell.
+  @Volatile private var locked = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // The UI is dark: light system-bar icons whatever the system theme.
@@ -70,7 +73,7 @@ class MainActivity : TauriActivity() {
     val keep = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
     if (on) window.addFlags(keep) else window.clearFlags(keep)
     // Over a locked phone, the call alone: no way into the rest of chatir.
-    val locked = on && getSystemService(KeyguardManager::class.java)
+    locked = on && getSystemService(KeyguardManager::class.java)
       .isKeyguardLocked
     web?.evaluateJavascript(
       "document.documentElement.classList.toggle('lockscreen', $locked)", null)
@@ -80,6 +83,9 @@ class MainActivity : TauriActivity() {
   // as finishing would stop the node.
   override fun onWebViewCreate(webView: WebView) {
     web = webView
+    webView.addJavascriptInterface(object {
+      @android.webkit.JavascriptInterface fun locked() = locked
+    }, "chatirLock")
     val back = object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
         webView.evaluateJavascript("window.chatirBack?.() === true") { handled ->

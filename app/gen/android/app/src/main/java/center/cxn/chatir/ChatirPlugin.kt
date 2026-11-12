@@ -52,6 +52,8 @@ class AlertArgs {
   var title = ""
   var body = ""
   var ring = false
+  var hush = false
+  var quiet = false
 }
 
 @InvokeArg
@@ -174,7 +176,7 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
     val a = invoke.parseArgs(AlertArgs::class.java)
     alert(activity, org.json.JSONObject().put("space", a.space)
       .put("room", a.room).put("title", a.title).put("body", a.body)
-      .put("ring", a.ring))
+      .put("ring", a.ring).put("hush", a.hush).put("quiet", a.quiet))
     invoke.resolve()
   }
 

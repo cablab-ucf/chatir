@@ -106,7 +106,7 @@ pub fn profile(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// What signing out takes away.
-pub const MINE: [&str; 18] = [
+pub const MINE: [&str; 19] = [
     "seed",
     "device",
     "local",
@@ -114,12 +114,15 @@ pub const MINE: [&str; 18] = [
     "closed",
     "spaces",
     "files",
-    "blobs",
     "offered",
     "wake.json",
     "chatir.log",
     // Ring tokens' secret: kept, it would tie the next identity here to this.
     "bell",
+    // Our lane and mailbox: kept, the next identity here would be heard
+    // (and known) where this one was.
+    "lane",
+    "mailbox",
     "bells",
     "sealed",
     "shared",
