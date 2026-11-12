@@ -1,4 +1,7 @@
 # A tag vX.Y.Z (or a run naming one, tagged here) publishes a signed release.
+# Run it from main (Actions › release › Run workflow, naming the tag): only
+# runs on main save the build caches every later run starts from; a pushed
+# tag reads them and saves none (GitHub keeps a tag's caches to that tag).
 # Builds hold no secrets and a read-only token: a dependency's build script
 # can steal nothing. Only `publish`, in the `release` Environment (Settings
 # › Environments: required reviewers; tags v* protected), signs and uploads.
@@ -22,36 +25,12 @@ permissions:
 concurrency: release-${{ inputs.tag || github.ref_name }}
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0 # nothing here builds twice
-  CARGO_NET_RETRY: 10
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  # In seconds, not after every build: the keys `publish` signs with are
-  # here. It checks out nothing and runs no code of ours.
-  preflight:
-    runs-on: ubuntu-latest
-    environment: release
-    timeout-minutes: 5
-    steps:
-      - name: The signing keys are set
-        env:
-          A: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-          B: ${{ secrets.ANDROID_KEYSTORE != '' }}
-          C: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}
-        run: |
-          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          miss=
-          [ "$A" = true ] || miss="$miss TAURI_SIGNING_PRIVATE_KEY"
-          [ "$B" = true ] || miss="$miss ANDROID_KEYSTORE"
-          [ "$C" = true ] || miss="$miss ANDROID_KEYSTORE_PASSWORD"
-          [ -z "$miss" ] ||
-            { echo "::error::not set in the release environment:$miss"; exit 1; }
-
   # Beside the builds: nothing is signed or published until they pass.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     env: { CARGO_INCREMENTAL: 0, CARGO_PROFILE_DEV_DEBUG: line-tables-only }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,6 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo test --locked -p chatir-core -p chatir-math
           --features chatir-core/voice
@@ -81,7 +61,6 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin, arch: aarch64 }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,6 +73,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y
           libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev
@@ -107,24 +87,25 @@ jobs:
           grep -qx "version = \"${TAG#v}\"" Cargo.toml
           v='"version": "'${TAG#v}'"'
           sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
+      # A desktop ships the binary: the library's staticlib and cdylib are
+      # the phones', each a whole link-time optimization more if built here.
+      - name: The library as Rust's alone
+        shell: bash
+        run: sed -i.bak 's/^crate-type = .*/crate-type = ["rlib"]/' app/Cargo.toml
       # Unsigned (macOS: ad hoc): `apple` and `publish` sign, holding keys.
       - name: The app
         working-directory: app
         shell: bash
         run: cargo tauri build --target ${{ matrix.target }}
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
-      # Static on Linux, for any distribution; it updates itself.
+      # On the app's target, sharing its build; Linux's is static (`cli`).
       - name: The terminal client and storage node, beside the app
+        if: runner.os != 'Linux'
         shell: bash
         env:
           CHATIR_RELEASE: "1"
         run: |
           t=${{ matrix.target }}
-          if [ "$RUNNER_OS" = Linux ]; then
-            t=${t/gnu/musl}
-            sudo apt-get install -y musl-tools && rustup target add $t
-            export "CC_${t//-/_}=musl-gcc"
-          fi
           cargo build --release --locked -p chatir --target $t
           x=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
           mkdir -p out && cp target/$t/release/chatir$x out/chatir-$t$x
@@ -132,6 +113,7 @@ jobs:
         shell: bash
         run: |
           b=target/${{ matrix.target }}/release/bundle
+          mkdir -p out
           cp $b/appimage/*.AppImage $b/deb/*.deb $b/rpm/*.rpm \
             $b/dmg/*.dmg $b/nsis/*-setup.exe $b/msi/*.msi out/ 2>/dev/null || true
           # What macOS updates from: the .app, packed as tauri-action did.
@@ -145,9 +127,50 @@ jobs:
           path: out/*
           retention-days: 3
 
+  # Linux's terminal client and storage node, static (musl) for any
+  # distribution; it updates itself. Its own build (every crate again, for
+  # musl), so it runs beside the app's rather than after it.
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: The tag is the version
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -qx "version = \"${TAG#v}\"" Cargo.toml
+      - env:
+          CHATIR_RELEASE: "1"
+        run: |
+          t=${{ matrix.target }}
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          export "CC_${t//-/_}=musl-gcc"
+          cargo build --release --locked -p chatir --target $t
+          mkdir -p out && cp target/$t/release/chatir out/chatir-$t
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.target }}
+          path: out/*
+          retention-days: 3
+
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     steps:
       - name: Room for the build
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup
@@ -163,20 +186,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: "21"
-      # Gradle's distribution and every dependency it resolved: minutes of
-      # downloads, once.
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('app/gen/android/**/*.gradle*',
-            'app/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-
+          cache: gradle
+          cache-dependency-path: |
+            app/gen/android/**/*.gradle*
+            app/gen/android/**/gradle-wrapper.properties
       - uses: ./.github/actions/cargo-tauri
       - name: The tag is the version
         run: |
@@ -184,6 +202,8 @@ jobs:
           grep -qx "version = \"${TAG#v}\"" Cargo.toml
           v='"version": "'${TAG#v}'"'
           sed -i "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
+          # The phone's cdylib alone: no iPhone staticlib optimized here.
+          sed -i 's/^crate-type = .*/crate-type = ["cdylib", "rlib"]/' app/Cargo.toml
       - working-directory: app
         # Phones only: x86_64 is for emulators, which build their own.
         run: NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo tauri android build
@@ -198,7 +218,6 @@ jobs:
 
   ios:
     runs-on: macos-latest
-    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -210,6 +229,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - uses: ./.github/actions/cargo-tauri
       - name: The tag is the version
         run: |
@@ -217,6 +237,8 @@ jobs:
           grep -qx "version = \"${TAG#v}\"" Cargo.toml
           v='"version": "'${TAG#v}'"'
           sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
+          # The iPhone's staticlib alone: no Android cdylib optimized here.
+          sed -i.bak 's/^crate-type = .*/crate-type = ["staticlib", "rlib"]/' app/Cargo.toml
       - name: The Xcode project, with chatir's icons
         working-directory: app
         run: |
@@ -336,10 +358,9 @@ jobs:
   # nothing: tauri's signer, Tauri's build, arrives before the key.
   # An iPhone build that fails leaves out the IPA, not the release.
   publish:
-    needs: [preflight, test, desktop, android, ios, apple]
+    needs: [test, desktop, cli, android, ios, apple]
     if: ${{ !cancelled() && needs.test.result == 'success'
-      && needs.preflight.result == 'success'
-      && needs.desktop.result == 'success'
+      && needs.desktop.result == 'success' && needs.cli.result == 'success'
       && needs.android.result == 'success'
       && needs.apple.result != 'failure' }}
     runs-on: ubuntu-latest
