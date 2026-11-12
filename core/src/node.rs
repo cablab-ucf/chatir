@@ -444,6 +444,10 @@ impl Book {
         mut work: Vec<(Id, Env, Src)>,
     ) -> usize {
         let (mut ops, mut kept) = (vec![], 0);
+        // Refused by the state as it stands, which this batch may yet move
+        // (an unban and the unbanned's post, synced together): checked
+        // again once it has, refused for good once nothing more moves.
+        let (mut later, mut roles) = (vec![], false);
         loop {
             while let Some((i, e, src)) = work.pop() {
                 let Some(&key) = self.keys.get(&e.epoch) else {
@@ -472,12 +476,15 @@ impl Book {
                 // member's disk. A key no rekey here set yet passes: its
                 // rekey may come later (shown or not, `State` decides).
                 let at = (s.ts, s.id);
+                if alien && (my != st.owner || !knock) {
+                    self.reject(i, day, net);
+                    continue;
+                }
                 if st.role(&s.author) == Role::Banned
                     || st.known(&e.epoch) && st.stale(&e.epoch, &at, &s.author)
                     || st.burned_after(&at, &s.author)
-                    || alien && (my != st.owner || !knock)
                 {
-                    self.reject(i, day, net);
+                    later.push((i, e, src));
                     continue;
                 }
                 if let Src::Net(raw, ours) = &src
@@ -532,7 +539,11 @@ impl Book {
                     gone.map(|i| o.remove(i));
                     o.push((s.author, at, e.epoch, k, back));
                 }
+                roles |= net && matches!(s.op, Op::Role { .. });
                 ops.push(s);
+            }
+            if !ops.is_empty() {
+                work.append(&mut later);
             }
             self.st.extend(std::mem::take(&mut ops));
             let st = &self.st;
@@ -552,7 +563,26 @@ impl Book {
                 }
             }
             if work.is_empty() {
+                for (i, e, src) in later {
+                    let net = matches!(src, Src::Net(..));
+                    self.reject(i, (e.ts / DAY) as u32, net);
+                }
+                // A role moved: what a ban refused before, synced again.
+                if roles {
+                    self.unreject();
+                }
                 return kept;
+            }
+        }
+    }
+
+    /// Refused ops forgotten, so sync asks for them again: the state that
+    /// refused them may have moved since (an unban).
+    fn unreject(&mut self) {
+        self.rejects += 1; // the list on disk, saved anew
+        for (o, d) in std::mem::take(&mut self.rejected) {
+            if !self.at.contains_key(&o) {
+                self.idx.get_mut(&d).map(|s| s.remove(&o));
             }
         }
     }
@@ -982,7 +1012,7 @@ impl Node {
         let shown = cfg.dir.join("shown");
         for (id, ts) in store::load::<BTreeMap<Id, u64>>(&shown) {
             let t = prefs.told.entry(id).or_default();
-            *t = (*t).max(ts);
+            *t = (*t).max(ts.min(now()));
         }
         let _ = std::fs::remove_file(shown);
         let closed = store::load(&cfg.dir.join("closed"));
@@ -1544,6 +1574,10 @@ impl Node {
             Some((p, e, s))
         });
         let Some((p, e, s)) = opened else { return (None, true) };
+        // Dated ahead past the skew: refused here as `ingest` refuses it.
+        if e.ts > now() + SKEW {
+            return (None, false);
+        }
         // Once: a ring comes again until acked, and none is acked asleep.
         let f = dir.join("rung");
         let mut rung: Vec<Id> = store::load(&f);
@@ -1587,7 +1621,7 @@ impl Node {
                 let t = told.entry(*space).or_default();
                 // Once: a ring and an event may both bring it.
                 let tell = tell && e.ts > *t;
-                *t = (*t).max(e.ts);
+                *t = (*t).max(e.ts.min(now()));
                 let _ = store::save(&f, &told);
                 let body = if text.is_empty() { "(file)".into() } else { text };
                 tell.then(|| n(channel, at(&channel), body, false, false))
@@ -1915,6 +1949,10 @@ impl Node {
         let (mut work, mut at) = (vec![], vec![]);
         let log = Log::open(&self.log(&id), |o, checked, raw| {
             let Ok(e) = postcard::from_bytes::<Env>(&raw) else { return };
+            // A ring, kept unchecked, from too far ahead (`woken`, older).
+            if checked == 0 && e.ts > now() + SKEW {
+                return;
+            }
             let i = Id(blake3::hash(&raw).into());
             at.push((i, e.ts, o, raw.len()));
             work.push((i, e, Src::Log(checked)));
@@ -5332,6 +5370,47 @@ mod tests {
         let me = Me::new(rand());
         b.fold(&Id([2; 32]), &me, vec![(i, e, Src::Net(raw, false))]);
         assert!(b.has(&i, DAY) && b.at.is_empty() && b.rejected.len() == 1);
+        std::fs::remove_file(p).unwrap();
+    }
+
+    /// A post refused while its author was banned stands once they are
+    /// unbanned: taken in the batch that unbans them, or synced again.
+    #[test]
+    fn an_unban_lets_the_unbanneds_posts_in() {
+        let (o, x) = (Me::new(rand()), Me::new(rand()));
+        let inv = Invite::new(o.id(), "", None);
+        let (sp, k, dev) = (inv.id(), inv.key, SecretKey::generate().public());
+        let p = std::env::temp_dir().join(format!("chatir-unban-{}", now()));
+        let mut b =
+            Book::new(Log::open(&p, |_, _, _| {}).unwrap(), State::new(&inv));
+        b.keys.insert(tag(&k), k);
+        let ch = Ch([3; 8]);
+        let op = |who: &Me, ts, op| {
+            let (s, raw) = op::seal(&sp, &k, &who.user, dev, ts, op);
+            (s.id, postcard::from_bytes(&raw).unwrap(), Src::Net(raw, false))
+        };
+        let role = |ts, role| op(&o, ts, Op::Role { user: x.id(), role });
+        let post = |ts, t: &str| {
+            let files = vec![];
+            op(
+                &x,
+                ts,
+                Op::Post { channel: ch, text: t.into(), reply: None, files },
+            )
+        };
+        let shown = |b: &Book| b.st.messages(&ch, None, 9).len();
+        b.fold(&sp, &o, vec![role(DAY, Role::Banned)]);
+        // The post comes first off the batch, the unban after it.
+        b.fold(&sp, &o, vec![role(DAY + 1, Role::Member), post(DAY + 2, "a")]);
+        assert_eq!(shown(&b), 1, "taken with its unban");
+        b.fold(&sp, &o, vec![role(DAY + 3, Role::Banned)]);
+        let (i, ..) = post(DAY + 4, "b");
+        b.fold(&sp, &o, vec![post(DAY + 4, "b")]);
+        assert!(b.has(&i, DAY + 4) && b.rejected.len() == 1, "refused, had");
+        b.fold(&sp, &o, vec![role(DAY + 5, Role::Member)]);
+        assert!(!b.has(&i, DAY + 4), "asked for again");
+        b.fold(&sp, &o, vec![post(DAY + 4, "b")]);
+        assert_eq!(shown(&b), 2);
         std::fs::remove_file(p).unwrap();
     }
 
