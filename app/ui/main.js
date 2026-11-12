@@ -4,6 +4,7 @@
 import { inline, markdown } from "./markdown.js";
 import * as av from "./call.js";
 import { ogg, unogg } from "./ogg.js";
+import { pixels } from "./pixels.js";
 
 // Android, raised over a locked phone by a ringing call: the call alone,
 // before anything else is drawn (MainActivity.kt).
@@ -408,7 +409,14 @@ const chan = () => inThread() ? S.thread
   : cur()?.channels.find((c) => c.id === S.ch);
 // A closed DM is out of the list until its next message, or opened.
 const dms = () => S.spaces.filter((s) => s.dm && (!s.closed || s.id === S.sid));
-const memberOf = (id) => S.members.find((m) => m.id === id);
+// By id, made once per members list: a render asks for each message.
+let byId = [null, new Map()];
+const memberOf = (id) => {
+  if (byId[0] !== S.members) {
+    byId = [S.members, new Map(S.members.map((m) => [m.id, m]))];
+  }
+  return byId[1].get(id);
+};
 // Two of one name: their cards show their ids.
 const nameOf = (id) => memberOf(id)?.name ?? short(id);
 const ago = (ts) => {
@@ -1509,6 +1517,7 @@ function math(src, display) {
   }
   const k = `${+display}${src}`;
   if (!typeset.has(k)) {
+    if (typeset.size >= 512) typeset.delete(typeset.keys().next().value);
     typeset.set(k, invoke("math", { src, display }).then((m) => {
       const doc = new DOMParser().parseFromString(m, "text/html");
       return mathml(doc.body.firstChild);
@@ -1535,12 +1544,22 @@ const size = (n) => {
   return `${i ? (n / 2 ** (10 * i)).toFixed(1) : n} ${"BKMGT"[i]}${i ? "B" : ""}`;
 };
 const images = new Map(); // hash -> Promise of a data: URL; the latest 64
+// Shown in a message up to this size (larger on a tap), and decoded only
+// up to this many pixels (200 MB): more is a file to save.
+const INLINE = 8 << 20;
+const PIXELS = 50e6;
+const BIG = new Error("Too large to show: save it");
 
 function image(f) {
   if (!images.has(f.hash)) {
     if (images.size >= 64) images.delete(images.keys().next().value);
     images.set(f.hash, rpc("file", { space: S.sid, file: f })
-      .then((b64) => `data:${mime(f.name)};base64,${b64}`)
+      .then((b64) => {
+        const head = atob(b64.slice(0, 1 << 20));
+        const b = Uint8Array.from(head, (c) => c.charCodeAt(0));
+        if (pixels(b) > PIXELS) throw BIG;
+        return `data:${mime(f.name)};base64,${b64}`;
+      })
       .catch((e) => (images.delete(f.hash), Promise.reject(e))));
   }
   return images.get(f.hash);
@@ -1558,7 +1577,7 @@ function attachments(files) {
   return h("div", { class: "attachments" }, files.map((f) => {
     const type = MEDIA[f.name.split(".").pop().toLowerCase()];
     if (type && f.size <= PREVIEW) return player(f, type);
-    if (!mime(f.name)) return fileChip(f);
+    if (!mime(f.name) || f.size > INLINE) return fileChip(f);
     const img = h("img", { class: "attachment", alt: f.name, title: f.name });
     const box = h("div", { class: "image loading" }, img);
     // A storage node may still be fetching it: try again a few times.
@@ -1568,7 +1587,7 @@ function attachments(files) {
       img.src = src;
       box.classList.remove("loading");
       img.onclick = () => lightbox(src, f);
-    }, () => n < 3 && box.isConnected
+    }, (e) => e !== BIG && n < 3 && box.isConnected
       ? setTimeout(() => load(n + 1), 10000 * (n + 1))
       : box.replaceWith(fileChip(f)));
     load(0);
@@ -1651,7 +1670,10 @@ function utf8(b) {
 }
 
 async function preview(f) {
-  if (mime(f.name)) return image(f).then((src) => lightbox(src, f));
+  if (mime(f.name)) {
+    return image(f).then((src) => lightbox(src, f),
+      (e) => toast(String(e?.message ?? e), true));
+  }
   const ext = f.name.split(".").pop().toLowerCase();
   let b;
   try {

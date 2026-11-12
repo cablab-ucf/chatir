@@ -210,7 +210,8 @@ async fn chatir(
         let mut picked = PICKED.lock().unwrap_or_else(|e| e.into_inner());
         let chosen = picked.iter().position(|x| x == p);
         let ours = home(&app).map(|d| d.join("offered"));
-        let ours = ours.is_ok_and(|d| p.parent() == Some(&d));
+        let ours = ours.is_ok_and(|d| p.parent() == Some(&d))
+            && p.file_name().and_then(|f| f.to_str()).is_some_and(hex32);
         if !ours && chosen.is_none() {
             return Err("only files you pick are shared".into());
         }
@@ -475,7 +476,12 @@ async fn save(
         if let Ok(dl) = app.path().download_dir() {
             d = d.set_directory(dl);
         }
-        let Some(to) = d.blocking_save_file() else { return Ok(String::new()) };
+        let to = tauri::async_runtime::spawn_blocking(move || {
+            d.blocking_save_file()
+        });
+        let Some(to) = to.await.ok().flatten() else {
+            return Ok(String::new());
+        };
         let to = to.into_path().map_err(|e| e.to_string())?;
         let _ = app.emit("saving", &name);
         let dir = to.parent().ok_or("no folder")?;
@@ -509,16 +515,18 @@ async fn media(s: State<'_, App>, req: Request<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// An upload's name in `offered`.
+fn hex32(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// A picked file in parts, as a page knows no paths; base64 on Android.
 #[tauri::command]
 fn upload(app: AppHandle, req: Request<'_>) -> Result<String, String> {
     use std::io::Write;
     let r = || {
         let id = req.headers().get("x-upload").and_then(|v| v.to_str().ok());
-        let hex = |i: &&str| {
-            i.len() == 32 && i.bytes().all(|b| b.is_ascii_hexdigit())
-        };
-        let id = id.filter(hex).context("no upload id")?;
+        let id = id.filter(|i| hex32(i)).context("no upload id")?;
         let dir = home(&app)?.join("offered");
         std::fs::create_dir_all(&dir)?;
         let part = match req.body() {
@@ -729,9 +737,13 @@ async fn to_loroh(
 /// A web link, opened only after the page showed it in full.
 #[tauri::command]
 async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
-    let u = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+    let mut u = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
     if !matches!(u.scheme(), "https" | "http" | "mailto") {
         return Err("only web and mail links open".into());
+    }
+    // Some mail apps attach the file a link's `?attach=` names.
+    if u.scheme() == "mailto" {
+        u.set_query(None);
     }
     #[cfg(desktop)]
     {
@@ -792,6 +804,9 @@ fn qr(text: String) -> Result<String, String> {
 /// MathML; the page checks the tags.
 #[tauri::command]
 async fn math(src: String, display: bool) -> Result<String, String> {
+    // A channel of math opens as a compile per expression: a few at a time.
+    static ONE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+    let _turn = ONE.acquire().await.map_err(|e| e.to_string())?;
     let m = move || chatir_math::mathml(&src, display);
     tauri::async_runtime::spawn_blocking(m).await.map_err(|e| e.to_string())?
 }

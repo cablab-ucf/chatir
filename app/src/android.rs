@@ -163,6 +163,9 @@ impl Bridge {
 // tao sets ndk-context once per process, asserting nobody did before.
 static OURS: AtomicBool = AtomicBool::new(false);
 static TAO: AtomicBool = AtomicBool::new(false);
+// Held while either is checked and set: two wakes, or a wake and the
+// activity, at once.
+static CTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 static NEWS: std::sync::Mutex<Vec<News>> = std::sync::Mutex::new(vec![]);
 
@@ -240,6 +243,7 @@ fn reply<'l, T: Serialize + Default>(
 /// Android's context for native code, where the activity's runtime has
 /// not set it.
 fn hold(env: &Env, ctx: &JObject) {
+    let _one = CTX.lock().unwrap_or_else(|e| e.into_inner());
     if !TAO.load(SeqCst)
         && !OURS.load(SeqCst)
         && let (Ok(vm), Ok(g)) = (env.get_java_vm(), env.new_global_ref(ctx))
@@ -256,6 +260,7 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_release<'l>(
     _: EnvUnowned<'l>,
     _: JClass<'l>,
 ) {
+    let _one = CTX.lock().unwrap_or_else(|e| e.into_inner());
     TAO.store(true, SeqCst);
     if OURS.swap(false, SeqCst) {
         unsafe { ndk_context::release_android_context() };

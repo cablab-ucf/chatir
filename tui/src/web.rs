@@ -261,7 +261,7 @@ async fn request(
     token: &str,
     tcp: bool,
 ) -> Result<Option<Req>> {
-    let mut q = read(r).await?;
+    let mut q = timeout(Duration::from_secs(5), read(r)).await??;
     if q.api().is_none() {
         return Ok(Some(q)); // the page: no body
     }
