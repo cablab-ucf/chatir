@@ -117,6 +117,8 @@ pub async fn initiate(
     mine.into_iter().for_each(|b| days.entry(b.0).or_default().0 = Some(b));
     theirs.into_iter().for_each(|b| days.entry(b.0).or_default().1 = Some(b));
     let diff = days.into_iter().filter(|(_, (a, b))| a != b).map(|(d, _)| d);
+    // A peer reads days as u16 (to 2149): one past that would fail it all.
+    let diff = diff.filter(|d| *d <= u16::MAX.into());
     let ids: BTreeMap<u32, Vec<Id>> = diff.map(|d| (d, sp.ids(d))).collect();
     write(&mut tx, &ids).await?;
     let want: BTreeSet<Id> = read(&mut rx, 16 << 20).await?;

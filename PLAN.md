@@ -61,8 +61,9 @@ level, with the sealed op itself, and shows it without starting its node.
 Levels belong to the account (its own space, kept by storage nodes);
 Silent belongs to the device. Typing, presence and reads go only to
 devices that are up. A frame is sent again at 3, 10 and 45 s until acked;
-pushir's relay keeps a frame until its mailbox has it (64 a mailbox, the
-newest, a day, in memory); a phone away longer catches up as it opens.
+a phone away longer catches up as it opens. irpush.cxn.center keeps a
+frame until its mailbox has it (pushir's `relay-hold`: 64 a mailbox, a
+day, in memory); another relay may not.
 
 ## Delivery by device list
 

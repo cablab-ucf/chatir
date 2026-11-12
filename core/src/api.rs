@@ -307,7 +307,8 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
             json!(page.into_iter().map(row).collect::<Vec<_>>())
         }
         Call::Search { query, space, room } => {
-            let ids = space.map_or_else(|| n.spaces(), |s| vec![s]);
+            let all = || std::iter::once(n.own()).chain(n.spaces()).collect();
+            let ids = space.map_or_else(all, |s| vec![s]);
             let mut v: Vec<_> = ids
                 .iter()
                 .filter_map(|id| {

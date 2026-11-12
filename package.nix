@@ -18,6 +18,10 @@ rustPlatform.buildRustPackage {
   # NixOS updates it, not the app.
   env.CHATIR_NIXOS = "1";
   doCheck = false; # its tests need a network
+  # nixpkgs sets AWS_LC_SYS_USE_SYSTEM=1, and aws-lc-sys 0.47 then demands
+  # a system AWS-LC (nixpkgs' openssl is none): the one Cargo.lock pins,
+  # built from source, as on every other platform.
+  preBuild = "export AWS_LC_SYS_USE_SYSTEM=0";
   nativeBuildInputs = [ pkg-config wrapGAppsHook3 copyDesktopItems ];
   # Calls' codecs through WebKit's GStreamer: Opus (base), VP8 and VP9
   # (good), AV1 and echo cancelling (bad), H.264 (libav).
