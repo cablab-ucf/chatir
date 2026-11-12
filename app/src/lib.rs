@@ -114,9 +114,6 @@ async fn hear(app: AppHandle, n: Arc<Node>) {
         *h = Some(dir.clone());
     }
     let mut rx = chatir_core::push::listen(&dir);
-    if let Some(url) = n.pushir().await {
-        n.set_push(Some(url)).await;
-    }
     drop(n); // asleep, a node goes
     tauri::async_runtime::spawn(doze(app.clone()));
     while let Some(f) = rx.recv().await {

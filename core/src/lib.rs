@@ -17,7 +17,6 @@ mod sync;
 pub mod usage;
 #[cfg(feature = "voice")]
 pub mod voice;
-pub mod wake;
 
 pub use irnet;
 pub use node::{
@@ -106,7 +105,7 @@ pub fn profile(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// What signing out takes away.
-pub const MINE: [&str; 19] = [
+pub const MINE: [&str; 18] = [
     "seed",
     "device",
     "local",
@@ -117,8 +116,6 @@ pub const MINE: [&str; 19] = [
     "offered",
     "wake.json",
     "chatir.log",
-    // Ring tokens' secret: kept, it would tie the next identity here to this.
-    "bell",
     // Our lane and mailbox: kept, the next identity here would be heard
     // (and known) where this one was.
     "lane",

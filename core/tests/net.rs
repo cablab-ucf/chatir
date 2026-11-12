@@ -83,6 +83,21 @@ async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
     relay
 }
 
+/// A lane for `d` on `relay`, before its node starts: members' frames go
+/// out only from a device that has one (for the ack).
+async fn lane(d: &std::path::Path, relay: &iroh_relay::server::Server) {
+    let at = format!("http://{}/", relay.http_addr().unwrap());
+    let net = Net::Relay(vec![at.parse().unwrap()]);
+    std::fs::create_dir_all(d).unwrap();
+    chatir_core::push::ours(d, &net, false).await.unwrap();
+}
+
+/// Whether `a` has a lane of `b`'s in space `id`.
+fn laned(a: &Node, id: &Id, b: &Node) -> bool {
+    let p = a.view(id, |s| s.pushes_of(Some(&b.id()))).unwrap_or_default();
+    p.iter().any(|p| p.1.contains("pushir:"))
+}
+
 /// A phone with no node: what pushir brings its lane, as ops' news
 /// (acks and dials passed over), read from its phonebook.
 struct Phone(
@@ -95,7 +110,7 @@ impl Phone {
         Self(d.into(), chatir_core::push::listen(d))
     }
 
-    async fn next(&mut self) -> Option<chatir_core::wake::News> {
+    async fn next(&mut self) -> Option<chatir_core::push::News> {
         loop {
             let f = self.1.recv().await?;
             if let Some(Some(n)) = Node::news(&self.0, &f) {
@@ -727,26 +742,21 @@ async fn calls_carry_frames_between_members_only() {
     assert!(a.calls(&id).is_empty() && a.in_call().is_none());
 }
 
-/// Every storage node is a push server through pushir, no Google: a
-/// phone registers with its own unasked, and each ring lands on the
-/// phone's mailbox, sealed to it.
+/// A storage node tells the devices it serves its relay; a phone asleep is
+/// woken on its lane by a member, no storage node between, no Google.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_storage_node_rings_a_phone_through_pushir() {
-    let db = dir("b");
+async fn a_lane_wakes_a_phone_and_a_storage_nodes_relay_is_told() {
+    let (da, db) = (dir("a"), dir("b"));
     let relay = push_relay(&db).await;
+    lane(&da, &relay).await;
     let at = format!("http://{}", relay.http_addr().unwrap());
     let s = start(&dir("s"), "s", None, true).await;
-    let da = dir("a");
     let a = start(&da, "a", None, false).await;
     let b = start(&db, "b", None, false).await;
     let id = a.create("hub").await.unwrap();
     let ch = general(&a, &id);
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
     pair(&b, &s, &[]).await;
-    let url = b.pushir().await.expect("taken by its storage node");
-    assert_eq!(b.pushir().await, Some(url.clone()), "kept");
-    b.set_push(Some(url)).await;
-    assert!(b.pushing(), "its storage node took the route");
     // Its relay is theirs too, as a sync with it ends.
     pair(&a, &s, &[id]).await;
     let has = |d: &std::path::Path| {
@@ -755,9 +765,7 @@ async fn a_storage_node_rings_a_phone_through_pushir() {
     };
     until("b has its storage node's relay", || has(&db)).await;
     until("a has it, unpaired", || has(&da)).await;
-    let ring = |p: &(iroh::EndpointId, String)| p.1.starts_with("chatir:ring:");
-    let told = || a.view(&id, |s| s.pushes_of(None).iter().any(ring));
-    until("a knows b's push server", || told() == Some(true)).await;
+    until("a knows b's lane", || laned(&a, &id, &b)).await;
     let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
     until("b knows a", named).await;
     b.shutdown().await;
@@ -980,32 +988,27 @@ async fn a_small_spaces_call_rings() {
 }
 
 /// Which way a call's ring reaches the callee, and how fast: the call
-/// said in the space (gossip), a push through its storage node (pushir),
-/// and what dialing its device takes (the doctor). On loopback the times
+/// said in the space, a frame on its lane (pushir), and what dialing its
+/// device takes (the doctor). On loopback the times
 /// are each path's own cost; `--nocapture` prints them.
 #[tokio::test(flavor = "multi_thread")]
 async fn ring_paths() {
     use std::time::Instant;
-    let db = dir("b");
-    let _relay = push_relay(&db).await;
-    let s = start(&dir("s"), "s", None, true).await;
-    let (a, b) = (node("a").await, start(&db, "b", None, false).await);
+    let (da, db) = (dir("a"), dir("b"));
+    let relay = push_relay(&db).await;
+    lane(&da, &relay).await;
+    let a = start(&da, "a", None, false).await;
+    let b = start(&db, "b", None, false).await;
     let id = a.create("duo").await.unwrap();
     let ch = general(&a, &id);
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
-    pair(&b, &s, &[]).await;
-    let url = b.pushir().await.expect("taken by its storage node");
-    b.set_push(Some(url)).await;
-    let ring = |p: &(iroh::EndpointId, String)| p.1.starts_with("chatir:ring:");
-    let told = || a.view(&id, |s| s.pushes_of(None).iter().any(ring));
-    until("a knows b's push server", || told() == Some(true)).await;
+    until("a knows b's lane", || laned(&a, &id, &b)).await;
     let on = |x: &Node, u: &Node| x.online(&id).contains(&u.id());
     until("each sees the other", || on(&a, &b) && on(&b, &a)).await;
     let mut phone = Phone::new(&db);
 
     let doc = a.doctor(Some(b.id())).await;
     let dial = doc["devices"][0]["ms"].as_u64().expect("b's device reached");
-    let server = doc["push"][0]["ms"].as_u64().expect("its push server");
     // Awake: both ways at once; which lands first?
     let mut heard = b.subscribe();
     let t = Instant::now();
@@ -1042,46 +1045,8 @@ async fn ring_paths() {
     println!(
         "ring paths (loopback): awake: said {said:?}, gossip {gossip:?}, \
          push {push:?}; \
-         asleep: push {asleep:?}; a dial to b's device {dial} ms, \
-         to its push server {server} ms"
+         asleep: push {asleep:?}; a dial to b's device {dial} ms"
     );
-}
-
-/// A phone registers with each of its storage nodes as a push server, so
-/// a ring gets through while any one of them is up.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_ring_gets_through_while_any_push_server_is_up() {
-    let db = dir("b");
-    let _relay = push_relay(&db).await;
-    let (s1, s2) = (
-        start(&dir("s1"), "s1", None, true).await,
-        start(&dir("s2"), "s2", None, true).await,
-    );
-    let (a, b) = (node("a").await, start(&db, "b", None, false).await);
-    let id = a.create("duo").await.unwrap();
-    let ch = general(&a, &id);
-    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
-    pair(&b, &s1, &[]).await;
-    pair(&b, &s2, &[]).await;
-    let url = b.pushir().await.expect("taken by a storage node");
-    b.set_push(Some(url)).await;
-    let codes = || {
-        let p = a.view(&id, |s| s.pushes_of(Some(&b.id()))).unwrap_or_default();
-        let rings = |u: &str| u.matches("chatir:ring:").count();
-        p.iter().map(|x| rings(&x.1)).max().unwrap_or(0)
-    };
-    until("a rings b through both", || codes() == 2).await;
-    b.shutdown().await;
-    drop(b);
-    s1.shutdown().await;
-    drop(s1);
-    let mut phone = Phone::new(&db);
-    say(&a, &id, ch, "still here?").await;
-    let news = tokio::time::timeout(Duration::from_secs(20), phone.next());
-    let news = news.await.expect("pushed through s2").unwrap();
-    let n = Node::woken(&db, &news).0.expect("shown");
-    assert_eq!(n.body, "still here?");
-    drop(s2);
 }
 
 /// Declined, a DM call says so: its caller hears who declined, and the

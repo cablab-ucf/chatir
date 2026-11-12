@@ -2,12 +2,10 @@
 //! apps (pushir's daemon or Android library, else our own), and chatir hears
 //! on its lane there: a secret its senders hold, under which every frame is
 //! sealed, so the relay routes a frame and reads nothing of it. Members send
-//! a device's lane small frames (`split`); storage nodes ring the phones
-//! that registered. No Google: no Firebase. A frame is a hint: the lab's
+//! a device's lane small frames (`split`). No Google: no Firebase. A frame is a hint: the lab's
 //! relay keeps one until its mailbox has it, another relay may lose it, so
 //! whatever a frame carries is acked, and dialed or synced if it is not.
 
-use crate::wake::{HEAD, MAX};
 use crate::{Net, node::lock, store};
 use anyhow::{Result, ensure};
 use iroh::endpoint::Connection;
@@ -22,18 +20,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 
 pub const ALPN: &[u8] = b"chatir/push/5";
-/// Ring tokens a phone may have here: one per space it is in.
-const MOST: usize = 4096;
-/// Phones kept here, and ring tokens in all: past either, the one longest
-/// unregistered goes.
-const PHONES: usize = 1024;
-const RINGS: usize = 1 << 16;
 const SLOW: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, Deserialize)]
 enum Ask {
-    /// Our `route` and ring tokens.
-    Register(String, Vec<[u8; 16]>),
     /// The storage node's relays, `url,…`, which its iroh relays through.
     Relays,
 }
@@ -93,146 +83,30 @@ pub async fn relays_of(ep: &Endpoint, to: EndpointAddr) -> Result<String> {
     Ok(l)
 }
 
-pub async fn register(
-    ep: &Endpoint,
-    to: EndpointAddr,
-    lane: &str,
-    rings: &[[u8; 16]],
-) -> Result<()> {
-    let a = Ask::Register(lane.into(), rings.to_vec());
-    ensure!(ask(ep, to, &a).await? == [1], "not taken there");
-    Ok(())
-}
-
-type Phone = (String, Vec<[u8; 16]>);
-
-/// Each phone's lane and tokens (kept on disk), whose each token is, and
-/// when each last registered (since we started; before, oldest).
-#[derive(Default)]
-struct Phones {
-    by: BTreeMap<EndpointId, Phone>,
-    rings: HashMap<[u8; 16], HashSet<EndpointId>>,
-    at: HashMap<EndpointId, Instant>,
-}
-
-impl Phones {
-    /// A lane another device registered first.
-    fn taken(&self, d: &EndpointId, to: &str) -> bool {
-        self.by.iter().any(|(x, p)| x != d && p.0 == to)
-    }
-
-    fn set(&mut self, d: EndpointId, p: Option<Phone>) {
-        for t in self.by.remove(&d).into_iter().flat_map(|p| p.1) {
-            if let Some(s) = self.rings.get_mut(&t)
-                && s.remove(&d)
-                && s.is_empty()
-            {
-                self.rings.remove(&t);
-            }
-        }
-        self.at.remove(&d);
-        let Some(p) = p else { return };
-        for t in &p.1 {
-            self.rings.entry(*t).or_default().insert(d);
-        }
-        self.at.insert(d, Instant::now());
-        self.by.insert(d, p);
-    }
-}
-
-/// A lane a storage node will ring: on a relay met by https, at no
-/// address of this machine or its LAN (tests aside): a member's device
-/// names it, and we connect there.
-fn rung(lane: &str) -> Option<Lane> {
-    let l: Lane = lane.parse().ok()?;
-    let host = l.relay.host_str()?.trim_matches(['[', ']']);
-    let ip = host.parse::<std::net::IpAddr>().ok();
-    let open = l.relay.scheme() == "https"
-        && host != "localhost"
-        && ip.is_none_or(|a| crate::node::public(&a));
-    (open || cfg!(debug_assertions)).then_some(l)
-}
-
 /// Devices this storage node admitted to sync: members it keeps for.
 pub type Served = Arc<Mutex<HashSet<EndpointId>>>;
 
-/// A storage node's push server: its file, phones, devices served, relays.
+/// A storage node, asked by the devices it serves for the relay their
+/// lanes go on (its own, if it runs one).
 #[derive(Clone)]
-pub struct Server(Arc<(PathBuf, Mutex<Phones>, Served, String)>);
+pub struct Server(Arc<(Served, String)>);
 
 impl Server {
     pub fn open(dir: &Path, net: &Net, s: Served) -> Option<Self> {
-        let relays = relay(dir, net, true)?.to_string();
-        let file = dir.join("phones");
-        let mut phones = Phones::default();
-        let kept: BTreeMap<EndpointId, Phone> = store::load(&file);
-        kept.into_iter().for_each(|(d, p)| phones.set(d, Some(p)));
-        phones.at.clear();
-        Some(Self(Arc::new((file, Mutex::new(phones), s, relays))))
+        Some(Self(Arc::new((s, relay(dir, net, true)?.to_string()))))
     }
 
     async fn asked(&self, c: &Connection) -> Result<()> {
         let (mut tx, mut rx) = c.accept_bi().await?;
-        let b = crate::sync::rest(&mut rx, 1024 + 17 * MOST + 64).await?;
-        let (file, phones, served, relays) = &*self.0;
-        let d = c.remote_id();
-        // Members' devices we sync with only: a stranger rings nobody.
-        let ours = lock(served).contains(&d);
+        let b = crate::sync::rest(&mut rx, 64).await?;
+        let (served, relays) = &*self.0;
+        // Members' devices we sync with only.
+        let ours = lock(served).contains(&c.remote_id());
         let reply = match postcard::from_bytes(&b)? {
             Ask::Relays if ours => relays.clone().into_bytes(),
             Ask::Relays => vec![],
-            Ask::Register(to, rings) => {
-                ensure!(to.len() <= 512 && rings.len() <= MOST, "too big");
-                // A lane is the device's that registered it first: no
-                // member rings another's phone with tokens of their own.
-                let ok =
-                    ours && rung(&to).is_some() && !lock(phones).taken(&d, &to);
-                if ok {
-                    // A second apart each, so none rewrites the file flat out.
-                    let second = Duration::from_secs(1);
-                    let last = lock(phones).at.get(&d).copied();
-                    let wait = last.map(|t| second.saturating_sub(t.elapsed()));
-                    tokio::time::sleep(wait.unwrap_or_default()).await;
-                    let mut p = lock(phones);
-                    p.set(d, Some((to, rings)));
-                    while p.by.len() > PHONES || p.rings.len() > RINGS {
-                        let old = p.by.keys().min_by_key(|d| p.at.get(*d));
-                        let old = *old.expect("some");
-                        p.set(old, None);
-                    }
-                    store::save(file, &p.by)?;
-                }
-                vec![ok as u8]
-            }
         };
         tx.write_all(&reply).await?;
-        tx.finish()?;
-        let _ = tokio::time::timeout(SLOW, c.closed()).await;
-        Ok(())
-    }
-
-    /// A member's ring, to whichever phones hold its token: the space and
-    /// the op, or too big for one frame, the space alone, for the phone to
-    /// catch up.
-    async fn ring(&self, c: &Connection) -> Result<()> {
-        let (mut tx, mut rx) = c.accept_bi().await?;
-        let mut head = [0u8; HEAD];
-        rx.read_exact(&mut head).await?;
-        let raw = crate::sync::rest(&mut rx, MAX).await?;
-        let (_, phones, _, _) = &*self.0;
-        let t: [u8; 16] = head[..16].try_into()?;
-        let to: Vec<Lane> = {
-            let p = lock(phones);
-            let to = p.rings.get(&t).into_iter().flatten();
-            to.filter_map(|d| rung(&p.by.get(d)?.0)).collect()
-        };
-        let ring = [&[RING][..], &head[16..48], &raw[..]].concat();
-        let r = if ring.len() <= pushir::MAX { &ring[..] } else { &ring[..33] };
-        let sent = n0_future::join_all(to.iter().map(|l| send(l, r))).await;
-        // 2: sent; the lab's relay keeps it for a phone that is away,
-        // another may not (the phone catches up as it opens).
-        let ok = sent.contains(&true);
-        tx.write_all(&[if ok { 2 } else { 0 }]).await?;
         tx.finish()?;
         let _ = tokio::time::timeout(SLOW, c.closed()).await;
         Ok(())
@@ -241,21 +115,20 @@ impl Server {
 
 // ── Lanes: a device's mailbox and chatir's lane there ──
 //
-// Whoever holds a lane (`pushir:ID:SECRET@RELAY`: a device's spaces, and
-// the storage nodes it registered with) sends it `kind ‖ 32 bytes ‖ rest`
-// (`split`): an op under its space's label (sealed and signed as ever), its
-// ack (a MAC only a member makes), a dial (start iroh, a link is coming:
-// from this address), or a storage node's ring (the space, then the op).
+// Whoever holds a lane (`pushir:ID:SECRET@RELAY`: the members of a device's
+// spaces) sends it `kind ‖ 32 bytes ‖ rest` (`split`): an op under its
+// space's label (sealed and signed as ever), its ack (a MAC only a member
+// makes), or a dial (start iroh, a link is coming).
 // pushir seals each under the lane's secret, padded to one size: the relay
 // learns a mailbox and a time. An empty message says sync: a bare wake, or
 // the mailbox back from a gap in which frames may have been missed.
 
-/// What a frame carries: an op (empty: catch up), an ack (its ts), a dial,
-/// a ring.
+/// What a frame carries: an op (empty: catch up), an ack (its ts), a dial.
 pub const OP: u8 = 0;
 pub const ACK: u8 = 1;
 pub const DIAL: u8 = 2;
-pub const RING: u8 = 3;
+/// A space, and one sealed op of it: what a lane brought.
+pub type News = (crate::Id, Vec<u8>);
 /// A message for chatir, opened (pushir's senders are nameless).
 pub type Heard = Vec<u8>;
 static EARS: Mutex<BTreeMap<PathBuf, UnboundedSender<Heard>>> =
@@ -291,10 +164,9 @@ fn hand(dir: &Path, m: Vec<u8>) {
 }
 
 /// A lane message, `kind ‖ 32 bytes ‖ rest`: an event (its space's label,
-/// then the op), an ack (its MAC), a dial (a label, then who dials) or a
-/// ring (the space, then the op).
+/// then the op), an ack (its MAC) or a dial (a label).
 pub fn split(b: &[u8]) -> Option<(u8, [u8; 32], &[u8])> {
-    let (k, r) = b.split_first().filter(|(k, _)| **k <= RING)?;
+    let (k, r) = b.split_first().filter(|(k, _)| **k <= DIAL)?;
     let (x, rest) = r.split_first_chunk::<32>()?;
     Some((*k, *x, rest))
 }
@@ -457,11 +329,7 @@ impl std::fmt::Debug for Server {
 
 impl ProtocolHandler for Server {
     async fn accept(&self, c: Connection) -> Result<(), AcceptError> {
-        let r = match c.alpn() {
-            ALPN => self.asked(&c).await,
-            _ => self.ring(&c).await,
-        };
-        r.map_err(|e| {
+        self.asked(&c).await.map_err(|e| {
             AcceptError::from_err(std::io::Error::other(e.to_string()))
         })
     }
@@ -490,24 +358,23 @@ fn a_storage_nodes_relay_is_checked_kept_and_told() {
 
 #[test]
 fn frames_are_told_apart() {
-    let f = [&[RING][..], &[7; 32], b"op"].concat();
-    assert_eq!(split(&f), Some((RING, [7; 32], &b"op"[..])));
+    let f = [&[ACK][..], &[7; 32], b"op"].concat();
+    assert_eq!(split(&f), Some((ACK, [7; 32], &b"op"[..])));
     assert_eq!(split(&[DIAL; 33]).map(|x| x.2.len()), Some(0));
-    assert!(split(&[RING + 1; 40]).is_none() && split(&[OP; 32]).is_none());
+    assert!(split(&[DIAL + 1; 40]).is_none() && split(&[OP; 32]).is_none());
     let l = Lane {
         relay: "https://r.example./".parse().unwrap(),
         id: SecretKey::from_bytes(&[1; 32]).public(),
         secret: [2; 32],
     };
-    let push = format!("chatir:ring:x {l} chatir:mentions");
+    let push = format!("{l} chatir:mentions");
     assert!(lane_of(&push) == Some(l));
     assert!(lane_of("chatir:off").is_none());
 }
 
-/// A stranger gets no relays or registration; a device we sync with does,
-/// and only the lane it registered first is its.
+/// A stranger is told no relay; a device we sync with is.
 #[tokio::test(flavor = "multi_thread")]
-async fn only_served_devices_register_here() {
+async fn only_served_devices_are_told_our_relay() {
     let n = u64::from_le_bytes(crate::crypto::rand());
     let dir = std::env::temp_dir().join(format!("chatir-served-{n}"));
     set_relay(&dir, "https://pushir.invalid./").unwrap();
@@ -527,18 +394,8 @@ async fn only_served_devices_register_here() {
         }
     });
     let (x, y) = (ep().bind().await.unwrap(), ep().bind().await.unwrap());
-    let lane = |k: u8| {
-        let relay = "https://r.invalid./".parse().unwrap();
-        Lane { relay, id: x.id(), secret: [k; 32] }.to_string()
-    };
     lock(&served).insert(x.id());
     assert!(relays_of(&y, at.clone()).await.is_err(), "a stranger");
-    assert!(register(&y, at.clone(), &lane(1), &[]).await.is_err());
-    assert!(relays_of(&x, at.clone()).await.is_ok());
-    assert!(register(&x, at.clone(), "pushir:x", &[]).await.is_err());
-    assert!(register(&x, at.clone(), &lane(1), &[]).await.is_ok());
-    lock(&served).insert(y.id());
-    let theirs = register(&y, at, &lane(1), &[]).await;
-    assert!(theirs.is_err(), "x's lane");
+    assert!(relays_of(&x, at).await.is_ok());
     let _ = std::fs::remove_dir_all(dir);
 }

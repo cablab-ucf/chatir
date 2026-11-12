@@ -20,7 +20,7 @@ object Wake {
   /** A call declined from its notification: its caller hears so. */
   @JvmStatic external fun decline(space: String, room: String)
 
-  /** Rung through a storage node, else on our lane alone. */
+  /** Our lane, told to our spaces. */
   @JvmStatic external fun live(ctx: Context, dir: String): String?
 
   /** Hand Android's context back before the activity's runtime takes it. */

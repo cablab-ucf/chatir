@@ -1,8 +1,7 @@
 #!/bin/sh
 # Self-updating chatir: curl -fsSL $R/install.sh | sh [-s -- --server]
-# --server: an always-on storage node instead (a service), which is also
-# its phones' push server (pushir); then --push-relay URL#TOKEN, its
-# phones' quiet relay.
+# --server: an always-on storage node instead (a service); then
+# --push-relay URL#TOKEN, the pushir relay its devices' lanes go on.
 # Fetched by curl, nothing is quarantined: no Gatekeeper, no xattr.
 set -eu
 R=https://github.com/cablab-ucf/chatir/releases/latest/download

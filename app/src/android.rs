@@ -4,7 +4,7 @@ extern crate pushir; // org.pushir.Native, for pushir's Android library
 
 use anyhow::Context;
 use chatir_core::push;
-use chatir_core::wake::News;
+use chatir_core::push::News;
 use chatir_core::{Node, Notice};
 use jni::errors::LogErrorAndDefault as Log;
 use jni::objects::{JByteArray, JClass, JObject, JString};
@@ -201,7 +201,7 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_decline<'l>(
     .resolve::<Log>()
 }
 
-/// Rung through a storage node, else on our lane alone (`live`).
+/// Our lane, told to our spaces (`live`).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_center_cxn_chatir_Wake_live<'l>(
     mut env: EnvUnowned<'l>,
@@ -324,8 +324,8 @@ async fn node(dir: PathBuf) -> anyhow::Result<std::sync::Arc<Node>> {
     crate::boot(crate::config(dir, None, None)?).await
 }
 
-/// Our lane (the phone's mailbox), and our route if a storage node we know
-/// takes it: told to our spaces once a run, and when the mailbox changed.
+/// Our lane (the phone's mailbox), told to our spaces once a run, and when
+/// the mailbox changed.
 /// What comes, comes to `Wake.ring`.
 async fn live(dir: PathBuf) -> anyhow::Result<()> {
     static TOLD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -334,8 +334,7 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
         return Ok(());
     }
     let n = node(dir).await?;
-    let lane = n.pushir().await;
-    n.set_push(lane).await;
+    n.tell_lane().await;
     *TOLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(lane);
     // A minute to tell the spaces, then asleep (unless in sight).
     tokio::spawn(async {

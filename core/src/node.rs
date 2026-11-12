@@ -183,7 +183,6 @@ struct Prefs {
     level: BTreeMap<Id, Level>,
     // Per space, notified (or seen) up to here.
     told: BTreeMap<Id, u64>,
-    push: Option<String>,
 }
 
 /// A storage node's word for one space, from its owners: where members
@@ -730,8 +729,6 @@ pub struct Node {
     // Closed conversations, and when: hidden until something newer.
     closed: Mutex<BTreeMap<Id, u64>>,
     rang: Mutex<HashSet<(Id, Id, Ch)>>,
-    // Push servers that took our route, and the ring tokens.
-    via: Mutex<(Vec<EndpointAddr>, Vec<[u8; 16]>)>,
     name: Mutex<String>,
     events: broadcast::Sender<Event>,
     clock: AtomicU64,
@@ -1047,7 +1044,6 @@ impl Node {
             prefs: Mutex::new(prefs),
             closed: Mutex::new(closed),
             rang: Mutex::default(),
-            via: Mutex::default(),
             name: Mutex::new(cfg.name),
             events: broadcast::channel(1024).0,
             clock: AtomicU64::new(0),
@@ -1206,10 +1202,9 @@ impl Node {
             .accept(HAND, Proto(n.clone()))
             .accept(DIRECT, Proto(n.clone()))
             .accept(call::ALPN, Proto(n));
-        // A storage node rings phones through pushir.
+        // A storage node tells its devices the relay their lanes go on.
         if let Some(p) = &self.server {
-            let r = router.accept(crate::push::ALPN, p.clone());
-            router = r.accept(crate::wake::ALPN, p.clone());
+            router = router.accept(crate::push::ALPN, p.clone());
         }
         let router = router.spawn();
         // The lab's relay down for 10 s: n0's, until it answers again.
@@ -1518,16 +1513,12 @@ impl Node {
     /// A frame on our lane with no node running, read from the phonebook:
     /// an op's news; `Some(None)` to wake for (a member's device wants a
     /// link to us, or a space we do not know yet); `None` for an ack.
-    pub fn news(dir: &Path, b: &[u8]) -> Option<Option<crate::wake::News>> {
+    pub fn news(dir: &Path, b: &[u8]) -> Option<Option<crate::push::News>> {
         let pb: BTreeMap<Id, Page> = store::load(&dir.join("phonebook"));
         let label = |l: &Key| {
             pb.iter().find(|(i, p)| ev_label(i, &p.key) == *l).map(|x| *x.0)
         };
         match crate::push::split(b)? {
-            (crate::push::RING, s, raw) => {
-                let id = pb.contains_key(&Id(s)).then_some(Id(s));
-                Some(id.map(|id| (id, raw.to_vec())))
-            }
             (crate::push::OP, x, raw) => {
                 Some(label(&x).map(|id| (id, raw.to_vec())))
             }
@@ -1543,7 +1534,7 @@ impl Node {
     /// someone the phonebook does not know, or a DM only it can take.
     pub fn woken(
         dir: &Path,
-        (space, raw): &crate::wake::News,
+        (space, raw): &crate::push::News,
     ) -> (Option<Notice>, bool) {
         crate::usage::note(dir, "woken", serde_json::json!({}));
         let pb: BTreeMap<Id, Page> = store::load(&dir.join("phonebook"));
@@ -1665,136 +1656,15 @@ impl Node {
         });
     }
 
-    /// Whether a push server took our route.
-    pub fn pushing(&self) -> bool {
-        !lock(&self.via).0.is_empty()
-    }
-
-    pub fn pushed(&self) -> bool {
-        lock(&self.prefs).push.is_some()
-    }
-
-    /// Our route (a push server took it), or none (our lane alone).
-    pub async fn set_push(self: &Arc<Self>, url: Option<String>) {
-        lock(&self.prefs).push = url;
-        self.save_prefs();
-        self.register().await;
-        // Every time, not only when it changed: each space's code must be
-        // the one a sender accepts now (0.1.0 changed its form).
-        for id in self.spaces() {
-            let _ = self.tell_push(&id).await;
-        }
-        self.phonebook();
-    }
-
-    /// Storage nodes we know: ours, then those keeping our spaces.
-    fn keepers(&self) -> Vec<EndpointAddr> {
-        let mut at: Vec<EndpointAddr> = vec![];
-        let ours = self.stores(&self.own).into_iter().map(|x| x.0);
-        let theirs = self
-            .spaces()
-            .into_iter()
-            .flat_map(|id| self.view(&id, |s| s.holds()).unwrap_or_default());
-        for a in ours.chain(theirs.map(|x| x.0)) {
-            if !at.iter().any(|b| b.id == a.id) {
-                at.push(a);
-            }
-        }
-        at
-    }
-
-    /// Our route, taken by a storage node we know (it rings us), or none.
-    pub async fn pushir(self: &Arc<Self>) -> Option<String> {
-        let lane = crate::push::lane_at(&self.dir)?;
-        let (ep, rings) = (self.up().await.ok()?, self.tokens());
-        for a in self.keepers() {
-            self.met(&a).await;
-            if crate::push::register(&ep, a, &lane, &rings).await.is_ok() {
-                return Some(lane);
-            }
-        }
-        None
-    }
-
-    /// Synced with storage node `a` this run, as it pairs, registers and
-    /// tells its relays to those alone: at once, or after a sync (10 s).
-    async fn met(self: &Arc<Self>, a: &EndpointAddr) {
-        let done = || lock(&self.synced).contains_key(&a.id);
-        if done() {
-            return;
-        }
-        let holds = |id: &Id| self.view(id, |s| s.holds()).unwrap_or_default();
-        let keeps = |sp: &Arc<Space>| {
-            let ours = sp.id == self.own
-                && self.stores(&sp.id).iter().any(|s| s.0.id == a.id);
-            ours || holds(&sp.id).iter().any(|h| h.0.id == a.id)
-        };
-        self.all()
-            .iter()
-            .filter(|s| keeps(s))
-            .for_each(|s| self.sync(s, a.clone()));
-        for _ in 0..100 {
-            if done() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Every space's ring token.
-    fn tokens(&self) -> Vec<[u8; 16]> {
-        let mut rings = vec![];
-        for sp in self.all() {
-            let Some(inv) = &sp.inv else { continue };
-            let t = tag(&lock(&sp.book).key(inv).0);
-            rings.extend(crate::wake::push_token(&self.dir, &sp.id, &t));
-        }
-        rings
-    }
-
-    /// Our route and ring tokens, to each storage node we know that takes
-    /// them: each a push server of ours.
-    async fn register(self: &Arc<Self>) {
-        // Our lane as it is now, if a push server took it before.
-        let served = lock(&self.prefs).push.is_some();
-        let lane = crate::push::lane_at(&self.dir).filter(|_| served);
-        let Some(push) = lane else { return };
-        let rings = self.tokens();
-        let Ok(ep) = self.up().await else { return };
-        let tries = self.keepers().into_iter().map(|a| {
-            let (push, rings, ep) = (&push, &rings, &ep);
-            async move {
-                self.met(&a).await;
-                let r = crate::push::register(ep, a.clone(), push, rings);
-                r.await.map(|_| a)
-            }
-        });
-        let took = n0_future::join_all(tries).await.into_iter().flatten();
-        *lock(&self.via) = (took.collect(), rings);
-    }
-
-    /// Our push, as this space's members should have it: ring codes made
-    /// for the space and its epoch, retired by the next rekey; with none,
-    /// our lane, whose events only members can label.
+    /// Our lane, as this space's members should have it, and how loud we
+    /// are here: its events only members can label.
     async fn tell_push(self: &Arc<Self>, id: &Id) -> Result<()> {
-        let Some(lane) = crate::push::lane_at(&self.dir) else {
+        let Some(url) = crate::push::lane_at(&self.dir) else {
             return Ok(());
         };
         let sp = self.get(id)?;
-        let Some(inv) = &sp.inv else { return Ok(()) };
-        let t = tag(&lock(&sp.book).key(inv).0);
-        // A ring code for each push server that took us (a new one, for a
-        // space joined or rekeyed, registered first), beside our lane; none
-        // took us, our lane alone.
-        let mut url = lane.clone();
-        if lock(&self.prefs).push.is_some() {
-            let k = crate::wake::push_token(&self.dir, id, &t)?;
-            if !lock(&self.via).1.contains(&k) {
-                self.register().await;
-            }
-            let at = lock(&self.via).0.clone();
-            let codes = at.into_iter().map(|a| code("ring", &(a, t, k)));
-            url = codes.chain([lane]).collect::<Vec<_>>().join(" ");
+        if sp.inv.is_none() {
+            return Ok(());
         }
         // How loud we are here: members ring us only for what we would show.
         let url = match self.level(id) {
@@ -1811,8 +1681,7 @@ impl Node {
         Ok(())
     }
 
-    /// Wake sleeping devices: a lane gets `raw` as one labelled event, a
-    /// push server rings until it takes it.
+    /// Wake sleeping devices: each lane gets `raw` as one labelled event.
     fn wake(self: &Arc<Self>, id: &Id, raw: Option<Vec<u8>>) {
         self.wake_who(id, None, raw);
     }
@@ -1848,15 +1717,11 @@ impl Node {
             });
             (all.collect::<Vec<_>>(), labels, at)
         };
-        // Told only by its lane (a desktop's own, a phone's with no push
-        // server): the op on it, as rung by a push server; too big for one,
-        // the space alone (catch up). Again for a minute, as rings are,
-        // until acked (a sleeping one acks nothing: it shows it once).
+        // Told by its lane: the op on it; too big for a frame, the space
+        // alone (catch up). Again for a minute, until acked (a sleeping one
+        // acks nothing: it shows it once).
         for (d, url) in urls.iter().filter(|u| u.0 != dev) {
             let Some(to) = crate::push::lane_of(url) else { continue };
-            if url.contains("chatir:ring:") {
-                continue;
-            }
             let raw = raw.as_deref().unwrap_or_default();
             let full =
                 labels.0.map(|l| [&[crate::push::OP][..], &l, raw].concat());
@@ -1883,28 +1748,6 @@ impl Node {
                     }
                 }
             });
-        }
-        let (news, id) = (Arc::new(raw), *id);
-        for (_, url) in urls.into_iter().filter(|u| u.0 != dev) {
-            // Each of a phone's push servers at once: the first rings it.
-            let rings = url.split_whitespace();
-            for url in rings.filter(|t| t.starts_with("chatir:ring:")) {
-                let (n, news, url) =
-                    (Arc::downgrade(self), news.clone(), url.to_string());
-                tokio::spawn(async move {
-                    // No answer (a phone between networks): retry for a minute.
-                    for wait in [0, 3, 10, 45] {
-                        tokio::time::sleep(Duration::from_secs(wait)).await;
-                        let Some(n) = n.upgrade() else { return };
-                        let raw = news.as_deref();
-                        let Ok(ep) = n.up().await else { continue };
-                        match crate::wake::ring(&ep, &url, &id, raw).await {
-                            Ok(()) => return, // the push server holds it
-                            Err(e) => warn!("wake: {e:#}"),
-                        }
-                    }
-                });
-            }
         }
     }
 
@@ -2870,7 +2713,7 @@ impl Node {
     }
 
     /// What a ring brought (wake.rs): taken as if gossiped.
-    pub fn deliver(self: &Arc<Self>, news: crate::wake::News) {
+    pub fn deliver(self: &Arc<Self>, news: crate::push::News) {
         if let Ok(sp) = self.get(&news.0) {
             self.signaled(&sp, &news.1, self.device());
         }
@@ -3226,8 +3069,7 @@ impl Node {
     /// A message on our lane (`push::split`): from a member's device an
     /// event (an op under its space's label, taken as if dialed and acked
     /// to its author's lane; bare, catch up), its ack, or a dial (iroh up:
-    /// a link is coming); from a push server a ring (the space, then the
-    /// op). Empty, frames may have been missed: catch up.
+    /// a link is coming). Empty, frames may have been missed: catch up.
     pub fn hear(self: &Arc<Self>, b: &[u8]) {
         if b.is_empty() {
             // The mailbox is on its relay (again): our lane, proved anew.
@@ -3241,13 +3083,6 @@ impl Node {
             return;
         }
         match crate::push::split(b) {
-            Some((crate::push::RING, s, raw)) => {
-                let Ok(sp) = self.get(&Id(s)) else { return };
-                match raw.is_empty() {
-                    true => self.catch_up(&sp),
-                    false => self.signaled(&sp, raw, self.device()),
-                }
-            }
             Some((crate::push::OP, l, rest)) => {
                 let env = postcard::from_bytes::<Env>(rest).ok();
                 let Some((sp, k)) = self.labelled(&l, env.as_ref()) else {
@@ -4775,18 +4610,6 @@ impl Node {
             v["wrote"] = wrote.into();
             v
         });
-        type Ring = (EndpointAddr, [u8; 8], [u8; 16]);
-        let rings = push
-            .into_iter()
-            .filter_map(|(d, r)| Some((d, uncode::<Ring>("ring", &r).ok()?.0)));
-        let pushes = rings.map(|(d, to)| async move {
-            let server = to.id;
-            let mut v = self.probe(to, crate::wake::ALPN).await;
-            v["for"] = d.fmt_short().to_string().into();
-            v["server"] = server.fmt_short().to_string().into();
-            v["name"] = self.label(&server).into();
-            v
-        });
         let relay = self.ep().map(|e| e.home_relay_status().get());
         let relay = relay.iter().flatten().map(
             |s| serde_json::json!({ "url": s.url(), "up": s.is_connected() }),
@@ -4800,7 +4623,6 @@ impl Node {
             "lane": lane,
             "wakes": self.wakes(),
             "devices": n0_future::join_all(devices).await,
-            "push": n0_future::join_all(pushes).await,
         })
     }
 

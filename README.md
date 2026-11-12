@@ -87,29 +87,29 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   keys its node left, with no connection opened. Typing, presence and
   reads go only to devices that are up.
 - **Storage nodes** keep ciphertext, never keys, so messages wait while
-  everyone is offline; they keep only epochs their owners name. Each is a
-  push server: phones register their mailbox with it, and it rings them
-  on their lanes. Without one, a phone is rung on its lane (retried at 3,
-  10, 45 s). The lab's relay keeps a frame until its mailbox has it (64, a
-  day); a phone away longer catches up as it opens.
+  everyone is offline; they keep only epochs their owners name. A phone is
+  rung on its lane by whoever writes (retried at 3, 10, 45 s); one away
+  longer catches up with its storage nodes as it opens. A storage node
+  tells its devices the relay their lanes go on, if it runs one.
 - **Calls** are a QUIC mesh: Opus datagrams; video in the best codec all
   decode (AV1, VP9, VP8 or H.264). Native voice uses WebRTC's echo
   canceller (sonora), except on iPhones.
 
 | network | terminal (app env) | who else is involved |
 |---|---|---|
-| default | | irpush.cxn.center (pushes; a storage node's own first), iroh.cxn.center (links); n0's relay only while that is down; no DNS, no lookup service |
+| default | | irpush.cxn.center (pushes and links; pushes on a storage node's own first), then iroh.cxn.center, then n0's relay, each only while those before are down; no DNS, no lookup service |
 | own relays | `--relay URL` (`CHATIR_RELAY`) | your relays |
 | LAN only | `--lan` (`CHATIR_LAN=1`) | nobody (mDNS) |
 
 The endpoint is [irnet](https://github.com/cablab-ucf/irnet)'s, as in every
-app of the lab. With no lookup service, a device is dialed on the relays
-links home on and at the addresses it was met at. If either relay is down
-the other carries on: without pushes iroh stays up and is dialed; without
-the link relay small ops still travel by lane, and links move to n0's
-within 10 s. A device proves its lane every few minutes (a frame to
-itself through the relay) and lets iroh sleep only behind one that
-answered. Relays are open; a relay key (from whoever runs it) lifts its
+app of the lab: it homes on irpush.cxn.center (the relay with post-quantum
+TLS), joins iroh.cxn.center once that has not answered for 10 s, then
+n0's, and returns as soon as a better one answers. With no lookup service,
+a device is dialed on the lab's relays, on ours of the moment, and at the
+addresses it was met at. A device proves its lane every five minutes (a
+frame to itself through the relay) and lets iroh sleep only behind one
+that answered: with pushes down, iroh stays up and is dialed.
+Relays are open; a relay key (from whoever runs it) lifts its
 rate limit for relayed traffic.
 
 ## Security and limits
@@ -122,9 +122,8 @@ rate limit for relayed traffic.
 - Authors date their own ops (at most ten minutes ahead), so a demoted
   admin's backdated ops stand until undone.
 - A linked device is you: lost, it is retired with the whole identity.
-- A push server learns when a ring comes and for which space; pushir's
-  relay learns when and the phone's address. Ring tokens and labels are
-  per space and die with a rekey.
+- pushir's relay learns when a device is sent to and its address, not by
+  whom, for which space, or how much. A space's labels die with a rekey.
 - Presence is said, not polled: a device that dies without `Gone` looks
   present for about an hour.
 - An iPhone in the background is not told of messages (no APNs host).

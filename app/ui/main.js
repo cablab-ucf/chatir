@@ -1010,13 +1010,11 @@ const chime = () =>
 const ringing = () => S.silent || tone([[440, 0, 2], [480, 0, 2]], 0.07);
 const ringback = () => tone([[440, 0, 2], [480, 0, 2]], 0.04);
 
-/** The doctor's answer in a line: each device and push server, timed. */
+/** The doctor's answer in a line: each device, timed. */
 const reach = (d) => [
   ...d.devices.map((x) => `${x.name ?? x.device}: ` + (x.ms == null
     ? "unreachable" : `${x.ms} ms, ${x.path === "direct" ? "direct" : "relayed"}`)),
-  ...d.push.map((x) => `push via ${x.name ?? x.server}: ` +
-    (x.ms == null ? "unreachable" : `${x.ms} ms`)),
-].join(" · ") || "no device or push server of theirs known";
+].join(" · ") || "no device of theirs known";
 
 /** A DM call of ours, alone in it: is it reaching them, ringing there,
  * or not getting through (and why, from the doctor)? Ringback only once

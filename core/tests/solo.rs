@@ -137,7 +137,6 @@ fn told(a: &Node, id: &Id, b: &Node, how: &str) -> bool {
     let lane = |u: &String| u.contains("pushir:") && u.contains(how);
     chatir_core::push::lane_at(a.dir()).is_some()
         && p.iter().any(|p| lane(&p.1))
-        && !b.pushing()
 }
 
 fn general(n: &Node, id: &Id) -> Ch {

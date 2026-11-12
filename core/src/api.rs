@@ -214,7 +214,6 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
             });
             json!({
                 "id": id, "name": name, "invisible": invisible, "call": call,
-                "push": n.pushed(),
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": n.device().fmt_short().to_string(),
                 "endpoint": n.device(),

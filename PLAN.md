@@ -22,9 +22,8 @@ nearly silent and makes a NAT'd device reachable by id.
   else on a mailbox of its own. pushir seals each frame under the lane's
   secret and pads it to 1024 bytes: the relay routes it and reads nothing.
 - A message is `kind ‖ 32 bytes ‖ rest`: an op under its space's label,
-  its ack (a MAC only a member makes), a dial (start iroh, a link comes),
-  or a storage node's ring (the space, then the op). Empty, the mailbox is
-  back from a gap: catch up.
+  its ack (a MAC only a member makes), or a dial (start iroh, a link
+  comes). Empty, the mailbox is back from a gap: catch up.
 - One relay connection carries a burst and closes 20 s after its last
   frame. An unacked op is dialed after 3 s, and its ack still counts late.
 - A lane is trusted only while it answers: every five minutes, and each
@@ -34,23 +33,25 @@ nearly silent and makes a NAT'd device reachable by id.
 - iroh 1.4.1 cannot drop its home relay at runtime, so sleeping is closing
   the endpoint and waking is binding it again (same key, same port).
 
-## Relays: two, each enough alone
+## Relays: best first, each enough alone
 
-irnet binds the endpoint, as for every app of the lab: links home on
-iroh.cxn.center, on n0's relay only while that is down (`irnet::fallback`:
-10 s without it, back as soon as it answers), every handshake post-quantum
-or refused. Pushes ride irpush.cxn.center, or a storage node's own relay.
-No lookup service is asked where a device is (n0's DNS learned who looks
-for whom): a device is dialed on the relays links home on, on ours of the
-moment, and at the addresses it was met at. Our own relays (`--relay`)
-carry both. Relays are open; abuse is bounded by per-client rates,
-connection caps and idle timeouts, and a key from whoever runs one lifts
-its rate limit.
+irnet binds the endpoint, as for every app of the lab, on the best relay
+that answers: irpush.cxn.center (pushir's: X25519MLKEM768, a ping hours
+apart), then iroh.cxn.center (a stock relay: X25519 only on that hop),
+then n0's. The next joins once those before it have not answered for 10 s
+and leaves as soon as a better one answers (`irnet::fallback`). A peer's
+handshake is post-quantum or refused, whatever the relay. Lanes ride
+irpush.cxn.center too, or a storage node's own relay. No lookup service
+is asked where a device is (n0's DNS learned who looks for whom): a device
+is dialed on the lab's relays, on ours of the moment, and at the addresses
+it was met at. Our own relays (`--relay`) carry both. Relays are open;
+abuse is bounded by per-client rates, connection caps and idle timeouts,
+and a key from whoever runs one lifts its rate limit.
 
 | down | what still works |
 |---|---|
-| irpush.cxn.center | iroh stays up on every device and is dialed; rings through storage nodes fail, syncs do not |
-| iroh.cxn.center | small ops by lane; links on n0's relay within 10 s, and direct |
+| irpush.cxn.center | no lanes: iroh stays up on every device, homed on iroh.cxn.center within 10 s, and is dialed |
+| iroh.cxn.center | everything: it is only the second home |
 | both | links on n0's relay and direct; iroh stays up |
 
 ## Waking: only for what would show
@@ -59,8 +60,10 @@ A sleeping device is rung for DMs, calls and posts at its notification
 level, with the sealed op itself, and shows it without starting its node.
 Levels belong to the account (its own space, kept by storage nodes);
 Silent belongs to the device. Typing, presence and reads go only to
-devices that are up. The lab's relay keeps a frame until its mailbox has
-it (64, a day); past that, the phone catches up as it opens.
+devices that are up. A frame is sent again at 3, 10 and 45 s until acked;
+a phone away longer catches up as it opens. pushir's relay can keep a
+frame until its mailbox has it (`relay-hold`); irpush.cxn.center as
+deployed does not yet (TODO).
 
 ## Delivery by device list
 
@@ -69,12 +72,11 @@ each device (who wrote, storage nodes, devices met, our own); a sync is
 how a device is first met. Larger spaces still gossip; gossip's code goes
 if no space needs it, or storage nodes take over fan-out (TODO).
 
-## Push servers that form themselves
+## No push servers
 
-Every storage node is a push server. A phone registers its lane with the
-storage nodes it syncs with; members ring all at once, so a ring gets through while any is
-up. Ring tokens are per space and epoch: a rekey cuts off
-whoever it left out.
+A storage node used to ring phones for members. It queued nothing and
+sent through the same relay a member reaches itself, so it added a hop
+and a registry of phones: gone. A storage node keeps ops; a lane wakes.
 
 ## Short codes
 
@@ -91,8 +93,6 @@ adds an Argon2id layer. If someone else spends a code, its giver is told.
   personal desktop reachable through iroh (TODO).
 - Probe only on a network change; patch iroh's fixed timers until upstream
   (#4589, #4590, #4651) makes them configurable.
-- Rings through storage nodes may go: a lane is sealed and its relay
-  keeps frames, which is all a push server added.
 - One DM per person, histories merged.
 - Later, if simple: Tor or Nym routing, scheduled rekeys and per-sender
   chains, safety numbers, per-device keys, an outside audit.
