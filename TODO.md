@@ -32,20 +32,33 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] The fold filters a batch against the state before it: an unban and
-      the unbanned's post in one sync leave the post refused for good
 - [ ] A storage node charges a file to the day's budget when asked, not
       when it has it; files and ops share one budget
 - [ ] A demoted admin backdates admin ops (authors date their own)
 - [ ] `--web`: the token is permanent, and the link through irp's page
       hands it to that page; a token per run, the link behind its own flag
-- [ ] Images load on sight up to 25 MB each, with no pixel bound
 - [ ] The installers check a signature's file, not its version, and
       nothing where minisign is absent
 - [ ] Android: FLAG_SECURE under "private"; the caller's name shows on a
-      locked screen; `hold`/`release` of the context race
-- [ ] Build the Android project (pushir's library under
-      `android.builtInKotlin=false`: build.gradle.kts applies its plugin)
+      locked screen
+- [ ] Build the Android project's Kotlin and Gradle (its Rust, `android.rs`
+      and pushir's JNI, passes clippy for aarch64-linux-android)
+- [ ] iOS: the data folder (seed, device key) goes to iCloud and computer
+      backups: `NSURLIsExcludedFromBackupKey` on it, as Android's no_backup
+- [ ] A member's `Reply::Out` shows a device locked until a sync says
+      otherwise: answer with the excluding `Rekey` itself, not a word
+- [ ] Every control op refolds all of them: a member's flood of ops only
+      an admin's count (Rename, Channel) is quadratic; profiles keep four
+- [ ] A stolen seed's thief, retired by `Burn`, still posts ops dated
+      before it (authors date their own)
+- [ ] `--web` saves files up to 25 MB (`file` is in memory): a streaming GET
+- [ ] The page's CSP and Tauri capabilities, narrowed to what it uses
+      (`ipc:` only in connect-src; event and clipboard alone): run it after
+- [ ] Alerts shows chatir's battery exemption, not that of the app that
+      holds pushir's connection (`Pushir.ask` asks for it; pushir exposes
+      no owner to show)
+- [ ] File transfers run at a stranger's 8 MiB window: iroh-blobs' pooled
+      connections get no `irnet::wide`
 
 ## Delivery
 - [ ] One DM per person: one row, histories merged; `dm` and calls use the
