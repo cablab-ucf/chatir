@@ -23,9 +23,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [ ] A desktop daemon's relay is assumed pushir's (`pushir::relay`)
 - [ ] pushir on Windows has no daemon (`local` is Unix's): each app holds
       a mailbox of its own there
-- [ ] **Deploy `relay-hold` to irpush.cxn.center** (pushir: `make update`):
-      as deployed it keeps no frame for a mailbox that is away (tested), so
-      a phone off for over a minute hears nothing until it opens
 - [ ] A dial frame that carries the dialer's address, answered with the
       callee's: reach whoever homes on a relay we did not guess
 - [ ] Measure the lane's proof (a frame to ourselves every five minutes)
@@ -76,3 +73,5 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [x] irnet's endpoint, n0's relay only as its fallback, no lookup service
 - [x] One relay connection per burst; iroh sleeps only behind a proved lane
 - [x] No push servers: a lane wakes, a storage node keeps
+- [x] irpush.cxn.center keeps a frame for a mailbox that is away (seen
+      after 90 s, 2026-11-12)
