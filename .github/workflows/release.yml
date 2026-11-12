@@ -22,12 +22,36 @@ permissions:
 concurrency: release-${{ inputs.tag || github.ref_name }}
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0 # nothing here builds twice
+  CARGO_NET_RETRY: 10
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # In seconds, not after every build: the keys `publish` signs with are
+  # here. It checks out nothing and runs no code of ours.
+  preflight:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 5
+    steps:
+      - name: The signing keys are set
+        env:
+          A: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          B: ${{ secrets.ANDROID_KEYSTORE != '' }}
+          C: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          miss=
+          [ "$A" = true ] || miss="$miss TAURI_SIGNING_PRIVATE_KEY"
+          [ "$B" = true ] || miss="$miss ANDROID_KEYSTORE"
+          [ "$C" = true ] || miss="$miss ANDROID_KEYSTORE_PASSWORD"
+          [ -z "$miss" ] ||
+            { echo "::error::not set in the release environment:$miss"; exit 1; }
+
   # Beside the builds: nothing is signed or published until they pass.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env: { CARGO_INCREMENTAL: 0, CARGO_PROFILE_DEV_DEBUG: line-tables-only }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,6 +81,7 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin, arch: aarch64 }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,6 +147,7 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Room for the build
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup
@@ -141,6 +167,16 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      # Gradle's distribution and every dependency it resolved: minutes of
+      # downloads, once.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('app/gen/android/**/*.gradle*',
+            'app/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
       - uses: ./.github/actions/cargo-tauri
       - name: The tag is the version
         run: |
@@ -162,6 +198,7 @@ jobs:
 
   ios:
     runs-on: macos-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -299,8 +336,9 @@ jobs:
   # nothing: tauri's signer, Tauri's build, arrives before the key.
   # An iPhone build that fails leaves out the IPA, not the release.
   publish:
-    needs: [test, desktop, android, ios, apple]
+    needs: [preflight, test, desktop, android, ios, apple]
     if: ${{ !cancelled() && needs.test.result == 'success'
+      && needs.preflight.result == 'success'
       && needs.desktop.result == 'success'
       && needs.android.result == 'success'
       && needs.apple.result != 'failure' }}
