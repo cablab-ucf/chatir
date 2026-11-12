@@ -1,5 +1,5 @@
 {
-  description = "irch: private, peer-to-peer community chat over iroh";
+  description = "chatir: private, peer-to-peer community chat over iroh";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   outputs = { self, nixpkgs }:
     let
@@ -7,8 +7,8 @@
         (s: f nixpkgs.legacyPackages.${s});
     in {
       packages = each (pkgs: rec {
-        irch = pkgs.callPackage ./package.nix { };
-        default = irch;
+        chatir = pkgs.callPackage ./package.nix { };
+        default = chatir;
       });
       nixosModules.default = ./nixos.nix;
     };

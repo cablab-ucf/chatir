@@ -1,33 +1,31 @@
-//! Short codes (`k7m-x9q-p3a`) for an invite or a link code: irpair's (one
-//! minute, one try; the long code sealed to the taker's fresh X-Wing key,
+//! Short codes (`k7m-x9q-p3a-b2c`) for an invite or a link code: pairir's (one
+//! minute, one try, CPace; the long code sealed to the taker's fresh X-Wing key,
 //! an optional password one layer more).
 
-use crate::{Net, node::endpoint};
-use anyhow::{Result, ensure};
+use crate::Net;
+use anyhow::{Result, bail, ensure};
+use pairir::End;
 
-/// A code is irch's alone: irpair salts it with this.
-const APP: &str = "irch";
+/// A code is chatir's alone: pairir salts it with this.
+const APP: &str = "chatir";
 
-/// Where a giver homes: the relays we would.
-fn relays(net: &Net) -> Vec<iroh::RelayUrl> {
+/// Where giver and taker meet: our own relays, or (none) the lab's.
+fn relays(net: &Net) -> Result<Vec<iroh::RelayUrl>> {
     match net {
-        Net::Default => {
-            crate::node::RELAYS.iter().filter_map(|r| r.parse().ok()).collect()
-        }
-        Net::Relay(r) => r.clone(),
-        _ => vec![],
+        Net::Default => Ok(vec![]),
+        Net::Relay(r) => Ok(r.clone()),
+        _ => bail!("a short code is met at a relay: use the long code"),
     }
 }
 
-/// A short code for `long` (an invite or link code), answered a minute;
-/// with a password, the taker needs it too.
+/// A short code for `long` (an invite or link code), answered a minute,
+/// and how it ends; with a password, the taker needs it too.
 pub async fn give(
     net: &Net,
     long: String,
     password: Option<String>,
-) -> Result<String> {
-    let ep = endpoint(net, None);
-    irpair::give(ep, APP, long.as_bytes(), password.as_deref()).await
+) -> Result<(String, tokio::task::JoinHandle<End>)> {
+    pairir::give(&relays(net)?, APP, long.as_bytes(), password.as_deref()).await
 }
 
 /// The long code a short one stands for, while its giver answers.
@@ -36,10 +34,9 @@ pub async fn take(
     code: &str,
     password: Option<&str>,
 ) -> Result<String> {
-    let ep = endpoint(net, None);
-    let long = irpair::take(ep, &relays(net), APP, code, password).await?;
+    let long = pairir::take(&relays(net)?, APP, code, password).await?;
     let long = String::from_utf8(long.to_vec())?;
-    ensure!(long.starts_with("irch:"), "not an irch code");
+    ensure!(long.starts_with("chatir:"), "not a chatir code");
     Ok(long)
 }
 
@@ -53,14 +50,16 @@ async fn a_short_code_hands_over_its_long_one() {
     let relay = Server::spawn(cfg).await.unwrap();
     let url = format!("http://{}/", relay.http_addr().unwrap());
     let net = Net::Relay(vec![url.parse().unwrap()]);
-    let long = "irch:invite:abc".to_string();
-    let code = give(&net, long.clone(), None).await.unwrap();
-    assert_eq!(code.len(), 11, "xxx-xxx-xxx");
+    let long = "chatir:invite:abc".to_string();
+    let (code, end) = give(&net, long.clone(), None).await.unwrap();
+    assert_eq!(code.len(), 15, "xxx-xxx-xxx-xxx");
     assert_eq!(take(&net, &code.to_uppercase(), None).await.unwrap(), long);
+    assert_eq!(end.await.unwrap(), End::Taken);
     assert!(take(&net, &code, None).await.is_err(), "spent");
+    assert!(give(&Net::Lan, long.clone(), None).await.is_err(), "no relay");
     // With a password: the taker needs it too.
     let pw = Some("horse battery".to_string());
-    let code = give(&net, long.clone(), pw).await.unwrap();
+    let (code, _) = give(&net, long.clone(), pw).await.unwrap();
     let got = take(&net, &code, None).await;
     assert!(got.unwrap_err().to_string().contains("has a password"));
     let got = take(&net, &code, Some("wrong")).await;

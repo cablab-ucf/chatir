@@ -16,12 +16,12 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 37
-    namespace = "dev.irch.chat"
+    namespace = "center.cxn.chatir"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        // irpush: one mailbox per phone, shared with pasa (same group).
-        manifestPlaceholders["irpushGroup"] = "center.cxn"
-        applicationId = "dev.irch.chat"
+        // pushir: one mailbox per phone, shared with pasa (same group).
+        manifestPlaceholders["pushirGroup"] = "center.cxn"
+        applicationId = "center.cxn.chatir"
         // AAudio, for the call's voice: Android 8.
         minSdk = 26
         targetSdk = 37
@@ -81,7 +81,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
-    implementation(project(":irpush"))
+    implementation(project(":pushir"))
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

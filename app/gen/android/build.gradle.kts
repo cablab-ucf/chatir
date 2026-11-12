@@ -16,6 +16,17 @@ allprojects {
     }
 }
 
+// pushir's library leaves Kotlin to AGP 9, which Tauri's plugins switch off
+// (gradle.properties: android.builtInKotlin=false): its plugin, from here.
+project(":pushir") {
+    plugins.withId("com.android.library") {
+        apply(plugin = "org.jetbrains.kotlin.android")
+        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+            compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+    }
+}
+
 tasks.register("clean").configure {
     delete("build")
 }

@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# pushir's JNI (Java_org_pushir_Native_*, in our native library) is found
+# by name.
+-keep class org.pushir.Native { *; }

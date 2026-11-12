@@ -7,7 +7,7 @@
 set -eu
 apk=$1
 out=${2:-evidence}
-pkg=dev.irch.chat
+pkg=center.cxn.chatir
 mkdir -p "$out"
 
 ui() {
@@ -44,11 +44,11 @@ tap() {
 }
 
 adb install -r -g "$apk"
-# As if Allow was chosen when irch asks to run unrestricted.
+# As if Allow was chosen when chatir asks to run unrestricted.
 adb shell dumpsys deviceidle whitelist +"$pkg" >/dev/null
 adb logcat -c
 adb shell am start -W -n "$pkg/.MainActivity"
-see 'Welcome to irch' 90 || fail "UI never showed the welcome screen"
+see 'Welcome to chatir' 90 || fail "UI never showed the welcome screen"
 grep -q 'could not start' "$out/ui.xml" && fail "the client failed to start"
 first=$(pid)
 [ -n "$first" ] || fail "process died after launch"
@@ -64,7 +64,7 @@ adb shell input keyevent KEYCODE_ENTER
 see 'general' 30 || fail "space was not created"
 adb exec-out screencap -p >"$out/2-space.png"
 
-# Back opens the drawer, then sends irch to the background without stopping it.
+# Back opens the drawer, then sends chatir to the background without stopping it.
 adb shell input keyevent KEYCODE_BACK
 sleep 2
 adb shell input keyevent KEYCODE_BACK
@@ -86,7 +86,7 @@ sleep 5
 adb exec-out screencap -p >"$out/5-call.png"
 
 adb logcat -d >"$out/logcat.txt"
-# irch's crashes, not the test tools' (uiautomator's own die at times).
+# chatir's crashes, not the test tools' (uiautomator's own die at times).
 if grep -A1 'FATAL EXCEPTION' "$out/logcat.txt" | grep "Process: $pkg" ||
   grep 'panicked at' "$out/logcat.txt"; then
   fail "crash in the device log"

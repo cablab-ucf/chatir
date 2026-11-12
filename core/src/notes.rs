@@ -1,4 +1,4 @@
-//! Messages and threads into Markdown notes, linked back by irch://.
+//! Messages and threads into Markdown notes, linked back by chatir://.
 
 use crate::{Ch, Id, State};
 use anyhow::{Result, ensure};
@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Component, Path};
 
 pub fn link(space: &Id, ch: &Ch, id: &Id) -> String {
-    format!("irch://open/{space}/{ch}/{id}")
+    format!("chatir://open/{space}/{ch}/{id}")
 }
 
 /// A `- [ ]` task, an event (not a task, with a time: loroh's calendar),
@@ -99,6 +99,8 @@ fn tame(s: &str) -> String {
         let l = l.split_inclusive(char::is_whitespace).map(word);
         format!("{ind}{}", l.collect::<String>())
     };
+    // No tag either: a viewer that renders HTML would load what it names.
+    let s = s.replace('<', "\\<");
     let s = s.replace("![", "\\![").replace("```", "\\`\\`\\`");
     let s = s.replace("~~~", "\\~~~");
     s.lines().map(line).collect::<Vec<_>>().join("\n")
@@ -140,7 +142,7 @@ pub fn append(vault: &Path, file: &str, md: &str) -> Result<()> {
     let p = vault.join(rel);
     let name = p.file_name().unwrap_or_default().to_string_lossy();
     let r = data_encoding::HEXLOWER.encode(&crate::crypto::rand::<8>());
-    let tmp = p.with_file_name(format!(".{name}.{r}.irch"));
+    let tmp = p.with_file_name(format!(".{name}.{r}.chatir"));
     fs::create_dir_all(p.parent().unwrap_or(vault))?;
     let old = fs::read_to_string(&p).unwrap_or_default();
     let gap = match () {
@@ -202,7 +204,7 @@ fn messages_and_threads_become_markdown() {
     assert!(thread.starts_with("## zero-g crystals\n\n- **ann**: zero-g"));
     assert!(thread.contains("\n  why not\n- **ann**: I can help\n"));
     assert!(thread.ends_with(&format!("\n— {at}\n")));
-    let dir = std::env::temp_dir().join(format!("irch-notes-{}", o.0[0]));
+    let dir = std::env::temp_dir().join(format!("chatir-notes-{}", o.0[0]));
     let _ = fs::remove_dir_all(&dir);
     append(&dir, "Lab/Ideas.md", "a\n").unwrap();
     append(&dir, "Lab/Ideas.md", "b\n").unwrap();
@@ -230,7 +232,7 @@ fn messages_and_threads_become_markdown() {
         let out = dir.join("outside");
         fs::write(&out, "mine").unwrap();
         let lab = dir.join("Lab");
-        std::os::unix::fs::symlink(&out, lab.join(".Ideas.md.irch")).unwrap();
+        std::os::unix::fs::symlink(&out, lab.join(".Ideas.md.chatir")).unwrap();
         std::os::unix::fs::symlink(&lab, lab.join("loop")).unwrap();
         append(&dir, "Lab/Ideas.md", "c\n").unwrap();
         assert_eq!(fs::read_to_string(&out).unwrap(), "mine");

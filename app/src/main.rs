@@ -2,7 +2,7 @@
 
 fn main() {
     // Wayland: WebKitGTK's DMA-BUF renderer asks for buffers some drivers
-    // (NVIDIA's above all) cannot give, and the compositor drops irch:
+    // (NVIDIA's above all) cannot give, and the compositor drops chatir:
     // "Error 71 (Protocol error)". Off unless set; a chat needs no more.
     #[cfg(target_os = "linux")]
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -18,5 +18,5 @@ fn main() {
             }
         }
     }
-    irch_app::run()
+    chatir_app::run()
 }

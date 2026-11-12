@@ -1,84 +1,95 @@
-# Imported, the app and a storage node at irch's latest release: its source
-# checked against irch's signing key, then built here, hourly. Everyone with
-# a home in /home pairs their irch with the node in one step. To leave out:
-#   programs.irch.enable = false;     # the app, and `irch` in a terminal
-#   services.irch.enable = false;     # the storage node, always on
-#   sudo cat /run/irch/code           # the storage code, for others
+# Imported, the app and a storage node at chatir's latest release: its source
+# checked against chatir's signing key, then built here, hourly. Everyone with
+# a home in /home pairs their chatir with the node in one step. To leave out:
+#   programs.chatir.enable = false;     # the app, and `chatir` in a terminal
+#   services.chatir.enable = false;     # the storage node, always on
+#   sudo cat /run/chatir/code           # the storage code, for others
 { config, lib, pkgs, ... }:
 let
-  cfg = config.services.irch;
+  cfg = config.services.chatir;
   pinned = pkgs.callPackage ./package.nix { };
-  latest = "https://github.com/cab-ucf/irch/releases";
+  latest = "https://github.com/cablab-ucf/chatir/releases";
   key = "RWSPfztwzR/MhakRL6cA70pN03n/nMCdTvoY5UHC2IcZuhcR+41RQI95";
   # The newer of the release built here and the flake's own (a branch, or
   # main ahead of a release): equal, the flake's.
   pick = bin: lib.hiPrio (pkgs.writeShellScriptBin bin ''
-    b=/var/lib/irch-app/app/bin/${bin} v=$(cat /var/lib/irch-app/built 2>/dev/null)
+    b=/var/lib/chatir-app/app/bin/${bin} v=$(cat /var/lib/chatir-app/built 2>/dev/null)
     [ -x "$b" ] && [ "$(printf '%s\n' "$v" ${pinned.version} | sort -V | tail -1)" != ${pinned.version} ] ||
       b=${pinned}/bin/${bin}
     exec "$b" "$@"
   '');
 in {
   options = {
-    programs.irch.enable = lib.mkEnableOption
-      "irch, the app and terminal client, kept up to date" // { default = true; };
+    programs.chatir.enable = lib.mkEnableOption
+      "chatir, the app and terminal client, kept up to date" // { default = true; };
     # The app at login, in the tray.
-    programs.irch.autostart = lib.mkOption {
+    programs.chatir.autostart = lib.mkOption {
       type = lib.types.bool;
       default = true;
     };
-    services.irch.enable = lib.mkEnableOption
-      "an always-on irch storage node, kept up to date" // { default = true; };
-    # Accounts that read the node's code in /run/irch, to pair unasked.
-    services.irch.users = lib.mkOption {
+    services.chatir.enable = lib.mkEnableOption
+      "an always-on chatir storage node, kept up to date" // { default = true; };
+    # Accounts that read the node's code in /run/chatir, to pair unasked.
+    services.chatir.users = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = lib.attrNames (lib.filterAttrs
         (_: u: u.isNormalUser && lib.hasPrefix "/home/" u.home) config.users.users);
       defaultText = "everyone with a home in /home";
     };
-    # A file holding irpush's relay for this node's devices, from irpush's
-    # deploy/: "https://irpush.you.example". Given to the node as a systemd
+    # A file holding pushir's relay for this node's devices, from pushir's
+    # deploy/: "https://pushir.you.example". Given to the node as a systemd
     # credential. Unset, irpush.cxn.center.
-    services.irch.pushRelayFile = lib.mkOption {
+    services.chatir.pushRelayFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "/run/secrets/irch-push-relay";
+      example = "/run/secrets/chatir-push-relay";
     };
-    services.irch.signers = lib.mkOption {
+    services.chatir.signers = lib.mkOption {
       type = lib.types.lines; default = ""; visible = false;
     };
   };
 
-  config = lib.mkIf (cfg.enable || config.programs.irch.enable) (lib.mkMerge [
+  config = lib.mkIf (cfg.enable || config.programs.chatir.enable) (lib.mkMerge [
     {
       assertions = [{
         assertion = cfg.pushRelayFile == null
           || !lib.hasPrefix builtins.storeDir cfg.pushRelayFile;
-        message = "services.irch.pushRelayFile: a path outside the Nix store (it is world-readable)";
+        message = "services.chatir.pushRelayFile: a path outside the Nix store (it is world-readable)";
       }];
       warnings = lib.optional (cfg.signers != "")
-        "services.irch.signers does nothing now (irch's own key checks releases): delete it";
-      users.users.irch = {
-        isSystemUser = true; group = "irch"; home = "/var/lib/irch";
+        "services.chatir.signers does nothing now (chatir's own key checks releases): delete it";
+      users.users.chatir = {
+        isSystemUser = true; group = "chatir"; home = "/var/lib/chatir";
       };
-      users.groups.irch.members = cfg.users;
+      users.groups.chatir.members = cfg.users;
       # Apart from the node: taken over, it cannot swap what all here run.
-      users.users.irch-update = {
-        isSystemUser = true; group = "irch-update"; home = "/var/lib/irch-app";
+      users.users.chatir-update = {
+        isSystemUser = true; group = "chatir-update"; home = "/var/lib/chatir-app";
       };
-      users.groups.irch-update = { };
+      users.groups.chatir-update = { };
 
       # Only source signed as this very release, never an older one.
-      systemd.services.irch-update = {
+      systemd.services.chatir-update = {
         startAt = "hourly";
         wants = [ "network-online.target" ];
         after = [ "network-online.target" ];
         path = with pkgs; [ curl jq minisign gnutar gzip coreutils gnused git nix ];
-        environment.HOME = "/var/lib/irch-app";
+        environment.HOME = "/var/lib/chatir-app";
         serviceConfig = {
-          Type = "oneshot"; User = "irch-update";
-          WorkingDirectory = "/var/lib/irch-app";
-          StateDirectory = "irch-app"; StateDirectoryMode = "0755";
+          Type = "oneshot"; User = "chatir-update";
+          WorkingDirectory = "/var/lib/chatir-app";
+          StateDirectory = "chatir-app"; StateDirectoryMode = "0755";
+          # It reads the network before any signature is checked, and what
+          # it builds is what everyone here runs: its own state, the nix
+          # daemon's socket, and nothing else.
+          NoNewPrivileges = true; ProtectSystem = "strict"; ProtectHome = true;
+          PrivateTmp = true; PrivateDevices = true; CapabilityBoundingSet = "";
+          ProtectKernelTunables = true; ProtectKernelModules = true;
+          ProtectKernelLogs = true; ProtectControlGroups = true;
+          ProtectClock = true; ProtectHostname = true; LockPersonality = true;
+          RestrictSUIDSGID = true; RestrictRealtime = true;
+          RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+          SystemCallArchitectures = "native";
         };
         script = ''
           v=$(curl -fsSL ${latest}/latest/download/latest.json | jq -r .version)
@@ -104,39 +115,39 @@ in {
         '';
       };
       # Soon after it is enabled, not just on the hour.
-      systemd.timers.irch-update.timerConfig.OnBootSec = "2min";
+      systemd.timers.chatir-update.timerConfig.OnBootSec = "2min";
     }
 
-    (lib.mkIf config.programs.irch.enable {
-      environment.systemPackages = [ pinned (pick "irch-app") (pick "irch") ];
-      environment.etc."xdg/autostart/irch.desktop" =
-        lib.mkIf config.programs.irch.autostart {
+    (lib.mkIf config.programs.chatir.enable {
+      environment.systemPackages = [ pinned (pick "chatir-app") (pick "chatir") ];
+      environment.etc."xdg/autostart/chatir.desktop" =
+        lib.mkIf config.programs.chatir.autostart {
           text = ''
             [Desktop Entry]
             Type=Application
-            Name=irch
-            Exec=irch-app --hidden
+            Name=chatir
+            Exec=chatir-app --hidden
             NoDisplay=true
           '';
         };
     })
 
     (lib.mkIf cfg.enable {
-      systemd.services.irch = {
+      systemd.services.chatir = {
         wantedBy = [ "multi-user.target" ];
         wants = [ "network-online.target" ];
         after = [ "network-online.target" ];
         serviceConfig = {
-          User = "irch";
+          User = "chatir";
           ExecStart =
-            "${pick "irch"}/bin/irch --serve --dir /var/lib/irch/data";
+            "${pick "chatir"}/bin/chatir --serve --dir /var/lib/chatir/data";
           Restart = "always"; RestartSec = 5;
           NoNewPrivileges = true; PrivateTmp = true; PrivateDevices = true;
           ProtectSystem = "strict"; ProtectHome = true;
-          StateDirectory = "irch/data"; StateDirectoryMode = "0700";
-          RuntimeDirectory = "irch"; RuntimeDirectoryMode = "0750";
+          StateDirectory = "chatir/data"; StateDirectoryMode = "0700";
+          RuntimeDirectory = "chatir"; RuntimeDirectoryMode = "0750";
           UMask = "0027";
-          Environment = "IRCH_CODE_FILE=/run/irch/code";
+          Environment = "CHATIR_CODE_FILE=/run/chatir/code";
           LoadCredential = lib.optional (cfg.pushRelayFile != null)
             "push-relay:${cfg.pushRelayFile}";
           ProtectKernelTunables = true; ProtectControlGroups = true;
@@ -153,11 +164,11 @@ in {
           RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" "AF_NETLINK" ];
         };
       };
-      systemd.paths.irch-new = {
+      systemd.paths.chatir-new = {
         wantedBy = [ "multi-user.target" ];
-        pathConfig.PathChanged = "/var/lib/irch-app/built";
+        pathConfig.PathChanged = "/var/lib/chatir-app/built";
       };
-      systemd.services.irch-new.script = "systemctl try-restart irch";
+      systemd.services.chatir-new.script = "systemctl try-restart chatir";
     })
   ]);
 }

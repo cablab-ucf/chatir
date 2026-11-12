@@ -1,11 +1,11 @@
-//! Releases, every file checked against irch's key (app/tauri.conf.json).
+//! Releases, every file checked against chatir's key (app/tauri.conf.json).
 
 use anyhow::{Context, Result, ensure};
 use data_encoding::BASE64;
 use minisign_verify::{PublicKey, Signature};
 use std::path::Path;
 
-pub const LATEST: &str = "https://github.com/cab-ucf/irch/releases/latest";
+pub const LATEST: &str = "https://github.com/cablab-ucf/chatir/releases/latest";
 
 const KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg1Q0MxRkNENzAzQjdGOEYKUldTUGZ6dHd6Ui9NaGFrUkw2Y0E3MHBOMDNuL25NQ2RUdm9ZNVVIQzJJY1p1aGNSKzQxUlFJOTUK";
 
@@ -55,11 +55,11 @@ fn signed(
     };
     let key = PublicKey::decode(&text(key.as_bytes())?)?;
     let sig = Signature::decode(&text(sig.trim_ascii())?)?;
-    key.verify(bin, &sig, false).context("not signed by irch")?;
+    key.verify(bin, &sig, false).context("not signed by chatir")?;
     let says = |f: String| sig.trusted_comment().split('\t').any(|x| x == f);
     ensure!(
         says(format!("file:{name}")) && says(format!("version:{version}")),
-        "signed by irch, but as another file or release"
+        "signed by chatir, but as another file or release"
     );
     Ok(())
 }
@@ -71,7 +71,7 @@ pub fn cli() -> String {
         _ => "unknown-linux-musl",
     };
     let (cpu, exe) = (std::env::consts::ARCH, std::env::consts::EXE_SUFFIX);
-    format!("irch-{cpu}-{os}{exe}")
+    format!("chatir-{cpu}-{os}{exe}")
 }
 
 pub async fn replace(exe: &Path, ours: &str) -> Result<Option<String>> {
@@ -83,7 +83,12 @@ pub async fn replace(exe: &Path, ours: &str) -> Result<Option<String>> {
 /// Swapped in whole, even while running (Windows: the .exe moved aside).
 pub fn put(exe: &Path, bin: &[u8]) -> Result<()> {
     let new = exe.with_extension("new");
-    std::fs::write(&new, bin)?;
+    // On disk before it takes the old one's place: a power cut leaves the
+    // old binary or the new, never half of one.
+    let mut f = std::fs::File::create(&new)?;
+    std::io::Write::write_all(&mut f, bin)?;
+    f.sync_all()?;
+    drop(f);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -108,5 +113,5 @@ fn signed_as_this_file_of_this_release_only() {
     assert!(signed(key, b"hi\n", sig, "g.bin", "1.2.3").is_err());
     assert!(signed(key, b"hi\n", sig, "f.bin", "1.2.4").is_err());
     assert!(signed(key, b"ho\n", sig, "f.bin", "1.2.3").is_err());
-    assert!(check(b"hi\n", sig, "f.bin", "1.2.3").is_err(), "not irch's key");
+    assert!(check(b"hi\n", sig, "f.bin", "1.2.3").is_err(), "not chatir's key");
 }

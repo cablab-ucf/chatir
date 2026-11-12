@@ -7,7 +7,7 @@ const CRC = new Uint32Array(256).map((_, i) => {
 });
 const crc = (b) => b.reduce((c, x) => ((c << 8) ^ CRC[(c >>> 24) ^ x]) >>> 0, 0);
 
-const SERIAL = 0x69726368; // "irch"
+const SERIAL = 0x69726368; // "chatir"
 const PRESKIP = 312; // libopus at 48 kHz
 
 function page(packets, seq, granule, flags) {
@@ -40,7 +40,7 @@ export function ogg(packets) {
   v.setUint16(10, PRESKIP, true);
   v.setUint32(12, 48000, true);
   const tags = new Uint8Array([...text("OpusTags"), 4, 0, 0, 0,
-    ...text("irch"), 0, 0, 0, 0]);
+    ...text("chatir"), 0, 0, 0, 0]);
   const out = [page([head], 0, 0, 2), page([tags], 1, 0, 0)];
   // At most 50 packets (a second) a page: few headers, short waits.
   for (let i = 0, seq = 2; i < packets.length || seq === 2; i += 50, seq++) {

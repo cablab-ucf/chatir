@@ -1,4 +1,4 @@
-package dev.irch.chat
+package center.cxn.chatir
 
 import android.Manifest.permission.POST_NOTIFICATIONS
 import android.app.Activity
@@ -52,6 +52,8 @@ class AlertArgs {
   var title = ""
   var body = ""
   var ring = false
+  var hush = false
+  var quiet = false
 }
 
 @InvokeArg
@@ -74,16 +76,16 @@ class OnArgs {
   Permission(strings = [android.Manifest.permission.RECORD_AUDIO],
     alias = "microphone"),
 ])
-class IrchPlugin(private val activity: Activity) : Plugin(activity) {
+class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
   override fun load(webView: WebView) {
     if (!notificationsAllowed(activity) && Build.VERSION.SDK_INT >= 33) {
       ActivityCompat.requestPermissions(activity, arrayOf(POST_NOTIFICATIONS), 1)
     }
-    // Our lane on the phone's irpush mailbox, rung by storage nodes. No Google.
+    // Our lane on the phone's pushir mailbox, rung by storage nodes. No Google.
     live(activity)
   }
 
-  /** Optimized, Doze stops irch staying connected or waking on push. */
+  /** Optimized, Doze stops chatir staying connected or waking on push. */
   private fun unrestrict() = runCatching {
     val uri = android.net.Uri.parse("package:" + activity.packageName)
     activity.startActivity(Intent(
@@ -99,7 +101,7 @@ class IrchPlugin(private val activity: Activity) : Plugin(activity) {
       .put("calls", fullScreen(activity)))
   }
 
-  /** This app's traffic since boot, irpush's socket too; the battery. */
+  /** This app's traffic since boot, pushir's socket too; the battery. */
   @Command
   fun traffic(invoke: Invoke) {
     val u = Process.myUid()
@@ -141,11 +143,11 @@ class IrchPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun testAlert(invoke: Invoke) {
-    postMessage(activity, "test", "irch", "Notifications reach this phone.")
+    postMessage(activity, "test", "chatir", "Notifications reach this phone.")
     invoke.resolve()
   }
 
-  /** Native code sees neither network changes nor whether irch is in sight. */
+  /** Native code sees neither network changes nor whether chatir is in sight. */
   @Command
   fun watchNetwork(invoke: Invoke) {
     val channel = invoke.parseArgs(WatchArgs::class.java).channel
@@ -174,7 +176,7 @@ class IrchPlugin(private val activity: Activity) : Plugin(activity) {
     val a = invoke.parseArgs(AlertArgs::class.java)
     alert(activity, org.json.JSONObject().put("space", a.space)
       .put("room", a.room).put("title", a.title).put("body", a.body)
-      .put("ring", a.ring))
+      .put("ring", a.ring).put("hush", a.hush).put("quiet", a.quiet))
     invoke.resolve()
   }
 
@@ -185,7 +187,7 @@ class IrchPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   /** A call: the screen on, over the lock screen, and the microphone
-   *  allowed before irch's own voice opens it. */
+   *  allowed before chatir's own voice opens it. */
   @Command
   fun inCall(invoke: Invoke) {
     val on = invoke.parseArgs(OnArgs::class.java).on

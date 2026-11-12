@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use chatir_core::{Ch, Event, Id, Message, Node, Op, Role, notes};
 use crossterm::event::{Event as Term, EventStream, KeyCode, KeyEvent};
 use crossterm::event::{KeyEventKind, KeyModifiers};
-use irch_core::{Ch, Event, Id, Message, Node, Op, Role, notes};
 use n0_future::StreamExt;
 use ratatui::layout::{Constraint::*, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -577,7 +577,7 @@ impl App {
         let q = q.trim_start_matches('@').to_lowercase();
         let ms =
             self.n.view(&self.space()?, |s| s.members()).unwrap_or_default();
-        let hit = |m: &&irch_core::Member| {
+        let hit = |m: &&chatir_core::Member| {
             m.name.to_lowercase() == q || m.id.to_string().starts_with(&q)
         };
         match ms.iter().filter(hit).collect::<Vec<_>>()[..] {
@@ -663,14 +663,14 @@ impl App {
             "search" => {
                 need()?;
                 let (s, _) = self.here()?;
-                let found = |st: &irch_core::State| {
+                let found = |st: &chatir_core::State| {
                     let rooms = st.rooms();
                     let name = |c: &Ch| {
                         let r = rooms.iter().find(|r| r.0 == *c);
                         r.map_or("a thread".into(), |r| r.1.clone())
                     };
                     let hits = st.search(&arg, None, 20).into_iter();
-                    let line = |(c, m): (Ch, irch_core::Message)| {
+                    let line = |(c, m): (Ch, chatir_core::Message)| {
                         let text = m.text.lines().next().unwrap_or_default();
                         format!("{} <{}> {}", name(&c), m.name, text)
                     };
@@ -703,7 +703,7 @@ impl App {
                 let id = self.target(false)?;
                 let thread = n.view(&s, |st| st.thread(&c).is_some());
                 let (thread, todo) = (thread == Some(true), cmd == "todo");
-                let md = |st: &irch_core::State| {
+                let md = |st: &chatir_core::State| {
                     notes::markdown(st, &s, &id, thread, todo, None)
                 };
                 let md = n.view(&s, md).flatten().context("nothing here")?;
@@ -776,7 +776,10 @@ impl App {
             "url" => {
                 let (s, c) = self.here()?;
                 let m = self.chosen().map(|m| format!("/{}", m.id));
-                osc52(&format!("irch://open/{s}/{c}{}", m.unwrap_or_default()));
+                osc52(&format!(
+                    "chatir://open/{s}/{c}{}",
+                    m.unwrap_or_default()
+                ));
                 self.status = "its link, copied if your terminal allows".into();
             }
             "contact" => {
@@ -788,8 +791,8 @@ impl App {
                 ));
             }
             "usage" => {
-                let day = irch_core::now().saturating_sub(86_400_000);
-                let log = irch_core::usage::read(n.dir());
+                let day = chatir_core::now().saturating_sub(86_400_000);
+                let log = chatir_core::usage::read(n.dir());
                 let log: Vec<_> = log
                     .into_iter()
                     .filter(|e| e["ts"].as_u64() > Some(day))
@@ -815,14 +818,14 @@ impl App {
                     sum("datagrams_in"),
                     sum("probes"),
                 );
-                let (relay, quiet) = irch_core::push::relay(n.dir());
-                t.push_str(&match quiet {
-                    true => format!("Relay {relay}: irpush's, quiet.\n"),
-                    false => format!(
-                        "Relay {relay}: a stock one, pinged every 15 s; \
-                         pair with a storage node that has an irpush relay \
-                         (irch --install --push-relay).\n"
+                t.push_str(&match (n.lane_relay(), n.wakes()) {
+                    (Some(r), true) => format!(
+                        "Pushes: {r}, answering; iroh sleeps when idle.\n"
                     ),
+                    (Some(r), false) => format!(
+                        "Pushes: {r}, not answering now; iroh stays on.\n"
+                    ),
+                    (None, _) => "No push relay: iroh stays on.\n".into(),
                 });
                 for e in log.iter().rev().take(30) {
                     t.push_str(&format!("\n{e}"));
@@ -831,7 +834,7 @@ impl App {
             }
             "link" => {
                 self.notice = Some(format!(
-                    "Start irch on your other device with\n\n  irch --link \
+                    "Start chatir on your other device with\n\n  chatir --link \
                      {}\n\nIt becomes you: keep this secret.",
                     n.link_code().await
                 ));
@@ -847,7 +850,7 @@ impl App {
                 self.status = "shared from this machine while it runs".into();
             }
             "store" if arg == "local" => {
-                let code = irch_core::local_storage().ok_or_else(|| {
+                let code = chatir_core::local_storage().ok_or_else(|| {
                     anyhow!("no storage node on this computer")
                 })?;
                 n.add_storage(&code).await?;
@@ -891,7 +894,7 @@ impl App {
                 self.status = "the space is theirs now".into();
             }
             "devices" => {
-                let now = irch_core::now();
+                let now = chatir_core::now();
                 let row = |(d, t): (iroh::EndpointId, u64)| {
                     let ago = now.saturating_sub(t) / 60_000;
                     let me = if d == n.device() { "  (this one)" } else { "" };
@@ -922,7 +925,7 @@ impl App {
     /// Channels, each with its threads of this week; a syncing space alone.
     fn rows(&self) -> Vec<(Id, Option<Ch>)> {
         let mut v = vec![];
-        let week = irch_core::now().saturating_sub(7 * 86_400_000);
+        let week = chatir_core::now().saturating_sub(7 * 86_400_000);
         for s in self.n.spaces() {
             let at = self.at.map(|a| a.0) == Some(s);
             if self.n.card(&s) || self.n.hidden(&s) && !at {
@@ -1058,7 +1061,7 @@ impl App {
 
     /// Once a row a frame: this room alone, not every thread's.
     fn channel_name(&self, s: &Id, c: &Ch) -> String {
-        let named = |st: &irch_core::State| {
+        let named = |st: &chatir_core::State| {
             let chan = st.channels().into_iter().find(|x| x.0 == *c);
             (st.thread(c).map(|t| t.name), chan.map(|x| x.1), st.dm.is_some())
         };
@@ -1110,13 +1113,13 @@ impl App {
             }
             lines.push(Line::styled(l, style));
         }
-        let b = panel(" irch ");
+        let b = panel(" chatir ");
         f.render_widget(Paragraph::new(lines).block(b), area);
     }
 
     fn messages(&self, f: &mut Frame, area: Rect) {
         let Ok((s, c)) = self.here() else {
-            let hi = "Welcome to irch.\n\n/create NAME starts a space, \
+            let hi = "Welcome to chatir.\n\n/create NAME starts a space, \
                       /join CODE enters one.\n/link puts you on another \
                       device. /help lists everything.";
             let p = Paragraph::new(hi).wrap(Wrap { trim: false });
@@ -1126,7 +1129,7 @@ impl App {
             (area.width.saturating_sub(2), area.height.saturating_sub(2));
         let (mut lines, mut row, mut span) = (vec![], 0, None);
         // In a thread, what it hangs off first.
-        let root = |st: &irch_core::State| st.message(&st.thread(&c)?.root);
+        let root = |st: &chatir_core::State| st.message(&st.thread(&c)?.root);
         if let Some((_, m)) = self.n.view(&s, root).flatten() {
             let ls = self.lines(&Message { thread: 0, ..m }).into_iter();
             lines =
@@ -1271,7 +1274,7 @@ fn center(r: Rect, w: u16, h: u16) -> Rect {
 }
 
 fn rand() -> [u8; 8] {
-    irch_core::crypto::rand()
+    chatir_core::crypto::rand()
 }
 
 fn osc52(text: &str) {

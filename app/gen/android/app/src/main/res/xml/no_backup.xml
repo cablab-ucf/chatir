@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nothing leaves this phone: the app data holds the identity's seed, the
+     device's key and the lane's secret. Not to a cloud, and not to another
+     phone (a copy would be a second device with the first one's keys). -->
+<data-extraction-rules>
+    <cloud-backup><exclude domain="root" /><exclude domain="file" /><exclude domain="database" /><exclude domain="sharedpref" /><exclude domain="external" /></cloud-backup>
+    <device-transfer><exclude domain="root" /><exclude domain="file" /><exclude domain="database" /><exclude domain="sharedpref" /><exclude domain="external" /></device-transfer>
+</data-extraction-rules>

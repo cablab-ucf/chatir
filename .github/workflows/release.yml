@@ -43,8 +43,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - run: cargo test --locked -p irch-core -p irch-math
-          --features irch-core/voice
+      - run: cargo test --locked -p chatir-core -p chatir-math
+          --features chatir-core/voice
       - run: node --test app/tests/*.test.mjs
 
   desktop:
@@ -74,7 +74,7 @@ jobs:
           libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev
           libjavascriptcoregtk-4.1-dev librsvg2-dev libasound2-dev
       - uses: ./.github/actions/cargo-tauri
-      # Only irch's own version: else it reaches sed, or updates forever.
+      # Only chatir's own version: else it reaches sed, or updates forever.
       - name: The tag is the version
         shell: bash
         run: |
@@ -92,7 +92,7 @@ jobs:
       - name: The terminal client and storage node, beside the app
         shell: bash
         env:
-          IRCH_RELEASE: "1"
+          CHATIR_RELEASE: "1"
         run: |
           t=${{ matrix.target }}
           if [ "$RUNNER_OS" = Linux ]; then
@@ -100,9 +100,9 @@ jobs:
             sudo apt-get install -y musl-tools && rustup target add $t
             export "CC_${t//-/_}=musl-gcc"
           fi
-          cargo build --release --locked -p irch --target $t
+          cargo build --release --locked -p chatir --target $t
           x=$([ "$RUNNER_OS" = Windows ] && echo .exe || true)
-          mkdir -p out && cp target/$t/release/irch$x out/irch-$t$x
+          mkdir -p out && cp target/$t/release/chatir$x out/chatir-$t$x
       - name: Gather what ships
         shell: bash
         run: |
@@ -110,8 +110,8 @@ jobs:
           cp $b/appimage/*.AppImage $b/deb/*.deb $b/rpm/*.rpm \
             $b/dmg/*.dmg $b/nsis/*-setup.exe $b/msi/*.msi out/ 2>/dev/null || true
           # What macOS updates from: the .app, packed as tauri-action did.
-          if [ -d $b/macos/irch.app ]; then
-            tar -C $b/macos -czf out/irch_${{ matrix.arch }}.app.tar.gz irch.app
+          if [ -d $b/macos/chatir.app ]; then
+            tar -C $b/macos -czf out/chatir_${{ matrix.arch }}.app.tar.gz chatir.app
           fi
           ls -l out
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -128,7 +128,7 @@ jobs:
           /opt/hostedtoolcache/CodeQL /usr/local/share/boost
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: true # app/gen/android/irpush
+          submodules: true # app/gen/android/pushir
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -180,7 +180,7 @@ jobs:
           grep -qx "version = \"${TAG#v}\"" Cargo.toml
           v='"version": "'${TAG#v}'"'
           sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" app/tauri.conf.json
-      - name: The Xcode project, with irch's icons
+      - name: The Xcode project, with chatir's icons
         working-directory: app
         run: |
           brew install xcodegen
@@ -189,7 +189,7 @@ jobs:
       - name: An unsigned IPA, which AltStore or SideStore signs
         working-directory: app
         run: cargo tauri ios build --ci --no-sign --target aarch64
-      - run: mkdir out && mv app/gen/apple/build/arm64/irch.ipa out/irch.ipa
+      - run: mkdir out && mv app/gen/apple/build/arm64/chatir.ipa out/chatir.ipa
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios
@@ -220,27 +220,27 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           TEAM: ${{ vars.APPLE_TEAM_ID }}
         run: |
-          k=$RUNNER_TEMP/irch.keychain-db
-          security create-keychain -p irch "$k"
-          security unlock-keychain -p irch "$k"
-          echo "$P12" | base64 -d > "$RUNNER_TEMP/irch.p12"
-          security import "$RUNNER_TEMP/irch.p12" -k "$k" -P "$PW" \
+          k=$RUNNER_TEMP/chatir.keychain-db
+          security create-keychain -p chatir "$k"
+          security unlock-keychain -p chatir "$k"
+          echo "$P12" | base64 -d > "$RUNNER_TEMP/chatir.p12"
+          security import "$RUNNER_TEMP/chatir.p12" -k "$k" -P "$PW" \
             -T /usr/bin/codesign
-          rm "$RUNNER_TEMP/irch.p12"
-          security set-key-partition-list -S apple-tool:,apple: -k irch "$k"
+          rm "$RUNNER_TEMP/chatir.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k chatir "$k"
           security list-keychains -d user -s "$k"
           cd out
-          tar -xzf irch_*.app.tar.gz
+          tar -xzf chatir_*.app.tar.gz
           codesign --force --deep --timestamp --options runtime \
-            --entitlements ../app/Entitlements.plist -s "$ID" irch.app
-          ditto -c -k --keepParent irch.app irch.zip
-          xcrun notarytool submit irch.zip --wait --apple-id "$APPLE_ID" \
+            --entitlements ../app/Entitlements.plist -s "$ID" chatir.app
+          ditto -c -k --keepParent chatir.app chatir.zip
+          xcrun notarytool submit chatir.zip --wait --apple-id "$APPLE_ID" \
             --password "$APPLE_PASSWORD" --team-id "$TEAM"
-          xcrun stapler staple irch.app
-          tar -czf irch_*.app.tar.gz irch.app
-          dmg=$(ls *.dmg) && rm "$dmg" irch.zip
-          mkdir dmg && mv irch.app dmg/ && ln -s /Applications dmg/
-          hdiutil create -volname irch -srcfolder dmg -format UDZO "$dmg"
+          xcrun stapler staple chatir.app
+          tar -czf chatir_*.app.tar.gz chatir.app
+          dmg=$(ls *.dmg) && rm "$dmg" chatir.zip
+          mkdir dmg && mv chatir.app dmg/ && ln -s /Applications dmg/
+          hdiutil create -volname chatir -srcfolder dmg -format UDZO "$dmg"
           rm -rf dmg
           security delete-keychain "$k"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -291,11 +291,11 @@ jobs:
           APPLE_API_KEY_PATH=$k cargo tauri ios build --ci --target aarch64 \
             --export-method app-store-connect
           xcrun altool --upload-app --type ios \
-            --file gen/apple/build/arm64/irch.ipa \
+            --file gen/apple/build/arm64/chatir.ipa \
             --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
           rm -f "$k"
 
-  # The only job with irch's keys and a token that writes. It builds
+  # The only job with chatir's keys and a token that writes. It builds
   # nothing: tauri's signer, Tauri's build, arrives before the key.
   # An iPhone build that fails leaves out the IPA, not the release.
   publish:
@@ -326,17 +326,17 @@ jobs:
           PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          echo "$KS" | base64 -d > "$RUNNER_TEMP/irch.jks"
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/chatir.jks"
           "$tools/zipalign" -f 4 art/unsigned.apk a.apk
-          "$tools/apksigner" sign --ks "$RUNNER_TEMP/irch.jks" \
-            --ks-pass env:PW --ks-key-alias irch --out art/irch.apk a.apk
-          rm -f "$RUNNER_TEMP/irch.jks" art/unsigned.apk a.apk art/*.idsig
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/chatir.jks" \
+            --ks-pass env:PW --ks-key-alias chatir --out art/chatir.apk a.apk
+          rm -f "$RUNNER_TEMP/chatir.jks" art/unsigned.apk a.apk art/*.idsig
       - name: The source (nixos.nix builds it), the installers, the icon
         run: |
           git archive --format=tar.gz -o art/source.tar.gz HEAD
           cp install.sh install.ps1 art/
-          cp app/icons/icon.png art/irch.png
-      - name: irch's key on every file an update or nixos.nix checks
+          cp app/icons/icon.png art/chatir.png
+      - name: chatir's key on every file an update or nixos.nix checks
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
@@ -350,7 +350,7 @@ jobs:
       - name: The release
         run: |
           gh release view "$TAG" >/dev/null 2>&1 ||
-            gh release create "$TAG" --title "irch $TAG" --target "$GITHUB_SHA"
+            gh release create "$TAG" --title "chatir $TAG" --target "$GITHUB_SHA"
           gh release upload "$TAG" art/* --clobber
       - name: latest.json, which the app's updater reads
         shell: python3 {0}
@@ -370,7 +370,7 @@ jobs:
           for sig in sorted(glob.glob("*.sig")):
               name = sig[:-4]
               # The CLI, source and APK update themselves.
-              if re.match(r"irch-(x86_64|aarch64)-|source|irch\.apk", name):
+              if re.match(r"chatir-(x86_64|aarch64)-|source|chatir\.apk", name):
                   continue
               a = cpu[re.search("amd64|x86_64|x64|aarch64|arm64", name)[0]]
               o, kind = next((o, k) for e, o, k in kinds if name.endswith(e))

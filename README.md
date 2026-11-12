@@ -1,4 +1,4 @@
-# <img src="app/ui/logo.svg" width="40" align="top"> irch
+# <img src="app/ui/logo.svg" width="40" align="top"> chatir
 
 Private, peer-to-peer community chat shaped like Discord, with no server:
 spaces, channels, threads, DMs, calls, files and notes, end to end
@@ -10,30 +10,30 @@ client, and one Tauri app for desktops, Android and iPhones.
 Each keeps itself up to date.
 
 ```sh
-irm https://github.com/cab-ucf/irch/releases/latest/download/install.ps1 | iex  # Windows (x64; Arm emulates it)
-curl -fsSL https://github.com/cab-ucf/irch/releases/latest/download/install.sh | sh  # macOS (Apple silicon), Linux
+irm https://github.com/cablab-ucf/chatir/releases/latest/download/install.ps1 | iex  # Windows (x64; Arm emulates it)
+curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install.sh | sh  # macOS (Apple silicon), Linux
 ```
 
-- **Android**: [irch.apk](https://github.com/cab-ucf/irch/releases/latest/download/irch.apk),
+- **Android**: [chatir.apk](https://github.com/cablab-ucf/chatir/releases/latest/download/chatir.apk),
   or track this repo in [Obtainium](https://obtainium.imranr.dev).
-- **iPhone**: [irch.ipa](https://github.com/cab-ucf/irch/releases/latest/download/irch.ipa)
+- **iPhone**: [chatir.ipa](https://github.com/cablab-ucf/chatir/releases/latest/download/chatir.ipa)
   in [AltStore](https://altstore.io) or [SideStore](https://sidestore.io).
 - **Storage node** (always on): a space's *Storage Nodes → Run one on this
   computer*, or `install.sh … | sh -s -- --server`, optionally with
-  `--push-relay https://irpush.you.example`.
-- **NixOS**: `inputs.irch.url = "github:cab-ucf/irch";` and
-  `irch.nixosModules.default`: the app and a storage node, built from
-  signed releases. `services.irch.enable = false;` leaves the node out;
-  `services.irch.pushRelayFile` names a file holding your irpush relay.
-- **From source**: `cargo run --release -p irch` (terminal; `--serve` for a
+  `--push-relay https://pushir.you.example`.
+- **NixOS**: `inputs.chatir.url = "github:cablab-ucf/chatir";` and
+  `chatir.nixosModules.default`: the app and a storage node, built from
+  signed releases. `services.chatir.enable = false;` leaves the node out;
+  `services.chatir.pushRelayFile` names a file holding your pushir relay.
+- **From source**: `cargo run --release -p chatir` (terminal; `--serve` for a
   storage node); `cd app && cargo tauri dev`, or
   `cargo tauri android build --apk`; on a Mac `cargo tauri ios init`, then
   `cargo tauri ios dev`. Linux needs webkit2gtk-4.1, gtk3, libsoup3, ALSA
   and, for calls, gstreamer plugins base, good, bad and libav.
 
-Other modes of `irch`: `--web [ADDR]` (the app's page from your own node,
+Other modes of `chatir`: `--web [ADDR]` (the app's page from your own node,
 default 127.0.0.1:4724, and a link through
-[irp](https://github.com/cab-ucf/irp)'s page; the browser holds only a
+[irp](https://github.com/cablab-ucf/irp)'s page; the browser holds only a
 token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
 `--doctor [WHO]` (times each route to someone; rings nothing).
 
@@ -55,12 +55,13 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   device, read; counts in groups.
 - Notifications per space (All, Mentions, Off), set once per account;
   *Silent* per device.
-- Short codes (`k7m-x9q-p3a`, one minute, one try) for invites and device
-  links; optional password.
+- Short codes (`k7m-x9q-p3a-b2c`, one minute, one try, a PAKE:
+  [pairir](https://github.com/cablab-ucf/pairir)) for invites and device
+  links; optional password. They are met at a relay: not on LAN only.
 - Search, Ctrl+K, vim keys; profiles, linked devices, themes, *Network
   use* and *Check connections*.
-- *Add to notes* ([loroh](https://github.com/cab-ucf/siroh)) and *Copy Link*
-  ([tydig](https://github.com/cab-ucf/tydig)).
+- *Add to notes* ([loroh](https://github.com/cablab-ucf/siroh)) and *Copy Link*
+  ([tydig](https://github.com/cablab-ucf/tydig)).
 
 ## How it works
 
@@ -73,11 +74,12 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   key, so whoever was cut off cannot fetch even ciphertext.
 - **Sync** compares per-day fingerprints and sends only missing ops. Spaces
   up to 64 devices dial ops to each device directly; larger ones gossip.
-- **Lanes**: each device holds one irpush mailbox on a relay
-  (irpush.cxn.center by default), shared by its apps. Small ops travel there as labelled
-  events (the relay sees no space); acks are MACs. Unacked in 3 s, an op
-  is dialed over iroh.
-- **iroh only for links**: irch's endpoint runs only while a sync, file or
+- **Lanes**: each device holds one [pushir](https://github.com/cablab-ucf/pushir)
+  mailbox on a relay (irpush.cxn.center by default), shared by its apps.
+  Small ops travel there, sealed under the lane's secret and padded to one
+  size (the relay sees a mailbox and a time); acks are MACs. One relay
+  connection carries a burst. Unacked in 3 s, an op is dialed over iroh.
+- **iroh only for links**: chatir's endpoint runs only while a sync, file or
   call needs it, woken by a dial frame on the lane, and closes a minute
   after nothing is open. Storage nodes stay up.
 - **Waking**: a sleeping device is woken only for what it would show (DMs,
@@ -85,41 +87,48 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   keys its node left, with no connection opened. Typing, presence and
   reads go only to devices that are up.
 - **Storage nodes** keep ciphertext, never keys, so messages wait while
-  everyone is offline; they keep only epochs their owners name. Each is a
-  push server: phones register their mailbox with it, and it rings them
-  sealed to each. Without one, a phone is rung on its lane (retried at 3,
-  10, 45 s). Nothing is queued: a phone away catches up as it opens.
+  everyone is offline; they keep only epochs their owners name. A phone is
+  rung on its lane by whoever writes (retried at 3, 10, 45 s); one away
+  longer catches up with its storage nodes as it opens. A storage node
+  tells its devices the relay their lanes go on, if it runs one.
 - **Calls** are a QUIC mesh: Opus datagrams; video in the best codec all
   decode (AV1, VP9, VP8 or H.264). Native voice uses WebRTC's echo
   canceller (sonora), except on iPhones.
 
 | network | terminal (app env) | who else is involved |
 |---|---|---|
-| default | | relays irpush.cxn.center, iroh.cxn.center (a storage node's first), then n0's; n0 DNS |
-| own relays | `--relay URL` (`IRCH_RELAY`) | your relays |
-| LAN only | `--lan` (`IRCH_LAN=1`) | nobody (mDNS) |
+| default | | irpush.cxn.center (pushes and links; pushes on a storage node's own first), then iroh.cxn.center, then n0's relay, each only while those before are down; no DNS, no lookup service |
+| own relays | `--relay URL` (`CHATIR_RELAY`) | your relays |
+| LAN only | `--lan` (`CHATIR_LAN=1`) | nobody (mDNS) |
 
-A device holds one relay at a time, best first. Relays are open; a relay
-key (from whoever runs it) lifts its rate limit for relayed traffic.
+The endpoint is [irnet](https://github.com/cablab-ucf/irnet)'s, as in every
+app of the lab: it homes on irpush.cxn.center (the relay with post-quantum
+TLS), joins iroh.cxn.center once that has not answered for 10 s, then
+n0's, and returns as soon as a better one answers. With no lookup service,
+a device is dialed on the lab's relays, on ours of the moment, and at the
+addresses it was met at. A device proves its lane every five minutes (a
+frame to itself through the relay) and lets iroh sleep only behind one
+that answered: with pushes down, iroh stays up and is dialed.
+Relays are open; a relay key (from whoever runs it) lifts its
+rate limit for relayed traffic.
 
 ## Security and limits
 
 - Ops are sealed end to end; relays and storage nodes see tags, times,
   sizes and endpoint ids. Peers see each other's addresses.
-- Every TLS and QUIC handshake is post-quantum (X25519MLKEM768,
-  aws-lc-rs); signatures are Ed25519.
+- Every QUIC handshake is post-quantum (X25519MLKEM768, aws-lc-rs) or
+  refused, as is the hop to the push relay; signatures are Ed25519.
 - No forward secrecy within an epoch; keys rotate on bans and on request.
 - Authors date their own ops (at most ten minutes ahead), so a demoted
   admin's backdated ops stand until undone.
 - A linked device is you: lost, it is retired with the whole identity.
-- A push server learns when a ring comes and for which space; irpush's
-  relay learns when and the phone's address. Ring tokens and labels are
-  per space and die with a rekey.
+- pushir's relay learns when a device is sent to and its address, not by
+  whom, for which space, or how much. A space's labels die with a rekey.
 - Presence is said, not polled: a device that dies without `Gone` looks
   present for about an hour.
 - An iPhone in the background is not told of messages (no APNs host).
 - Calls are for a handful of people; Macs and iPhones need WebKit 26.
-- First installs trust GitHub's TLS (and irch's key where `minisign`
+- First installs trust GitHub's TLS (and chatir's key where `minisign`
   exists); updates are always checked. Unaudited.
 
 ## Layout
@@ -127,7 +136,7 @@ key (from whoever runs it) lifts its rate limit for relayed traffic.
 | | |
 |---|---|
 | `core/` | ops, crypto, fold, store, sync, node, push, the app's JSON API |
-| `tui/` | `irch`: terminal client, `--serve`, `--install`, `--web`, `--api` |
+| `tui/` | `chatir`: terminal client, `--serve`, `--install`, `--web`, `--api` |
 | `app/` | Tauri 2 shell; `ui/` the page; `gen/android` the Android project |
 
 Plan: [PLAN.md](PLAN.md). Tasks: [TODO.md](TODO.md). GPL-3.0-or-later.

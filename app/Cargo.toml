@@ -1,25 +1,25 @@
 [package]
-name = "irch-app"
-description = "irch on desktops and phones"
+name = "chatir-app"
+description = "chatir on desktops and phones"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "irch_app"
+name = "chatir_app"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "irch-app"
+name = "chatir-app"
 path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-irch-core.workspace = true
-irch-math.workspace = true
+chatir-core.workspace = true
+chatir-math.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -43,7 +43,7 @@ tauri-plugin-autostart = "2"
 
 # A call's voice, native: everywhere but iOS, whose web view keeps it.
 [target.'cfg(not(target_os = "ios"))'.dependencies]
-irch-core = { workspace = true, features = ["voice"] }
+chatir-core = { workspace = true, features = ["voice"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2"
@@ -54,9 +54,9 @@ libloading = "0.9"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
 ndk-context = "0.1"
-# The phone's one irpush device, shared by every irpush app (irpush's
-# Android library, android/irpush): its JNI lives in our native library.
-irpush = { git = "https://github.com/cab-ucf/irpush", rev = "551e860311d551eb73faaaf8a21abdbe1fa57fea", features = ["jni"] }
+# The phone's one pushir device, shared by every pushir app (pushir's
+# Android library, android/pushir): its JNI lives in our native library.
+pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "405cf68b384138837668abbdf7953d1c29d776b6", features = ["jni"] }
 
 [features]
 # Built without `cargo tauri` (package.nix): the page from the binary.

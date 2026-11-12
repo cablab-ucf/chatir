@@ -1,4 +1,4 @@
-/* irch: neon on black. No external fonts or assets (CSP). */
+/* chatir: neon on black. No external fonts or assets (CSP). */
 
 :root {
   --bg-1: #000;
@@ -577,8 +577,16 @@ table.keys kbd {
 }
 .content :is(th, td) { border: 1px solid var(--line); padding: 2px 8px; }
 .content th { background: var(--bg-4); }
-.content .math { font-size: 1.1em; }
-.content div.math { margin: 4px 0; overflow-x: auto; }
+/* Math draws inside its own box: no negative space or rule over others'. */
+.content .math {
+  font-size: 1.1em;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: bottom;
+  contain: paint;
+}
+.content div.math { display: block; margin: 4px 0; overflow-x: auto; }
 .content .math.bad { font-family: var(--mono); color: var(--red); }
 /* Typst's math font, for LaTeX too: the same look on every device. */
 @font-face {
@@ -1224,7 +1232,7 @@ dialog .m-foot .spacer { flex: 1; }
   .toolbar { right: 8px; }
 }
 
-/* ===== irch additions ===== */
+/* ===== chatir additions ===== */
 .channel.dm { gap: 8px; }
 .channel.dm.shut { opacity: 0.5; }
 .space.shut { padding-left: 20px; }

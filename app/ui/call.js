@@ -305,6 +305,8 @@ function peer(id) {
       vdec();
     }, output: (f) => {
       const c = p.canvas;
+      // No frame larger than any screen share: a peer names its size.
+      if (f.displayWidth > 4096 || f.displayHeight > 4096) return f.close();
       if (c.width !== f.displayWidth) c.width = f.displayWidth;
       if (c.height !== f.displayHeight) c.height = f.displayHeight;
       c.getContext("2d").drawImage(f, 0, 0);
@@ -352,5 +354,7 @@ function heard(buf) {
   }
   if (p.codec !== codec || !(p.key ||= kind === 2)) return;
   const type = kind === 2 ? "key" : "delta";
+  // Behind: wait for the next key frame, not for memory to run out.
+  if (p.vdec.decodeQueueSize > 8) return void (p.key = false);
   p.vdec.decode(new EncodedVideoChunk({ type, timestamp, data }));
 }

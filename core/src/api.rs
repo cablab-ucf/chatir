@@ -214,14 +214,16 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
             });
             json!({
                 "id": id, "name": name, "invisible": invisible, "call": call,
-                "push": n.pushed(),
                 "version": env!("CARGO_PKG_VERSION"),
                 "device": n.device().fmt_short().to_string(),
                 "endpoint": n.device(),
                 "device_name": n.label(&n.device()),
                 "local_storage": crate::local_storage()
-                    .and_then(|c| uncode::<(EndpointAddr, [u8; 16])>("host", &c).ok())
-                    .map(|(a, _)| a.id),
+                    .and_then(|c| {
+                        type Host = (EndpointAddr, [u8; 16], String);
+                        uncode::<Host>("host", &c).ok()
+                    })
+                    .map(|h| h.0.id),
             })
         }
         Call::SetName { name } => json!(n.set_name(&name).await?),
@@ -426,9 +428,8 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
         Call::Usage => {
             let log = crate::usage::read(n.dir());
             let log = &log[log.len().saturating_sub(500)..];
-            let (relay, quiet) = crate::push::relay(n.dir());
-            json!({ "log": log, "now": n.usage(), "relay": relay,
-                "quiet": quiet })
+            json!({ "log": log, "now": n.usage(), "lane": n.lane_relay(),
+                "wakes": n.wakes() })
         }
         Call::RelayKey { line } => json!(n.relay_key(&line).await?),
         Call::RelayKeys => json!(n.relay_keys().await),

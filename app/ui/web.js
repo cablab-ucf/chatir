@@ -1,12 +1,20 @@
-// irch in a browser: what the app's shell gives the page, from your own
-// node over HTTP (irch --web; tui/src/web.rs). Calls are POSTs; events
+// chatir in a browser: what the app's shell gives the page, from your own
+// node over HTTP (chatir --web; tui/src/web.rs). Calls are POSTs; events
 // and call frames stream down while the page is in sight or in a call,
 // and nothing is said otherwise: no polls, no pings. Opened at the node
 // (http://127.0.0.1:4724/#<token>), the token is the fragment; through
 // irweb's page, its worker adds it.
 (() => {
   if (window.__TAURI__) return;
-  const token = /^#([0-9a-f]{64})$/.exec(location.hash)?.[1];
+  // Out of the address bar at once (history, sync, extensions read it
+  // there), kept for this tab alone.
+  let token = /^#([0-9a-f]{64})$/.exec(location.hash)?.[1];
+  try {
+    if (token) {
+      sessionStorage.setItem("token", token);
+      history.replaceState(null, "", location.pathname);
+    } else token = sessionStorage.getItem("token") ?? undefined;
+  } catch { /* no storage: the fragment stays */ }
   const head = token ? { "irweb-access": token } : {};
   const bytes = (b) => b?.data == null ? b
     : Uint8Array.from(atob(b.data), (c) => c.charCodeAt(0));
@@ -105,13 +113,13 @@
 
   const no = (what) => () => { throw what; };
   const calls = {
-    irch: ({ call }) => post("irch", JSON.stringify(call)),
+    chatir: ({ call }) => post("chatir", JSON.stringify(call)),
     upload: (b, o) => post("upload", bytes(b), o?.headers),
     media,
     tune: ({ to }) => stream("api/tune", (f) => to.onmessage(f.buffer)),
     // Fetched whole, then the browser's own download.
     save: async ({ space, file }) => {
-      const b = bytes({ data: await calls.irch({ call: { cmd: "file",
+      const b = bytes({ data: await calls.chatir({ call: { cmd: "file",
         space, file } }) });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([b]));
@@ -130,7 +138,7 @@
     hush: () => null,
     log: () => null,
     profiles: no("profiles are the node's own"),
-    link: no("link the node itself: irch --link"),
+    link: no("link the node itself: chatir --link"),
   };
   window.__TAURI__ = {
     core: {

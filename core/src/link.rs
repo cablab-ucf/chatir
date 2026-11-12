@@ -44,7 +44,11 @@ pub async fn fetch(url: &str) -> Result<(Link, Option<(Vec<u8>, &str)>)> {
     let image = match pick(&["og:image", "twitter:image"]) {
         Some(src) => {
             let at = reqwest::Url::parse(url)?.join(&unescape(&src))?;
-            get(&web, at.as_str(), IMAGE, "image/").await.ok()
+            // As the page itself: an address in a URL skips the resolver.
+            match crate::node::open(&at) {
+                true => get(&web, at.as_str(), IMAGE, "image/").await.ok(),
+                false => None,
+            }
         }
         None => None,
     };
@@ -257,8 +261,11 @@ async fn get(
 fn metas(html: &str) -> HashMap<String, String> {
     let low = html.to_ascii_lowercase();
     let mut out = HashMap::new();
-    for (at, _) in low.match_indices("<meta") {
-        let end = low[at..].find('>').map_or(low.len(), |e| at + e);
+    // A few hundred tags of a few KB: a page of unclosed ones is read
+    // once, not once per tag.
+    for (at, _) in low.match_indices("<meta").take(512) {
+        let near = low.floor_char_boundary((at + 4096).min(low.len()));
+        let end = low[at..near].find('>').map_or(near, |e| at + e);
         let a = attrs(&html[at + 5..end]);
         let key = a.get("property").or_else(|| a.get("name"));
         if let (Some(k), Some(v)) = (key, a.get("content")) {

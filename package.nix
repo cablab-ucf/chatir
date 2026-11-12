@@ -1,22 +1,22 @@
-# The app and `irch`; nixos.nix builds each release with this.
+# The app and `chatir`; nixos.nix builds each release with this.
 { lib, rustPlatform, pkg-config, wrapGAppsHook3, webkitgtk_4_1, libsoup_3
 , glib-networking, gst_all_1, openssl, makeDesktopItem, copyDesktopItems
 , libayatana-appindicator, alsa-lib }:
 rustPlatform.buildRustPackage {
-  pname = "irch";
+  pname = "chatir";
   version = (lib.importTOML ./Cargo.toml).workspace.package.version;
   # Not cargo's target/ (gigabytes).
   src = lib.cleanSourceWith {
     src = lib.cleanSource ./.;
     filter = p: _: baseNameOf p != "target";
   };
-  # irpush comes from git, at the commit Cargo.lock names.
+  # pushir comes from git, at the commit Cargo.lock names.
   cargoLock = { lockFile = ./Cargo.lock; allowBuiltinFetchGit = true; };
   # typst asks for rustc 1.92 and builds with NixOS 25.11's 1.91.
-  cargoBuildFlags = [ "-p" "irch" "-p" "irch-app" "--ignore-rust-version" ];
-  buildFeatures = [ "irch-app/custom-protocol" ];
+  cargoBuildFlags = [ "-p" "chatir" "-p" "chatir-app" "--ignore-rust-version" ];
+  buildFeatures = [ "chatir-app/custom-protocol" ];
   # NixOS updates it, not the app.
-  env.IRCH_NIXOS = "1";
+  env.CHATIR_NIXOS = "1";
   doCheck = false; # its tests need a network
   nativeBuildInputs = [ pkg-config wrapGAppsHook3 copyDesktopItems ];
   # Calls' codecs through WebKit's GStreamer: Opus (base), VP8 and VP9
@@ -34,23 +34,23 @@ rustPlatform.buildRustPackage {
   '';
   desktopItems = [
     (makeDesktopItem {
-      name = "irch";
-      desktopName = "irch";
+      name = "chatir";
+      desktopName = "chatir";
       comment = "Private, peer-to-peer chat";
-      exec = "irch-app %u";
-      icon = "irch";
+      exec = "chatir-app %u";
+      icon = "chatir";
       categories = [ "Network" "Chat" ];
-      mimeTypes = [ "x-scheme-handler/irch" ];
+      mimeTypes = [ "x-scheme-handler/chatir" ];
     })
   ];
   postInstall = ''
     install -Dm644 app/icons/icon.png \
-      $out/share/icons/hicolor/512x512/apps/irch.png
+      $out/share/icons/hicolor/512x512/apps/chatir.png
   '';
   meta = {
     description = "Private, peer-to-peer community chat over iroh";
-    homepage = "https://github.com/cab-ucf/irch";
+    homepage = "https://github.com/cablab-ucf/chatir";
     license = lib.licenses.gpl3Plus;
-    mainProgram = "irch-app";
+    mainProgram = "chatir-app";
   };
 }

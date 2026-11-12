@@ -1,6 +1,6 @@
 //! Several nodes on this machine, talking over real QUIC.
 
-use irch_core::{Ch, Config, Event, Id, Invite, Net, Node, Op};
+use chatir_core::{Ch, Config, Event, Id, Invite, Net, Node, Op};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -13,7 +13,7 @@ fn dir(name: &str) -> std::path::PathBuf {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     let n = N.fetch_add(1, Ordering::Relaxed);
     let t = t.unwrap().as_nanos();
-    std::env::temp_dir().join(format!("irch-test-{t}-{n}-{name}"))
+    std::env::temp_dir().join(format!("chatir-test-{t}-{n}-{name}"))
 }
 
 async fn start(
@@ -54,7 +54,7 @@ async fn pair(a: &Arc<Node>, s: &Node, spaces: &[Id]) -> String {
     let code = s.storage_code().await.unwrap();
     a.add_storage(&code).await.unwrap();
     let (addr, _): (iroh::EndpointAddr, [u8; 16]) =
-        irch_core::op::uncode("host", &code).unwrap();
+        chatir_core::op::uncode("host", &code).unwrap();
     for id in spaces {
         a.store(id, &addr.id, true).await.unwrap();
     }
@@ -79,23 +79,38 @@ async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
     // SAFETY: storage nodes read it as they start; no test wants another.
     unsafe { std::env::set_var("CREDENTIALS_DIRECTORY", &creds) };
     let net = Net::Relay(vec![at.parse().unwrap()]);
-    irch_core::push::ours(d, &net, false).await.unwrap();
+    chatir_core::push::ours(d, &net, false).await.unwrap();
     relay
 }
 
-/// A phone with no node: what irpush brings its lane, as ops' news
+/// A lane for `d` on `relay`, before its node starts: members' frames go
+/// out only from a device that has one (for the ack).
+async fn lane(d: &std::path::Path, relay: &iroh_relay::server::Server) {
+    let at = format!("http://{}/", relay.http_addr().unwrap());
+    let net = Net::Relay(vec![at.parse().unwrap()]);
+    std::fs::create_dir_all(d).unwrap();
+    chatir_core::push::ours(d, &net, false).await.unwrap();
+}
+
+/// Whether `a` has a lane of `b`'s in space `id`.
+fn laned(a: &Node, id: &Id, b: &Node) -> bool {
+    let p = a.view(id, |s| s.pushes_of(Some(&b.id()))).unwrap_or_default();
+    p.iter().any(|p| p.1.contains("pushir:"))
+}
+
+/// A phone with no node: what pushir brings its lane, as ops' news
 /// (acks and dials passed over), read from its phonebook.
 struct Phone(
     std::path::PathBuf,
-    tokio::sync::mpsc::UnboundedReceiver<irch_core::push::Heard>,
+    tokio::sync::mpsc::UnboundedReceiver<chatir_core::push::Heard>,
 );
 
 impl Phone {
     fn new(d: &std::path::Path) -> Self {
-        Self(d.into(), irch_core::push::listen(d))
+        Self(d.into(), chatir_core::push::listen(d))
     }
 
-    async fn next(&mut self) -> Option<irch_core::wake::News> {
+    async fn next(&mut self) -> Option<chatir_core::push::News> {
         loop {
             let f = self.1.recv().await?;
             if let Some(Some(n)) = Node::news(&self.0, &f) {
@@ -290,7 +305,7 @@ async fn a_space_id_alone_gets_nothing_stored() {
     let before = held(&a);
     // x knows the space and the storage node, but not the key.
     let (store, _): (iroh::EndpointAddr, [u8; 16]) =
-        irch_core::op::uncode("host", &code).unwrap();
+        chatir_core::op::uncode("host", &code).unwrap();
     let mut inv = Invite::decode(&a.invite(&id).await.unwrap()).unwrap();
     (inv.key, inv.peers) = ([7; 32], vec![store]);
     let x = node("x").await;
@@ -311,15 +326,17 @@ async fn direct_messages() {
     .await;
     let dm = a.dm(&id, &b.id()).await.unwrap();
     assert_eq!(a.dm(&id, &b.id()).await.unwrap(), dm, "one DM per pair");
-    say(&a, &dm, irch_core::state::DM, "psst").await;
-    until("b got the DM", || texts(&b, &dm, &irch_core::state::DM) == ["psst"])
-        .await;
+    say(&a, &dm, chatir_core::state::DM, "psst").await;
+    until("b got the DM", || {
+        texts(&b, &dm, &chatir_core::state::DM) == ["psst"]
+    })
+    .await;
     assert!(b.spaces().contains(&dm));
     a.hide(&dm, true);
     assert!(a.hidden(&dm) && a.spaces().contains(&dm), "closed, not gone");
-    say(&b, &dm, irch_core::state::DM, "hey").await;
+    say(&b, &dm, chatir_core::state::DM, "hey").await;
     until("a got the answer", || {
-        texts(&a, &dm, &irch_core::state::DM).len() == 2
+        texts(&a, &dm, &chatir_core::state::DM).len() == 2
     })
     .await;
     assert!(!a.hidden(&dm), "back with its next message");
@@ -338,9 +355,9 @@ async fn a_contact_code_starts_a_dm() {
     let dm = || b.spaces().into_iter().find(|s| !b.card(s) && *s != card);
     until("b has a DM", || dm().is_some()).await;
     let dm = dm().unwrap();
-    say(&b, &dm, irch_core::state::DM, "found you").await;
+    say(&b, &dm, chatir_core::state::DM, "found you").await;
     until("a got it", || {
-        texts(&a, &dm, &irch_core::state::DM) == ["found you"]
+        texts(&a, &dm, &chatir_core::state::DM) == ["found you"]
     })
     .await;
     // Another holder gets a DM too, and learns nothing of b.
@@ -348,7 +365,7 @@ async fn a_contact_code_starts_a_dm() {
     c.join(&code).await.unwrap();
     let theirs = || c.spaces().into_iter().find(|s| !c.card(s) && *s != card);
     until("c has a DM", || theirs().is_some()).await;
-    let met = |s: &irch_core::state::State| {
+    let met = |s: &chatir_core::state::State| {
         s.profile(&b.id()).is_some() || !s.devices_of(&b.id()).is_empty()
     };
     assert_eq!(c.view(&card, met), Some(false), "holders never meet");
@@ -361,7 +378,7 @@ async fn a_contact_code_starts_a_dm() {
 /// keeps, and each device's push then tells members so.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_level_set_on_one_device_holds_on_all() {
-    use irch_core::Level;
+    use chatir_core::Level;
     let a = node("a").await;
     let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
     let id = a.create("hub").await.unwrap();
@@ -383,14 +400,14 @@ async fn answering_rings_neither_side() {
     let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
     until("b's key", keyed).await;
     let dm = a.dm(&id, &b.id()).await.unwrap();
-    say(&a, &dm, irch_core::state::DM, "call?").await;
+    say(&a, &dm, chatir_core::state::DM, "call?").await;
     until("b in the DM", || b.spaces().contains(&dm)).await;
     let rings = |n: &Node| n.notices().into_iter().filter(|x| x.ring).count();
     rings(&a);
-    a.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    a.call(Some((dm, chatir_core::state::DM))).await.unwrap();
     until("b sees a's call", || !b.calls(&dm).is_empty()).await;
     assert_eq!(rings(&b), 1, "b is rung");
-    b.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    b.call(Some((dm, chatir_core::state::DM))).await.unwrap();
     let both = |n: &Node| n.calls(&dm).values().flatten().count() == 2;
     until("both in the call", || both(&a) && both(&b)).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -408,15 +425,15 @@ async fn an_answer_rings_none_of_the_callers_devices() {
     let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
     until("b's key", keyed).await;
     let dm = a.dm(&id, &b.id()).await.unwrap();
-    say(&a, &dm, irch_core::state::DM, "psst").await;
+    say(&a, &dm, chatir_core::state::DM, "psst").await;
     until("all in the DM", || {
         b.spaces().contains(&dm) && a2.spaces().contains(&dm)
     })
     .await;
     a2.notices();
-    a.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    a.call(Some((dm, chatir_core::state::DM))).await.unwrap();
     until("a2 sees a's call", || !a2.calls(&dm).is_empty()).await;
-    b.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    b.call(Some((dm, chatir_core::state::DM))).await.unwrap();
     let both = || a2.calls(&dm).values().flatten().count() == 2;
     until("a2 sees b answer", both).await;
     let rings = a2.notices().into_iter().filter(|x| x.ring).count();
@@ -433,9 +450,11 @@ async fn a_new_dm_notifies() {
     until("b's key", keyed).await;
     let _ = b.notices(); // the hub's history: quiet
     let dm = a.dm(&id, &b.id()).await.unwrap();
-    say(&a, &dm, irch_core::state::DM, "are you there?").await;
-    until("b got the DM", || !texts(&b, &dm, &irch_core::state::DM).is_empty())
-        .await;
+    say(&a, &dm, chatir_core::state::DM, "are you there?").await;
+    until("b got the DM", || {
+        !texts(&b, &dm, &chatir_core::state::DM).is_empty()
+    })
+    .await;
     let n = b.notices();
     assert_eq!(
         n.iter().map(|n| &*n.body).collect::<Vec<_>>(),
@@ -451,11 +470,11 @@ async fn a_dm_call_rings_once() {
     let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
     until("b's key", keyed).await;
     let dm = a.dm(&id, &b.id()).await.unwrap();
-    say(&a, &dm, irch_core::state::DM, "psst").await;
+    say(&a, &dm, chatir_core::state::DM, "psst").await;
     until("b in the DM", || b.spaces().contains(&dm)).await;
     b.notices(); // the message, told
     b.call(Some((id, general(&b, &id)))).await.unwrap(); // call waiting
-    a.call(Some((dm, irch_core::state::DM))).await.unwrap();
+    a.call(Some((dm, chatir_core::state::DM))).await.unwrap();
     until("b sees the call", || !b.calls(&dm).is_empty()).await;
     // The DM's rings (b's call in the hub, a space of two, rings for a).
     let rings = |n: &Node| {
@@ -465,7 +484,7 @@ async fn a_dm_call_rings_once() {
     assert_eq!(rings(&b), 0, "once");
     assert_eq!(rings(&a), 0, "not the caller");
     // The caller hears that b's device has it, and that it rings there.
-    let dmc = irch_core::state::DM;
+    let dmc = chatir_core::state::DM;
     until("a knows b has it", || a.reach(&dm, &b.id()).is_some()).await;
     assert!(!a.rings(&dm, &b.id(), &dmc), "not yet said");
     // Said again and again, as the app does, until the DM's gossip forms.
@@ -520,7 +539,7 @@ async fn storage_keeps_only_the_spaces_chosen() {
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert!(!has(not), "a space not chosen stays off the storage node");
     let (addr, _): (iroh::EndpointAddr, [u8; 16]) =
-        irch_core::op::uncode("host", &code).unwrap();
+        chatir_core::op::uncode("host", &code).unwrap();
     a.store(&not, &addr.id, true).await.unwrap();
     until("and once chosen, kept too", || has(not)).await;
 }
@@ -540,7 +559,7 @@ async fn offered_files_go_from_device_to_members_only() {
     let f = a.offer(&id, &src, None).await.unwrap();
     assert!(f.offered() && f.size == big.len() as u64 && f.name == "big.bin");
     // Said to be a byte, to open in place: refused before any of it comes.
-    let tiny = irch_core::File { size: 1, ..f.clone() };
+    let tiny = chatir_core::File { size: 1, ..f.clone() };
     assert!(b.file(&id, &tiny).await.is_err(), "not the size it says");
     let saved = b.save(&id, &f, &dir("saved")).await.unwrap();
     assert!(std::fs::read(&saved).unwrap() == big, "b has it, whole");
@@ -659,7 +678,7 @@ async fn attachments_live_on_storage_too() {
     assert_eq!(first(&b).unwrap(), f);
     assert_eq!(b.file(&id, &f).await.unwrap(), data, "fetched from a");
     let out = dir("saved");
-    let evil = irch_core::File { name: "../../.cat.png".into(), ..f.clone() };
+    let evil = chatir_core::File { name: "../../.cat.png".into(), ..f.clone() };
     let p1 = b.save(&id, &evil, &out).await.unwrap();
     let p2 = b.save(&id, &evil, &out).await.unwrap();
     assert_eq!(
@@ -723,26 +742,21 @@ async fn calls_carry_frames_between_members_only() {
     assert!(a.calls(&id).is_empty() && a.in_call().is_none());
 }
 
-/// Every storage node is a push server through irpush, no Google: a
-/// phone registers with its own unasked, and each ring lands on the
-/// phone's mailbox, sealed to it.
+/// A storage node tells the devices it serves its relay; a phone asleep is
+/// woken on its lane by a member, no storage node between, no Google.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_storage_node_rings_a_phone_through_irpush() {
-    let db = dir("b");
+async fn a_lane_wakes_a_phone_and_a_storage_nodes_relay_is_told() {
+    let (da, db) = (dir("a"), dir("b"));
     let relay = push_relay(&db).await;
+    lane(&da, &relay).await;
     let at = format!("http://{}", relay.http_addr().unwrap());
     let s = start(&dir("s"), "s", None, true).await;
-    let da = dir("a");
     let a = start(&da, "a", None, false).await;
     let b = start(&db, "b", None, false).await;
     let id = a.create("hub").await.unwrap();
     let ch = general(&a, &id);
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
     pair(&b, &s, &[]).await;
-    let url = b.irpush().await.expect("taken by its storage node");
-    assert_eq!(b.irpush().await, Some(url.clone()), "kept");
-    b.set_push(Some(url)).await;
-    assert!(b.pushing(), "its storage node took the route");
     // Its relay is theirs too, as a sync with it ends.
     pair(&a, &s, &[id]).await;
     let has = |d: &std::path::Path| {
@@ -751,9 +765,7 @@ async fn a_storage_node_rings_a_phone_through_irpush() {
     };
     until("b has its storage node's relay", || has(&db)).await;
     until("a has it, unpaired", || has(&da)).await;
-    let ring = |p: &(iroh::EndpointId, String)| p.1.starts_with("irch:ring:");
-    let told = || a.view(&id, |s| s.pushes_of(None).iter().any(ring));
-    until("a knows b's push server", || told() == Some(true)).await;
+    until("a knows b's lane", || laned(&a, &id, &b)).await;
     let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
     until("b knows a", named).await;
     b.shutdown().await;
@@ -827,7 +839,7 @@ async fn a_file_nobody_online_has_fails_soon_and_says_why() {
 /// call, and once it answers, each hears the other.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dm_call_connects_both_ways() {
-    use irch_core::state::DM;
+    use chatir_core::state::DM;
     let (a, b) = (node("a").await, node("b").await);
     let id = a.create("hub").await.unwrap();
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
@@ -863,7 +875,7 @@ async fn a_dm_call_connects_both_ways() {
 /// when only a storage node or a stale gossip neighbor might hold it.
 #[tokio::test(flavor = "multi_thread")]
 async fn delivered_means_on_their_device() {
-    use irch_core::state::DM;
+    use chatir_core::state::DM;
     let db = dir("b");
     let a = node("a").await;
     let b = start(&db, "b", None, false).await;
@@ -890,7 +902,7 @@ async fn delivered_means_on_their_device() {
 /// Read in a DM, its sender sees so (Signal's ticks); invisible, not.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dm_read_is_told_to_its_sender() {
-    use irch_core::state::DM;
+    use chatir_core::state::DM;
     let (a, b) = (node("a").await, node("b").await);
     let id = a.create("hub").await.unwrap();
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
@@ -917,7 +929,7 @@ async fn a_dm_read_is_told_to_its_sender() {
 /// Both open a DM with the other at once: they end up in one, the same.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_dms_at_once_become_one() {
-    use irch_core::state::DM;
+    use chatir_core::state::DM;
     let (a, b) = (node("a").await, node("b").await);
     let id = a.create("hub").await.unwrap();
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
@@ -976,58 +988,42 @@ async fn a_small_spaces_call_rings() {
 }
 
 /// Which way a call's ring reaches the callee, and how fast: the call
-/// said in the space (gossip), a push through its storage node (irpush),
-/// and what dialing its device takes (the doctor). On loopback the times
+/// said in the space, a frame on its lane (pushir), and what dialing its
+/// device takes (the doctor). On loopback the times
 /// are each path's own cost; `--nocapture` prints them.
 #[tokio::test(flavor = "multi_thread")]
 async fn ring_paths() {
     use std::time::Instant;
-    let db = dir("b");
-    let _relay = push_relay(&db).await;
-    let s = start(&dir("s"), "s", None, true).await;
-    let (a, b) = (node("a").await, start(&db, "b", None, false).await);
+    let (da, db) = (dir("a"), dir("b"));
+    let relay = push_relay(&db).await;
+    lane(&da, &relay).await;
+    let a = start(&da, "a", None, false).await;
+    let b = start(&db, "b", None, false).await;
     let id = a.create("duo").await.unwrap();
     let ch = general(&a, &id);
     b.join(&a.invite(&id).await.unwrap()).await.unwrap();
-    pair(&b, &s, &[]).await;
-    let url = b.irpush().await.expect("taken by its storage node");
-    b.set_push(Some(url)).await;
-    let ring = |p: &(iroh::EndpointId, String)| p.1.starts_with("irch:ring:");
-    let told = || a.view(&id, |s| s.pushes_of(None).iter().any(ring));
-    until("a knows b's push server", || told() == Some(true)).await;
+    until("a knows b's lane", || laned(&a, &id, &b)).await;
     let on = |x: &Node, u: &Node| x.online(&id).contains(&u.id());
     until("each sees the other", || on(&a, &b) && on(&b, &a)).await;
-    let mut phone = Phone::new(&db);
-
     let doc = a.doctor(Some(b.id())).await;
     let dial = doc["devices"][0]["ms"].as_u64().expect("b's device reached");
-    let server = doc["push"][0]["ms"].as_u64().expect("its push server");
-    // Awake: both ways at once; which lands first?
+    // Awake: said in the space, heard by its node.
     let mut heard = b.subscribe();
     let t = Instant::now();
     a.call(Some((id, ch))).await.unwrap();
     let said = t.elapsed();
-    let pushed = tokio::spawn(async move {
-        let p = phone.next().await;
-        (t.elapsed(), p, phone)
-    });
     while b.calls(&id).is_empty() {
         let e = tokio::time::timeout(Duration::from_secs(10), heard.recv());
         let _: Event = e.await.expect("b hears the call").unwrap();
     }
-    let gossip = t.elapsed();
-    let (push, news, mut phone) = pushed.await.unwrap();
-    assert!(news.is_some(), "pushed too");
+    let awake = t.elapsed();
     a.call(None).await.unwrap();
     until("b hears it end", || b.calls(&id).is_empty()).await;
-    while tokio::time::timeout(Duration::from_millis(500), phone.next())
-        .await
-        .is_ok()
-    {} // the hang-up's push
 
     // Asleep: the push alone.
     b.shutdown().await;
     drop(b);
+    let mut phone = Phone::new(&db);
     let t = Instant::now();
     a.call(Some((id, ch))).await.unwrap();
     let news = tokio::time::timeout(Duration::from_secs(10), phone.next());
@@ -1036,55 +1032,16 @@ async fn ring_paths() {
     let n = Node::woken(&db, &news).0.expect("shown from the phonebook");
     assert!(n.ring, "it rings");
     println!(
-        "ring paths (loopback): awake: said {said:?}, gossip {gossip:?}, \
-         push {push:?}; \
-         asleep: push {asleep:?}; a dial to b's device {dial} ms, \
-         to its push server {server} ms"
+        "ring paths (loopback): awake: said {said:?}, heard {awake:?}; \
+         asleep: push {asleep:?}; a dial to b's device {dial} ms"
     );
-}
-
-/// A phone registers with each of its storage nodes as a push server, so
-/// a ring gets through while any one of them is up.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_ring_gets_through_while_any_push_server_is_up() {
-    let db = dir("b");
-    let _relay = push_relay(&db).await;
-    let (s1, s2) = (
-        start(&dir("s1"), "s1", None, true).await,
-        start(&dir("s2"), "s2", None, true).await,
-    );
-    let (a, b) = (node("a").await, start(&db, "b", None, false).await);
-    let id = a.create("duo").await.unwrap();
-    let ch = general(&a, &id);
-    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
-    pair(&b, &s1, &[]).await;
-    pair(&b, &s2, &[]).await;
-    let url = b.irpush().await.expect("taken by a storage node");
-    b.set_push(Some(url)).await;
-    let codes = || {
-        let p = a.view(&id, |s| s.pushes_of(Some(&b.id()))).unwrap_or_default();
-        let rings = |u: &str| u.matches("irch:ring:").count();
-        p.iter().map(|x| rings(&x.1)).max().unwrap_or(0)
-    };
-    until("a rings b through both", || codes() == 2).await;
-    b.shutdown().await;
-    drop(b);
-    s1.shutdown().await;
-    drop(s1);
-    let mut phone = Phone::new(&db);
-    say(&a, &id, ch, "still here?").await;
-    let news = tokio::time::timeout(Duration::from_secs(20), phone.next());
-    let news = news.await.expect("pushed through s2").unwrap();
-    let n = Node::woken(&db, &news).0.expect("shown");
-    assert_eq!(n.body, "still here?");
-    drop(s2);
 }
 
 /// Declined, a DM call says so: its caller hears who declined, and the
 /// callee's other devices (here, a linked one) hear it too.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_declined_call_tells_the_caller() {
-    use irch_core::state::DM;
+    use chatir_core::state::DM;
     let (a, b) = (node("a").await, node("b").await);
     let b2 = start(&dir("b2"), "b", Some(b.link_code().await), false).await;
     let id = a.create("hub").await.unwrap();
@@ -1195,7 +1152,7 @@ async fn notes_to_self_reach_our_devices_only() {
     let b = node("b").await;
     let own = a.own();
     assert_eq!(a2.own(), own, "the same space on each device");
-    let ch = irch_core::state::DM;
+    let ch = chatir_core::state::DM;
     say(&a, &own, ch, "the wifi password").await;
     until("a2 has it", || texts(&a2, &own, &ch) == ["the wifi password"]).await;
     assert!(b.view(&own, |_| ()).is_none(), "not b's");
@@ -1275,7 +1232,7 @@ async fn iroh_sleeps_and_a_dial_wakes_it() {
     assert!(b.iroh_up(), "awake");
 }
 
-/// On one relay, small ops go as irpush events (one datagram each, acked
+/// On one relay, small ops go as pushir events (one datagram each, acked
 /// the same way), with no link dialed for them.
 #[tokio::test(flavor = "multi_thread")]
 async fn small_ops_go_as_events() {

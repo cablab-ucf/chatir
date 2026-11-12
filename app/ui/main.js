@@ -5,6 +5,12 @@ import { inline, markdown } from "./markdown.js";
 import * as av from "./call.js";
 import { ogg, unogg } from "./ogg.js";
 
+// Android, raised over a locked phone by a ringing call: the call alone,
+// before anything else is drawn (MainActivity.kt).
+if (window.chatirLock?.locked()) {
+  document.documentElement.classList.add("lockscreen");
+}
+
 let troubled = new Set();
 av.call.trouble = (why) => {
   if (troubled.has(why)) return;
@@ -16,7 +22,7 @@ av.call.trouble = (why) => {
 const T = window.__TAURI__;
 const invoke = T?.core?.invoke;
 const clip = T?.clipboardManager;
-const rpc = (cmd, args) => invoke("irch", { call: { cmd, ...args } });
+const rpc = (cmd, args) => invoke("chatir", { call: { cmd, ...args } });
 
 // ---------- helpers ----------
 
@@ -179,12 +185,12 @@ const shared = /\/x\/[a-z0-9]+\//.test(location.pathname);
 const kept = shared ? sessionStorage : localStorage;
 try {
   for (const k of Object.keys(shared ? localStorage : {})) {
-    if (k.startsWith("irch.")) localStorage.removeItem(k);
+    if (k.startsWith("chatir.")) localStorage.removeItem(k);
   }
 } catch {}
 const store = {
-  get: (k) => { try { return kept.getItem("irch." + k); } catch {} },
-  set: (k, v) => { try { kept.setItem("irch." + k, v); } catch {} },
+  get: (k) => { try { return kept.getItem("chatir." + k); } catch {} },
+  set: (k, v) => { try { kept.setItem("chatir." + k, v); } catch {} },
 };
 
 const THEMES = { neon: "Neon", midnight: "Midnight", nord: "Nord",
@@ -480,7 +486,10 @@ async function loadMessages() {
     { space: s.id, channel: ch.id, before: null, limit });
   if (s.id !== S.sid || ch.id !== S.ch) return; // selection moved on
   const top = msgs[0];
-  const older = msgs.length < limit ? [] : S.msgs.filter((m) =>
+  // Older pages stay only if they still join the newest: a burst longer
+  // than a page since would leave a hole between them.
+  const joined = top && S.msgs.some((m) => m.id === top.id);
+  const older = msgs.length < limit || !joined ? [] : S.msgs.filter((m) =>
     m.ts < top.ts || (m.ts === top.ts && m.id < top.id));
   S.msgs = older.concat(msgs);
   S.more = msgs.length >= limit && (!older.length || S.more);
@@ -607,7 +616,7 @@ function renderSidebar() {
   }
   put($("server-header"), h("button", { class: "brand",
     title: "Settings and more", "aria-label": "Settings and more",
-    onclick: (e) => mainMenu(e.currentTarget) }, "irch"),
+    onclick: (e) => mainMenu(e.currentTarget) }, "chatir"),
     h("button", { title: "Add a space (create or join)", onclick: addSpace },
       icon("plus")));
   const d = dms();
@@ -755,8 +764,8 @@ function channelList(s) {
 
 // Its link is how tydig, or a note, points here.
 const chanMenu = (s, ch) => [
-  ["Copy Link", "link", () => copy(`irch://open/${s.id}/${ch.id}`,
-    "Copied the channel's link: paste it in tydig's Share › irch")],
+  ["Copy Link", "link", () => copy(`chatir://open/${s.id}/${ch.id}`,
+    "Copied the channel's link: paste it in tydig's Share › chatir")],
   ...s.admin ? ["-", ["Rename or Delete", "pencil", () => editChannel(ch)],
     ["Move Up", "up", () => reorder(s, ch.id, -1)],
     ["Move Down", "chevron", () => reorder(s, ch.id, 1)]] : [],
@@ -789,21 +798,21 @@ async function updates(quietly) {
   } catch (e) {
     return quietly || toast(`Could not check: ${e}`, true);
   }
-  if (!v) return quietly || toast("irch is up to date");
+  if (!v) return quietly || toast("chatir is up to date");
   const ok = await modal((finish) => h("div", {},
-    h("div", { class: "m-body" }, h("h2", {}, `irch ${v} is out`),
+    h("div", { class: "m-body" }, h("h2", {}, `chatir ${v} is out`),
       h("p", { class: "sub" }, android
         ? "Your browser downloads it; open it, and Android installs it "
           + "over this one."
-        : "It downloads, checks its signature, and irch restarts (or, if "
-          + "irch came another way, its release page opens).")),
+        : "It downloads, checks its signature, and chatir restarts (or, if "
+          + "chatir came another way, its release page opens).")),
     foot(cancel(finish),
       h("button", { class: "btn", onclick: () => finish(true) }, "Update"))));
   if (!ok) return;
-  const t = toast(`Downloading irch ${v}…`, false, 6e5);
+  const t = toast(`Downloading chatir ${v}…`, false, 6e5);
   const progress = new T.core.Channel();
   progress.onmessage = (p) => t.textContent = p < 100
-    ? `Downloading irch ${v}… ${p}%` : `Installing irch ${v}…`;
+    ? `Downloading chatir ${v}… ${p}%` : `Installing chatir ${v}…`;
   await invoke("upgrade", { progress })
     .then((said) => said && toast(said, false, 1e4))
     .catch((e) => toast(`Update failed: ${e}`, true, 1e4))
@@ -811,7 +820,7 @@ async function updates(quietly) {
 }
 
 async function openUrl(url) {
-  const c = /^irch:\/\/(call|ring)\/([0-9a-f]{64})\/([0-9a-f]{16})$/
+  const c = /^chatir:\/\/(call|ring)\/([0-9a-f]{64})\/([0-9a-f]{16})$/
     .exec(url);
   // Only Android's Answer button (its token checked) answers unasked.
   if (c) {
@@ -822,9 +831,9 @@ async function openUrl(url) {
     if (!av.call.on && !calling) quiet(invoke("in_call", { on: false }));
     return;
   }
-  if (!String(url).startsWith("irch://open/")) return;
+  if (!String(url).startsWith("chatir://open/")) return;
   // A channel's link, or a message's.
-  const [sid, ch, msg] = url.replace(/^irch:\/\/open\//, "").split("/");
+  const [sid, ch, msg] = url.replace(/^chatir:\/\/open\//, "").split("/");
   const s = S.spaces.find((x) => x.id === sid);
   if (!s || !/^[0-9a-f]{16}$/.test(ch) || msg && !/^[0-9a-f]{64}$/.test(msg)) {
     return toast("That link is to a space you are not in", true);
@@ -884,7 +893,7 @@ function renderHeader() {
     icon("thread"), h("span", {}, ch.name)]
     : s?.dm ? [h("b", { class: "at" }, "@"), h("span", {}, s.name)]
     : ch ? [icon("hash"), h("span", {}, ch.name)]
-    : [h("span", {}, s ? "Syncing…" : "irch")];
+    : [h("span", {}, s ? "Syncing…" : "chatir")];
   put($("chat-header").querySelector(".title"), label);
   const net = $("net");
   net.className = s?.peers ? "up" : "";
@@ -929,14 +938,14 @@ function renderHeader() {
 
 function renderEmpty() {
   put($("empty"), h("div", {},
-    h("h1", {}, "Welcome to irch"),
+    h("h1", {}, "Welcome to chatir"),
     h("p", {}, "Private, peer-to-peer chat. No servers, no accounts, no " +
       "phone number: devices talk directly over iroh, and everything is " +
       "end-to-end encrypted."),
     h("button", { class: "btn", onclick: createFlow }, "Create a space"), " ",
     h("button", { class: "btn grey", onclick: joinFlow },
       "Join with an invite"),
-    h("p", { class: "note" }, "Already use irch elsewhere? ",
+    h("p", { class: "note" }, "Already use chatir elsewhere? ",
       h("span", { class: "link", onclick: linkFlow }, "Link this device"))));
 }
 
@@ -963,7 +972,7 @@ async function ring() {
 
 // A web view plays sound only once someone has clicked or typed. Awake
 // only while it sounds: a context left running holds the speaker open,
-// and Android reopens it, popping, each time irch comes back in sight.
+// and Android reopens it, popping, each time chatir comes back in sight.
 let audio, nap;
 for (const e of ["pointerdown", "keydown"]) {
   addEventListener(e, () => {
@@ -1001,13 +1010,11 @@ const chime = () =>
 const ringing = () => S.silent || tone([[440, 0, 2], [480, 0, 2]], 0.07);
 const ringback = () => tone([[440, 0, 2], [480, 0, 2]], 0.04);
 
-/** The doctor's answer in a line: each device and push server, timed. */
+/** The doctor's answer in a line: each device, timed. */
 const reach = (d) => [
   ...d.devices.map((x) => `${x.name ?? x.device}: ` + (x.ms == null
     ? "unreachable" : `${x.ms} ms, ${x.path === "direct" ? "direct" : "relayed"}`)),
-  ...d.push.map((x) => `push via ${x.name ?? x.server}: ` +
-    (x.ms == null ? "unreachable" : `${x.ms} ms`)),
-].join(" · ") || "no device or push server of theirs known";
+].join(" · ") || "no device of theirs known";
 
 /** A DM call of ours, alone in it: is it reaching them, ringing there,
  * or not getting through (and why, from the doctor)? Ringback only once
@@ -1418,7 +1425,7 @@ async function openLink(href) {
   const web = /^(https?|mailto):$/.test(u.protocol);
   const go = await modal((finish) => h("div", {},
     h("div", { class: "m-body" }, h("h2", {}, "Open this link?"),
-      h("p", { class: "sub" }, "It leaves irch. Check where it really goes."),
+      h("p", { class: "sub" }, "It leaves chatir. Check where it really goes."),
       h("p", { class: "url" }, u.href),
       web && u.host && h("p", { class: "note" }, "Site: ", h("b", {}, u.host))),
     foot(cancel(finish), h("button", { class: "btn grey",
@@ -1519,7 +1526,8 @@ const inl = (tokens) => [...render(tokens, h("span", {})).childNodes];
 
 // ---------- attachments ----------
 
-const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+// No prototype: a file named a.constructor has no type.
+const MIME = { __proto__: null, png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
   gif: "image/gif", webp: "image/webp", avif: "image/avif", bmp: "image/bmp" };
 const mime = (name) => MIME[name.split(".").pop().toLowerCase()];
 const size = (n) => {
@@ -1625,10 +1633,10 @@ async function saveFile(f) {
   const at = await invoke("save", { space: S.sid, file: f })
     .catch((e) => toast(`${f.name}: ${e}`, true, 8000));
   S.saving?.remove();
-  if (at) toast(ios ? "Saved: Files › irch" : `Saved: ${at}`);
+  if (at) toast(ios ? "Saved: Files › chatir" : `Saved: ${at}`);
 }
 
-const MEDIA = { mp3: "audio/mpeg", ogg: "audio/ogg", oga: "audio/ogg",
+const MEDIA = { __proto__: null, mp3: "audio/mpeg", ogg: "audio/ogg", oga: "audio/ogg",
   opus: "audio/ogg", wav: "audio/wav", m4a: "audio/mp4", flac: "audio/flac",
   mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm",
   mov: "video/quicktime" };
@@ -1723,7 +1731,7 @@ const sealFile = async (file, password) => call("seal", { space: S.sid,
 const offerFile = async (file) =>
   call("offer", { space: S.sid, path: await upload(file), name: file.name });
 
-// Into irch's folder in parts (a page knows no paths).
+// Into chatir's folder in parts (a page knows no paths).
 async function upload(file) {
   const id = randomId(16);
   const t = file.size > PART
@@ -1793,7 +1801,7 @@ function toolbar(m) {
     !inThread() && tool("thread", "Reply in thread", () => openThread(m.id)),
     m.text && tool("copy", "Copy", () => copy(m.text, "Copied")),
     tool("note", "Add to notes", () => toNotes(m)),
-    tool("link", "Copy Link", () => copy(`irch://open/${S.sid}/${S.ch}/${m.id}`,
+    tool("link", "Copy Link", () => copy(`chatir://open/${S.sid}/${S.ch}/${m.id}`,
       "Copied its link: it opens here for anyone in this space")),
     tool("pin", m.pinned ? "Unpin" : "Pin",
       () => publish({ Pin: { target: m.id, on: !m.pinned } })),
@@ -1989,7 +1997,7 @@ function mainMenu(anchor) {
     ["Network use", "speaker", usageFlow],
     !mobile() && ["Keyboard shortcuts", "key", keysHelp],
     "-",
-    [`Check for updates (irch ${S.me.version})`, "down", () => updates(false)],
+    [`Check for updates (chatir ${S.me.version})`, "down", () => updates(false)],
   ]);
 }
 
@@ -2058,7 +2066,7 @@ function storageFlow(focus) {
           h("small", {}, `device ${x.short}` +
             (x.node === local ? " · this computer" : "") +
             " · " + (x.seen ? `synced ${ago(x.seen)}`
-              : "not reached since irch started"))),
+              : "not reached since chatir started"))),
         h("button", { class: "gear", title: "Rename",
           onclick: go(() => rename(x.node, x.name, () => storageFlow(focus))) },
         icon("pencil")),
@@ -2071,7 +2079,7 @@ function storageFlow(focus) {
           checked: s.storage.find((y) => y.node === x.node)?.on,
           onchange: (e) => keep(s, x.node, e.target.checked) }), h("i")))));
     const code = h("input",
-      { type: "text", placeholder: "irch:host:…", maxLength: 8192 });
+      { type: "text", placeholder: "chatir:host:…", maxLength: 8192 });
     const pair = async () => {
       const c = code.value.trim();
       if (!c) return;
@@ -2287,8 +2295,8 @@ async function shortCode(space) {
   clearInterval(tick);
 }
 
-/** A typed short code (`k7m-x9q-p3a`): the full code it stands for. */
-const SHORT = /^\s*[0-9a-z]{3}[-\s]?[0-9a-z]{3}[-\s]?[0-9a-z]{3}\s*$/i;
+/** A typed short code (`k7m-x9q-p3a-b2c`): the full code it stands for. */
+const SHORT = /^\s*[0-9a-z]{3}([-\s]?[0-9a-z]{3}){3}\s*$/i;
 async function long(code) {
   if (!SHORT.test(code)) return code;
   toast("Asking for that code's invite…", false, 30e3);
@@ -2392,7 +2400,7 @@ async function joinFlow(card) {
     sub: "Paste their contact code (Contacts › My contact code).",
     label: "Contact code" } : { title: "Join a space",
     sub: "Paste an invite someone shared with you, or type its short code.",
-    label: "Invite", placeholder: "irch:join:… or k7m-x9q-p3a", ok: "Join",
+    label: "Invite", placeholder: "chatir:join:… or k7m-x9q-p3a-b2c", ok: "Join",
     maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code && !card) code = await long(code);
@@ -2402,7 +2410,7 @@ async function joinFlow(card) {
 /** What the invite is to, and from whom, before anything is sent. */
 async function joinCode(code) {
   const p = await rpc("peek", { code }).catch(() => null);
-  if (!p) return toast("That is not an irch invite", true);
+  if (!p) return toast("That is not a chatir invite", true);
   if (p.card) return addCard(code, p);
   if (!p.joined) {
     const ok = await modal((finish) => h("div", {},
@@ -2437,7 +2445,7 @@ async function linkFlow() {
     sub: "On your other device, open My Account › Link a device and paste " +
       "its code here, or type its short code. This device becomes you, " +
       "with all your spaces.",
-    label: "Link code", placeholder: "irch:link:… or k7m-x9q-p3a", ok: "Link",
+    label: "Link code", placeholder: "chatir:link:… or k7m-x9q-p3a-b2c", ok: "Link",
     maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code) code = await long(code);
@@ -2512,7 +2520,7 @@ function settings() {
     return h("div", {},
       h("div", { class: "m-body" },
         h("h2", {}, "My Account"),
-        h("p", { class: "note" }, `irch ${S.me.version} on ${S.me.device}`),
+        h("p", { class: "note" }, `chatir ${S.me.version} on ${S.me.device}`),
         h("label", {}, "Display name"), name,
         h("label", {}, "Theme"),
         h("div", { class: "chips" }, ...Object.entries(THEMES).map(([k, v]) =>
@@ -2626,7 +2634,7 @@ function forgetPage() {
   const t = store.get("theme");
   try {
     for (const k of Object.keys(kept)) {
-      if (k.startsWith("irch.")) kept.removeItem(k);
+      if (k.startsWith("chatir.")) kept.removeItem(k);
     }
   } catch {}
   theme(t);
@@ -2636,7 +2644,7 @@ const amount = (b = 0) => b < 1e6 ? `${(b / 1e3).toFixed(1)} kB`
   : `${(b / 1e6).toFixed(1)} MB`;
 
 /** When iroh ran and what it moved (usage log), and on Android the app's
- * own packets, irpush's socket among them, as the phone counts them. */
+ * own packets, pushir's socket among them, as the phone counts them. */
 async function usageFlow() {
   const u = await rpc("usage").catch(() => null);
   if (!u) return toast("No usage log here", true);
@@ -2659,10 +2667,11 @@ async function usageFlow() {
         `through a relay), received ${amount(sum("in"))}; ` +
         `${sum("datagrams_in")} packets in; ${sum("probes")} network ` +
         "probes. iroh's own count: not the TLS or DNS around it."),
-      h("p", { class: "sub" }, `Relay: ${u.relay}, ` + (u.quiet
-        ? "irpush's: pinged after 130 min, not 15 s."
-        : "a stock one, pinged every 15 s: pair with a storage node that " +
-          "has an irpush relay (irch --install --push-relay).")),
+      h("p", { class: "sub" }, u.lane
+        ? `Pushes: ${u.lane}, one quiet socket, ` + (u.wakes
+          ? "answering: iroh sleeps while nothing needs it."
+          : "not answering now: iroh stays on so you are still reached.")
+        : "No push relay here: iroh stays on."),
       h("button", { class: "choice", onclick: relayKey }, icon("pencil"),
         "Relay key: no speed limit through a relay"),
       relayKeys(),
@@ -2673,10 +2682,10 @@ async function usageFlow() {
             (r.up ? "" : " (down)")).join(", ") || "none"}. ` + reach(d);
         }, (err) => { e.target.textContent = String(err); });
       } }, icon("eye"), "Check connections to your devices"),
-      phone && h("p", { class: "sub" }, `Since the phone started, irch ` +
+      phone && h("p", { class: "sub" }, `Since the phone started, chatir ` +
         `sent ${phone.tx_packets} packets (${amount(phone.tx_bytes)}) and ` +
         `received ${phone.rx_packets} (${amount(phone.rx_bytes)}), ` +
-        `irpush's socket included. Battery: ${phone.battery}% (the whole ` +
+        `pushir's socket included. Battery: ${phone.battery}% (the whole ` +
         "phone; Android counts each app's share)."),
       phone && h("button", { class: "choice", onclick: () =>
         quiet(invoke("notify_check", { ask: "battery" })) },
@@ -2717,10 +2726,10 @@ async function devicesFlow() {
  * files that cannot go direct. Sent to that relay only. */
 async function relayKey() {
   const line = await ask({ title: "Relay key", label: "Relay and key",
-    sub: "From whoever runs the relay (irpush: make key). Only that relay " +
-      "sees it, and says here whether it takes it. In use from irch's " +
+    sub: "From whoever runs the relay (pushir: make key). Only that relay " +
+      "sees it, and says here whether it takes it. In use from chatir's " +
       "next start.",
-    placeholder: "https://irpush.example#key", maxLength: 300 });
+    placeholder: "https://pushir.example#key", maxLength: 300 });
   if (!line) return;
   const ok = await call("relay_key", { line }).catch(() => undefined);
   if (ok !== undefined) toast(keyWord(line.split("#")[0], ok), ok === false,
@@ -2729,9 +2738,9 @@ async function relayKey() {
 
 /** What a relay says of our key for it. */
 const keyWord = (url, ok) => ok === true
-  ? `${url} takes the key: no speed limit there, from irch's next start`
+  ? `${url} takes the key: no speed limit there, from chatir's next start`
   : ok === false ? `${url} does not know this key (kept; check it)`
-  : `${url} did not say (down, or not irpush's relay); kept`;
+  : `${url} did not say (down, or not pushir's relay); kept`;
 
 /** Our relay keys, each as its relay answers now, with Remove. */
 function relayKeys() {
@@ -2739,7 +2748,7 @@ function relayKeys() {
   rpc("relay_keys").then((ks) => put(box, ks.map(([url, ok]) =>
     h("div", { class: "row shared" },
       h("span", {}, (ok ? "✓ " : ok === false ? "✗ " : "? ") +
-        keyWord(url, ok).replace(", from irch's next start", "")),
+        keyWord(url, ok).replace(", from chatir's next start", "")),
       h("button", { class: "btn grey", onclick: async (e) => {
         await quiet(call("relay_key", { line: url }));
         e.target.closest(".row").remove();
@@ -2788,7 +2797,7 @@ async function forget(x, here) {
   const ok = await confirmBox({ title: `Remove ${x.name ?? x.short}?`,
     sub: "It leaves this list on all your devices and keeps nothing more " +
       "for you. " + (here ? "It runs on this computer: you can stop it next."
-        : "It keeps running where it is: stop it there (irch --uninstall)."),
+        : "It keeps running where it is: stop it there (chatir --uninstall)."),
     ok: "Remove" });
   if (!ok) return;
   await quiet(call("forget_storage", { node: x.node }));
@@ -2830,7 +2839,7 @@ async function sharedFlow() {
   modal((finish) => h("div", {},
     h("div", { class: "m-body" }, h("h2", {}, "Shared from this device"),
       h("p", { class: "sub" }, "Members of each file's space can fetch it " +
-        "from here while irch runs: ones you shared, and ones you opened."),
+        "from here while chatir runs: ones you shared, and ones you opened."),
       files.length ? files.map((f) => h("div", { class: "row shared" },
         h("span", {}, f.name, h("small", {},
           ` · ${size(f.size)} · ${where(f.space)}`)),
@@ -2878,7 +2887,7 @@ async function health(ask = "") {
   if (!android) return;
   const a = await invoke("notify_check", { ask }).catch(() => null);
   const bad = a ? [!a.notify && "notifications are off",
-    !a.background && "Android cuts irch off while the phone sleeps",
+    !a.background && "Android cuts chatir off while the phone sleeps",
     !a.calls && "calls cannot ring on a locked screen"].filter(Boolean) : [];
   put($("health"), bad.length > 0 && [
     h("b", {}, "Messages and calls may not reach you: "), bad.join("; "),
@@ -2905,12 +2914,12 @@ function notifyCheck() {
     const row = (ok, text) => h("p", { class: "check" + (ok ? " ok" : "") },
       ok ? "✓ " : "✗ ", text);
     put(box, h("label", {}, "Notifications on this phone"),
-      row(a.notify, "irch may show notifications"),
-      row(a.background, "irch may run in the background (else, asleep " +
+      row(a.notify, "chatir may show notifications"),
+      row(a.background, "chatir may run in the background (else, asleep " +
         "in a pocket, Android cuts it off and it cannot ring)"),
       row(a.calls, "calls may fill the screen when the phone is locked"),
-      h("p", { class: "note" }, "It stays reachable on irpush's one quiet " +
-        "connection, shared with every irpush app on the phone."),
+      h("p", { class: "note" }, "It stays reachable on pushir's one quiet " +
+        "connection, shared with every pushir app on the phone."),
       h("div", { class: "row" },
         !(a.notify && a.background && a.calls) && h("button",
           { class: "btn", onclick: () => draw("fix") }, "Allow"),
@@ -2928,7 +2937,7 @@ async function linkDevice() {
   const code = await call("link_code").catch(() => null);
   if (code) showCode({ title: "Link a device", label: "Your link code", code,
     secret: true, space: null,
-    note: "Open irch on the new device, choose Link this device, and paste " +
+    note: "Open chatir on the new device, choose Link this device, and paste " +
       "or scan this. It becomes you: keep this code secret, and never " +
       "post it anywhere." });
 }
@@ -3111,7 +3120,7 @@ function searchFlow(scope = inThread() || chan() ? "room" : "space") {
     return h("div", { class: "m-body" }, h("h2", {}, "Search"), input,
       chips, list);
   }).then((r) => r &&
-    openUrl(`irch://open/${r.space}/${r.channel}/${r.message.id}`));
+    openUrl(`chatir://open/${r.space}/${r.channel}/${r.message.id}`));
 }
 
 // ---------- actions ----------
@@ -3598,8 +3607,8 @@ function wire() {
   $("chat").addEventListener("click", (e) => {
     if (e.target === $("chat")) document.body.classList.remove("drawer");
   });
-  // Android's Back (MainActivity.kt): false sends irch to the background.
-  window.irchBack = () => {
+  // Android's Back (MainActivity.kt): false sends chatir to the background.
+  window.chatirBack = () => {
     const body = document.body.classList;
     if (modalOpen()) modalOpen().close();
     else if (closePop) closePop();
@@ -3687,13 +3696,13 @@ function wire() {
 
 async function start() {
   if (!invoke) {
-    $("boot").textContent = "This page runs inside the irch app.";
+    $("boot").textContent = "This page runs inside the chatir app.";
     return;
   }
   try {
     S.me = await rpc("me");
   } catch (e) {
-    put($("boot"), h("div", {}, h("p", {}, "irch could not start"),
+    put($("boot"), h("div", {}, h("p", {}, "chatir could not start"),
       h("div", { class: "err" }, String(e))));
     return;
   }
@@ -3713,7 +3722,7 @@ async function start() {
     }
   };
   // Out of sight (not in a call), nothing is fetched or drawn: it all
-  // comes at once when irch is seen again.
+  // comes at once when chatir is seen again.
   let stale = false;
   document.addEventListener("visibilitychange", () => {
     if (document.hidden || !stale) return;
@@ -3722,7 +3731,7 @@ async function start() {
     schedule("msgs");
     members();
   });
-  await T.event.listen("irch", ({ payload: e }) => {
+  await T.event.listen("chatir", ({ payload: e }) => {
     if (document.hidden && !av.call.on) {
       stale = true;
     } else if (e.t === "changed") {
@@ -3748,6 +3757,9 @@ async function start() {
         toast(`${nameOf(e.user)} declined`);
         av.leave(rpc);
       }
+    } else if (e.t === "spent") {
+      toast("Someone used that code without proving it: it is spent. " +
+        "Make a new one.", true, 15e3);
     } else if (e.t === "relayed") {
       toast(`Not direct: ${amount(e.size)} comes through a relay, at its ` +
         "speed limit. A key from whoever runs it lifts that (Network use).",

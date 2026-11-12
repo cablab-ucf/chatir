@@ -512,6 +512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "048006790404103c488e6c5616b3e7e702a71292aadda08e8f7698a9e0d2eb53"
 dependencies = [
  "aws-lc-sys",
+ "untrusted 0.7.1",
  "zeroize",
 ]
 
@@ -975,6 +976,96 @@ dependencies = [
  "cipher 0.5.2",
  "poly1305",
  "zeroize",
+]
+
+[[package]]
+name = "chatir"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chatir-core",
+ "chrono",
+ "clap",
+ "crossterm",
+ "data-encoding",
+ "dirs 7.0.0",
+ "iroh",
+ "n0-future",
+ "ratatui",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "chatir-app"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "chatir-core",
+ "chatir-math",
+ "data-encoding",
+ "jni 0.22.4",
+ "libloading 0.9.0",
+ "ndk-context",
+ "pushir",
+ "qrcode",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "webkit2gtk",
+]
+
+[[package]]
+name = "chatir-core"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chacha20poly1305",
+ "cpal",
+ "data-encoding",
+ "dirs 7.0.0",
+ "getrandom 0.4.3",
+ "irnet",
+ "iroh",
+ "iroh-blobs",
+ "iroh-gossip",
+ "iroh-mdns-address-lookup",
+ "iroh-relay",
+ "minisign-verify",
+ "n0-future",
+ "pairir",
+ "postcard",
+ "pushir",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sonora",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "unsafe-libopus",
+ "x-wing",
+]
+
+[[package]]
+name = "chatir-math"
+version = "0.4.0"
+dependencies = [
+ "typst",
+ "typst-html",
 ]
 
 [[package]]
@@ -3723,106 +3814,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
-name = "irch"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm",
- "data-encoding",
- "dirs 7.0.0",
- "irch-core",
- "iroh",
- "n0-future",
- "ratatui",
- "serde_json",
- "tokio",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "irch-app"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "data-encoding",
- "irch-core",
- "irch-math",
- "irpush",
- "jni 0.22.4",
- "libloading 0.9.0",
- "ndk-context",
- "qrcode",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "webkit2gtk",
-]
-
-[[package]]
-name = "irch-core"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "blake3",
- "chacha20poly1305",
- "cpal",
- "data-encoding",
- "dirs 7.0.0",
- "getrandom 0.4.3",
- "iroh",
- "iroh-blobs",
- "iroh-gossip",
- "iroh-mdns-address-lookup",
- "iroh-relay",
- "irpair",
- "irpush",
- "minisign-verify",
- "n0-future",
- "noq-proto",
- "postcard",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "sonora",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "unsafe-libopus",
- "x-wing",
-]
-
-[[package]]
-name = "irch-math"
-version = "0.2.0"
-dependencies = [
- "typst",
- "typst-html",
-]
-
-[[package]]
 name = "irnet"
-version = "0.2.0"
-source = "git+https://github.com/cab-ucf/irnet?rev=32a79274df3fa5e2826e18d52f27cab2a0848b44#32a79274df3fa5e2826e18d52f27cab2a0848b44"
+version = "0.4.0"
+source = "git+https://github.com/cablab-ucf/irnet?rev=fbd691d1b6dd34d4d2c027b6875df3f11c918f66#fbd691d1b6dd34d4d2c027b6875df3f11c918f66"
 dependencies = [
  "anyhow",
+ "chacha20poly1305",
+ "hmac",
  "hpke",
  "iroh",
+ "n0-future",
  "noq-proto",
  "rustls",
+ "sha2 0.11.1",
+ "tracing",
 ]
 
 [[package]]
@@ -4138,24 +4143,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "irpair"
-version = "0.2.0"
-source = "git+https://github.com/cab-ucf/irpair?rev=58096f7a4bfb4e5b5a62e9a3920eb365d1bfdcf0#58096f7a4bfb4e5b5a62e9a3920eb365d1bfdcf0"
-dependencies = [
- "anyhow",
- "argon2",
- "chacha20poly1305",
- "data-encoding",
- "getrandom 0.4.3",
- "iroh",
- "rand_chacha 0.10.0",
- "sha2 0.11.1",
- "tokio",
- "x-wing",
- "zeroize",
-]
-
-[[package]]
 name = "irpc"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4182,24 +4169,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "irpush"
-version = "0.2.0"
-source = "git+https://github.com/cab-ucf/irpush?rev=551e860311d551eb73faaaf8a21abdbe1fa57fea#551e860311d551eb73faaaf8a21abdbe1fa57fea"
-dependencies = [
- "anyhow",
- "data-encoding",
- "futures-util",
- "irnet",
- "iroh-base",
- "iroh-dns",
- "iroh-relay",
- "jni 0.22.4",
- "rand 0.10.3",
- "tokio",
- "url",
 ]
 
 [[package]]
@@ -4597,7 +4566,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "636860251af8963cc40f6b4baadee105f02e21b28131d76eba8e40ce84ab8064"
 dependencies = [
  "rand 0.8.8",
- "rand_chacha 0.3.1",
+ "rand_chacha",
 ]
 
 [[package]]
@@ -5805,6 +5774,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "pairir"
+version = "0.4.0"
+source = "git+https://github.com/cablab-ucf/pairir?rev=653095c95194a7c9080b121da5fc77c24abc1092#653095c95194a7c9080b121da5fc77c24abc1092"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "chacha20",
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "data-encoding",
+ "getrandom 0.4.3",
+ "irnet",
+ "iroh",
+ "sha2 0.11.1",
+ "tokio",
+ "x-wing",
+ "zeroize",
+]
+
+[[package]]
 name = "palette"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6483,6 +6472,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "pushir"
+version = "0.4.0"
+source = "git+https://github.com/cablab-ucf/pushir?rev=405cf68b384138837668abbdf7953d1c29d776b6#405cf68b384138837668abbdf7953d1c29d776b6"
+dependencies = [
+ "anyhow",
+ "aws-lc-rs",
+ "data-encoding",
+ "futures-util",
+ "irnet",
+ "iroh-base",
+ "iroh-dns",
+ "iroh-relay",
+ "jni 0.22.4",
+ "noq-proto",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6577,16 +6585,6 @@ checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e6af7f3e25ded52c41df4e0b1af2d047e45896c2f3281792ed68a1c243daedb"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -6955,7 +6953,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.17",
  "libc",
- "untrusted",
+ "untrusted 0.9.0",
  "windows-sys 0.52.0",
 ]
 
@@ -7139,7 +7137,7 @@ dependencies = [
  "aws-lc-rs",
  "ring",
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -9813,6 +9811,12 @@ name = "unscanny"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9df2af067a7953e9c3831320f35c1cc0600c30d44d9f7a12b01db1cd88d6b47"
+
+[[package]]
+name = "untrusted"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
 
 [[package]]
 name = "untrusted"

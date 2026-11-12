@@ -4,8 +4,8 @@ mod service;
 mod web;
 
 use anyhow::Result;
+use chatir_core::{Config, Net, Node};
 use clap::Parser;
-use irch_core::{Config, Net, Node};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -32,7 +32,7 @@ struct Cli {
     #[arg(long)]
     serve: bool,
     /// With --serve: files past 5 GB are kept for whoever gives this
-    /// (or IRCH_BIG_PASSWORD, kept out of `ps`)
+    /// (or CHATIR_BIG_PASSWORD, kept out of `ps`)
     #[arg(long)]
     big_password: Option<String>,
     /// No interface: an always-on device of yours
@@ -49,18 +49,18 @@ struct Cli {
     /// Keep a storage node running here, from now on (as you)
     #[arg(long)]
     install: bool,
-    /// With --install: its devices' relay, "https://irpush.you.example"
-    /// (irpush's deploy/); quiet, pinged after 130 min
+    /// With --install: its devices' relay, "https://pushir.you.example"
+    /// (pushir's deploy/); quiet, pinged after 130 min
     #[arg(long, value_name = "URL", requires = "install")]
     push_relay: Option<String>,
     /// Stop the storage node --install keeps
     #[arg(long)]
     uninstall: bool,
-    /// Replace this irch with the latest release, if newer
+    /// Replace this chatir with the latest release, if newer
     #[arg(long)]
     update: bool,
     /// How reaching someone (a name or id; else your devices) goes now,
-    /// as JSON: their devices and push servers, each timed. Rings nothing
+    /// as JSON: their devices, each timed. Rings nothing
     #[arg(long, value_name = "WHO", num_args = 0..=1, default_missing_value = "")]
     doctor: Option<String>,
 }
@@ -68,9 +68,9 @@ struct Cli {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Someone in a space of ours, by name (any case) or the start of their id.
-fn find(n: &Node, who: &str) -> Result<irch_core::Id> {
+fn find(n: &Node, who: &str) -> Result<chatir_core::Id> {
     let low = who.to_lowercase();
-    let is = |s: &irch_core::State, u: &irch_core::Id| {
+    let is = |s: &chatir_core::State, u: &chatir_core::Id| {
         s.display_name(u).to_lowercase() == low
             || u.to_string().starts_with(&low)
     };
@@ -81,17 +81,17 @@ fn find(n: &Node, who: &str) -> Result<irch_core::Id> {
     all.map(|m| m.id).next().ok_or_else(|| anyhow::anyhow!("no {who} here"))
 }
 
-/// Only release builds (IRCH_RELEASE, from release.yml) update themselves.
+/// Only release builds (CHATIR_RELEASE, from release.yml) update themselves.
 async fn updated(exe: &std::path::Path) {
-    if option_env!("IRCH_RELEASE").is_none() {
+    if option_env!("CHATIR_RELEASE").is_none() {
         return std::future::pending().await;
     }
     let mut wait = Duration::from_secs(60);
     loop {
         tokio::time::sleep(wait).await;
         wait = Duration::from_secs(6 * 3600);
-        match irch_core::release::replace(exe, VERSION).await {
-            Ok(Some(v)) => return eprintln!("irch {v}: restarting"),
+        match chatir_core::release::replace(exe, VERSION).await {
+            Ok(Some(v)) => return eprintln!("chatir {v}: restarting"),
             Ok(None) => {}
             Err(e) => eprintln!("update: {e:#}"),
         }
@@ -136,8 +136,8 @@ async fn main() -> Result<()> {
     let exe = std::env::current_exe()?;
     if c.install {
         if let Some(r) = &c.push_relay {
-            let d = dirs::data_dir().unwrap_or_default().join("irch-serve");
-            irch_core::push::set_relay(&d, r)?;
+            let d = dirs::data_dir().unwrap_or_default().join("chatir-serve");
+            chatir_core::push::set_relay(&d, r)?;
         }
         return service::install(&exe);
     }
@@ -145,11 +145,11 @@ async fn main() -> Result<()> {
         return service::uninstall();
     }
     if c.update {
-        let v = irch_core::release::replace(&exe, VERSION).await?;
+        let v = chatir_core::release::replace(&exe, VERSION).await?;
         println!(
             "{}",
-            v.map_or("irch is up to date".into(), |v| {
-                format!("irch {v} is in place")
+            v.map_or("chatir is up to date".into(), |v| {
+                format!("chatir {v} is in place")
             })
         );
         return Ok(());
@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
         (_, false) => Net::Relay(c.relay),
         _ => Net::Default,
     };
-    let home = if c.serve { "irch-serve" } else { "irch" };
+    let home = if c.serve { "chatir-serve" } else { "chatir" };
     let dir = c
         .dir
         .unwrap_or_else(|| dirs::data_dir().unwrap_or_default().join(home));
@@ -172,16 +172,16 @@ async fn main() -> Result<()> {
         Net::Relay(r) => Some(r.clone()),
         _ => None,
     };
-    // irch's warnings; of its libraries, errors: a phone's network is a
+    // chatir's warnings; of its libraries, errors: a phone's network is a
     // stream of warnings, each a write.
     let log = tracing_subscriber::fmt().with_ansi(false).with_env_filter(
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| "error,irch_core=warn,irch_app=warn,irch=warn".into(),
+            |_| "error,chatir_core=warn,chatir_app=warn,chatir=warn".into(),
         ),
     );
     if ui {
         std::fs::create_dir_all(&dir)?;
-        let f = std::fs::File::create(dir.join("irch.log"))?;
+        let f = std::fs::File::create(dir.join("chatir.log"))?;
         log.with_writer(std::sync::Mutex::new(f)).init();
     } else {
         log.with_writer(std::io::stderr).init();
@@ -191,19 +191,19 @@ async fn main() -> Result<()> {
     let notes = notes.or_else(|| dirs::home_dir().map(|h| h.join("notes")));
     let code_file = dir.join("code");
     let big =
-        c.big_password.or_else(|| std::env::var("IRCH_BIG_PASSWORD").ok());
+        c.big_password.or_else(|| std::env::var("CHATIR_BIG_PASSWORD").ok());
     let at = dir.clone();
     let n =
         Node::start(Config { dir, name, net, link, serve, notes, big }).await?;
     if let Some(code) = n.storage_code().await {
         // Which one it is, as the app lists it: not secret, unlike its code.
-        let (name, id) = (irch_core::storage_name(), n.device());
+        let (name, id) = (chatir_core::storage_name(), n.device());
         println!("Storage node {name}, device {}", id.fmt_short());
         std::fs::write(&code_file, &code)?;
         // For nixos.nix; unprinted, so no wider-read journal holds it.
         // Shown on a terminal only: a service's stdout is its journal.
         let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
-        match std::env::var_os("IRCH_CODE_FILE") {
+        match std::env::var_os("CHATIR_CODE_FILE") {
             Some(p) => std::fs::write(p, &code)?,
             None if tty => {
                 println!("Storage code (give it to the people you store for):");
