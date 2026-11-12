@@ -99,6 +99,8 @@ fn tame(s: &str) -> String {
         let l = l.split_inclusive(char::is_whitespace).map(word);
         format!("{ind}{}", l.collect::<String>())
     };
+    // No tag either: a viewer that renders HTML would load what it names.
+    let s = s.replace('<', "\\<");
     let s = s.replace("![", "\\![").replace("```", "\\`\\`\\`");
     let s = s.replace("~~~", "\\~~~");
     s.lines().map(line).collect::<Vec<_>>().join("\n")

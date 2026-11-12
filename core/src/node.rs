@@ -282,6 +282,8 @@ pub struct Space {
     // The gossip topic we are in, and a nudge to move to a new one.
     room: Mutex<[u8; 32]>,
     moved: Arc<Notify>,
+    // When we last rekeyed to mend a leak (`repair`).
+    fixed: Mutex<Option<Instant>>,
     // Our ops written while nobody else was reachable.
     undelivered: Mutex<HashSet<Id>>,
     // Per member, our ops up to this time are on one of their devices:
@@ -607,12 +609,15 @@ impl Book {
     }
 
     /// Opened under a key held, by someone neither out nor cut off by a
-    /// newer epoch (a key no rekey set counts as older than all).
+    /// newer epoch (a key no rekey set counts as older than all): whom we
+    /// meet, sync with and send to.
     fn check(&self, sp: &Id, e: &Env) -> Option<Signed> {
         let s = op::open(sp, self.keys.get(&e.epoch)?, e, None)?.0;
-        let at = (s.ts, s.id);
+        // As of now, not of the time its author gave it: a key since
+        // replaced without them opens nothing, however the op is dated.
+        let end = crate::state::END;
         let out =
-            self.st.out(&s.author) || self.st.stale(&s.epoch, &at, &s.author);
+            self.st.out(&s.author) || self.st.stale(&s.epoch, &end, &s.author);
         (!out).then_some(s)
     }
 
@@ -923,6 +928,9 @@ fn gate(n: std::sync::Weak<Node>) -> iroh_blobs::provider::events::EventSender {
         connected: ConnectMode::Intercept,
         get: RequestMode::Intercept,
         get_many: RequestMode::Disabled,
+        // Asked like a get, and unanswered: whether a file is here is told
+        // to nobody.
+        observe: ObserveMode::Intercept,
         ..EventMask::DEFAULT
     };
     let (tx, mut rx) = EventSender::channel(32, mask);
@@ -2104,6 +2112,7 @@ impl Node {
             vouched: AtomicUsize::new(0),
             room: Mutex::new([0; 32]),
             moved: Arc::default(),
+            fixed: Mutex::default(),
             undelivered: Mutex::default(),
             reach: Mutex::default(),
             reach_dev: Mutex::default(),
@@ -2166,6 +2175,9 @@ impl Node {
         let mut urls = homes(&self.net);
         let ours = self.ep().map(|e| e.addr());
         urls.extend(ours.iter().flat_map(|a| a.relay_urls().cloned()));
+        if urls.is_empty() {
+            return;
+        }
         for id in ids {
             let at = urls.iter().cloned().map(iroh::TransportAddr::Relay);
             self.lookup.add_endpoint_info(EndpointAddr::from_parts(*id, at));
@@ -2204,6 +2216,11 @@ impl Node {
             let mut fresh = vec![];
             for raw in raws {
                 let Ok(e) = postcard::from_bytes::<Env>(&raw) else { continue };
+                // In its one form: an envelope with bytes after it would
+                // be another id, kept again, for whoever cared to pad it.
+                if postcard::to_allocvec(&e).is_ok_and(|c| c != raw) {
+                    continue;
+                }
                 let i = Id(blake3::hash(&raw).into());
                 if !e.live && e.ts <= now() + SKEW && !b.has(&i, e.ts) {
                     fresh.push((i, e, raw));
@@ -2336,7 +2353,16 @@ impl Node {
             let b = lock(&sp.book);
             (b.st.leaks(), b.orphans())
         };
+        // Once a minute at most: a rekey that does not count (the fold's
+        // word, not ours) must not call for the next.
         if leaks {
+            {
+                let mut at = lock(&sp.fixed);
+                if at.is_some_and(|t| t.elapsed() < BEAT) {
+                    return Ok(());
+                }
+                *at = Some(Instant::now());
+            }
             return self.rekey(&sp.id).await;
         }
         for key in lost {
@@ -3607,6 +3633,12 @@ impl Node {
         v.unwrap_or_default()
     }
 
+    /// Whether `d` is one of `sp`'s storage nodes.
+    pub(crate) fn hosted(&self, sp: &Space, d: &EndpointId) -> bool {
+        lock(&sp.book).st.hosts().iter().any(|a| a.id == *d)
+            || self.stores(&sp.id).iter().any(|s| s.0.id == *d)
+    }
+
     fn stores(&self, space: &Id) -> Vec<(EndpointAddr, [u8; 16])> {
         let all = *space == self.own;
         let v = self.view(&self.own, |s| {
@@ -4254,8 +4286,8 @@ impl Node {
             let owner = who.is_some_and(|u| {
                 host.is_some_and(|h| h.users.contains_key(&u))
             });
-            let now =
-                host.is_some_and(|x| x.room != [0; 32] && x.room == h.room);
+            let now = host
+                .is_some_and(|x| x.room != [0; 32] && same(&x.room, &h.room));
             drop(hs);
             return yes(owner || now || self.takes(sp, &d));
         }
@@ -4267,7 +4299,8 @@ impl Node {
             return Admit::Yes;
         }
         let Some(u) = who.filter(|u| !b.st.out(u)) else { return Admit::No };
-        let k = b.keys.iter().find(|(_, k)| sync::room(&sp.id, k) == h.room);
+        let k =
+            b.keys.iter().find(|(_, k)| same(&sync::room(&sp.id, k), &h.room));
         match k {
             Some((t, _)) if b.st.stale(t, &crate::state::END, &u) => Admit::Out,
             Some(_) => Admit::Yes,

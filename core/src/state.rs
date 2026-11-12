@@ -326,10 +326,13 @@ impl State {
                         }
                     }
                 }
-                // Never one leaving the owner out: their word must still count.
+                // Never one leaving the owner out: their word must still
+                // count. A retired owner has no word and takes no key.
                 Op::Rekey { epoch, boxes }
                     if admin
-                        && (head || boxes.iter().any(|b| b.0 == self.head)) =>
+                        && (head
+                            || self.burned.contains_key(&self.head)
+                            || boxes.iter().any(|b| b.0 == self.head)) =>
                 {
                     let to = boxes.iter().map(|b| b.0).collect();
                     self.epochs.push(Epoch {
@@ -595,6 +598,8 @@ impl State {
         let after = |at: &Pos| e.is_none_or(|e| *at > e.at);
         e.is_some_and(|e| e.to.iter().any(|u| self.out(u)))
             || self.bans.iter().any(|(at, u)| after(at) && banned(u))
+            // Retired since: whoever took that seed holds the key.
+            || self.burned.values().any(after)
     }
 
     /// What a ban or rekey must outdate: the epoch and standing bans.
@@ -654,14 +659,21 @@ impl State {
         self.devices.iter().filter(out).map(|((d, _), _)| *d).collect()
     }
 
+    /// The `n` devices that wrote last, of members not out: each member's
+    /// latest eight (a device is its author's claim: one member naming
+    /// thousands crowds out nobody).
     pub fn devices(&self, n: usize) -> Vec<EndpointId> {
         let ok = |((_, a), _): &(&(EndpointId, Id), _)| !self.out(a);
-        let v = self.devices.iter().filter(ok).map(|((d, _), t)| (*t, *d));
-        let mut v: Vec<_> = v.collect();
+        let v = self.devices.iter().filter(ok);
+        let mut v: Vec<_> = v.map(|((d, a), t)| (*t, *d, *a)).collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
-        let mut seen = HashSet::new();
-        v.retain(|(_, d)| seen.insert(*d));
-        v.into_iter().take(n).map(|(_, d)| d).collect()
+        let (mut seen, mut per) = (HashSet::new(), HashMap::new());
+        v.retain(|(_, d, a)| {
+            let k: &mut usize = per.entry(*a).or_default();
+            *k += 1;
+            *k <= 8 && seen.insert(*d)
+        });
+        v.into_iter().take(n).map(|x| x.1).collect()
     }
 
     pub fn messages(

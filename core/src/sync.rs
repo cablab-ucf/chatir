@@ -100,9 +100,13 @@ pub async fn initiate(
     write(&mut tx, &hello).await?;
     // A bucket a day: a megabyte is a century.
     let theirs = match read(&mut rx, 1 << 20).await? {
-        Reply::Same => return Ok(0),
+        Reply::Same => {
+            n.cut(sp, false);
+            return Ok(0);
+        }
         Reply::Out => {
-            n.cut(sp, true);
+            // A member's word: a storage node holds no key to tell by.
+            n.cut(sp, !n.hosted(sp, &c.remote_id()));
             anyhow::bail!("our key was replaced without us");
         }
         Reply::Days(d) => d,

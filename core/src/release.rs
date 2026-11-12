@@ -83,7 +83,12 @@ pub async fn replace(exe: &Path, ours: &str) -> Result<Option<String>> {
 /// Swapped in whole, even while running (Windows: the .exe moved aside).
 pub fn put(exe: &Path, bin: &[u8]) -> Result<()> {
     let new = exe.with_extension("new");
-    std::fs::write(&new, bin)?;
+    // On disk before it takes the old one's place: a power cut leaves the
+    // old binary or the new, never half of one.
+    let mut f = std::fs::File::create(&new)?;
+    std::io::Write::write_all(&mut f, bin)?;
+    f.sync_all()?;
+    drop(f);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
