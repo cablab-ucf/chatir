@@ -6474,7 +6474,7 @@ dependencies = [
 [[package]]
 name = "pushir"
 version = "0.4.0"
-source = "git+https://github.com/cablab-ucf/pushir?rev=405cf68b384138837668abbdf7953d1c29d776b6#405cf68b384138837668abbdf7953d1c29d776b6"
+source = "git+https://github.com/cablab-ucf/pushir?rev=344430c2539df744420bd0180364a2a3cf867bd2#344430c2539df744420bd0180364a2a3cf867bd2"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
