@@ -53,7 +53,9 @@ async fn doze(app: AppHandle) {
         if FG.load(SeqCst) {
             return;
         }
-        if running().is_none_or(|n| n.in_call().is_none()) {
+        // A call, or a file on its way: up till it ends.
+        if running().is_none_or(|n| n.in_call().is_none() && !n.transferring())
+        {
             break;
         }
     }
@@ -69,6 +71,7 @@ async fn doze(app: AppHandle) {
 async fn nap() -> bool {
     use std::sync::atomic::Ordering::SeqCst;
     let n = running().filter(|n| n.in_call().is_none() && !FG.load(SeqCst));
+    let n = n.filter(|n| !n.transferring());
     #[cfg(desktop)]
     let n = n.filter(|n| n.wakes());
     let Some(n) = n else { return false };
@@ -308,6 +311,25 @@ async fn pick_dir(app: AppHandle) -> Option<String> {
 static TRAY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Quit, unless a file is on its way and chatir is kept up for it.
+#[cfg(desktop)]
+fn quit(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    if !running().is_some_and(|n| n.transferring()) {
+        return app.exit(0);
+    }
+    let (a, b) = (app.clone(), ("Quit".into(), "Keep running".into()));
+    app.dialog()
+        .message("Files are on their way: they move only while chatir runs.")
+        .title("Quit chatir?")
+        .buttons(MessageDialogButtons::OkCancelCustom(b.0, b.1))
+        .show(move |yes| {
+            if yes {
+                a.exit(0)
+            }
+        });
+}
+
 /// Starts at login by default, except on NixOS, whose config decides.
 #[cfg(desktop)]
 fn tray(app: &tauri::App) {
@@ -359,7 +381,7 @@ fn tray(app: &tauri::App) {
                     let _ = if on { a.disable() } else { a.enable() };
                     let _ = login.set_checked(a.is_enabled().unwrap_or(false));
                 }
-                "quit" => app.exit(0),
+                "quit" => crate::quit(app),
                 _ => {}
             })
             .on_tray_icon_event(|t, e| {
@@ -967,6 +989,13 @@ pub fn run() {
                 let _ = w.hide();
                 sight(w.app_handle());
             }
+            // No tray: closing quits, but not from under a file on its way.
+            tauri::WindowEvent::CloseRequested { api, .. }
+                if running().is_some_and(|n| n.transferring()) =>
+            {
+                api.prevent_close();
+                quit(w.app_handle());
+            }
             tauri::WindowEvent::Focused(_) => sight(w.app_handle()),
             // Dropped files, by path: offered as picked ones are, uncopied.
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
@@ -1111,6 +1140,10 @@ pub fn run() {
 
 async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
     let r = async {
+        // irch's folder: a computer's alone (a phone's is irch's app's own).
+        let root = root(app)?;
+        let irch = root.with_file_name("dev.irch.chat");
+        chatir_core::adopt(cfg!(desktop).then_some(&*irch), &root)?;
         let dir = home(app)?;
         let notes =
             std::env::var_os("LOROH_VAULT").map(Into::into).or_else(|| {
@@ -1132,7 +1165,7 @@ async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
 
 /// Core events to the page; lagging, it refreshes everything.
 fn forward(app: AppHandle, n: Arc<Node>) {
-    use chatir_core::Event::{Call, Changed};
+    use chatir_core::Event::{Call, Changed, Incoming};
     // Weak: a node stopped (on Android, out of sight) goes, and this ends.
     let (mut rx, n) = (n.subscribe(), Arc::downgrade(&n));
     tauri::async_runtime::spawn(async move {
@@ -1145,7 +1178,8 @@ fn forward(app: AppHandle, n: Arc<Node>) {
                 }
                 Err(RecvError::Closed) => break,
             };
-            let news = matches!(e, Changed { .. } | Call { .. });
+            let news =
+                matches!(e, Changed { .. } | Call { .. } | Incoming { .. });
             if let Some(n) = n.upgrade().filter(|_| news) {
                 for x in alerts(&n, front(&app)) {
                     let _ = app.emit("alert", &x);

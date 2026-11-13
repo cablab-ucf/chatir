@@ -62,7 +62,7 @@ pub enum Admit {
 
 /// Where a space's members meet under `key`: unknown to anyone without it.
 pub fn room(space: &Id, key: &Key) -> [u8; 32] {
-    kdf("chatir room", &[&space.0, key])
+    kdf("irch room", &[&space.0, key])
 }
 
 fn said(space: &Id, room: &[u8; 32], to: &EndpointId) -> Vec<u8> {

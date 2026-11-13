@@ -1752,7 +1752,7 @@ const b64 = (blob) => new Promise((ok) => {
 
 /** From here a file goes directly, device to device: no storage node
  * keeps it, its members fetch it from this device at full speed. */
-const DIRECT = 2 ** 30;
+const DIRECT = 64 * 2 ** 20;
 
 async function addFiles(list) {
   for (const file of list) {
@@ -2080,6 +2080,9 @@ const STATE = { offered: "Offered", waiting: "Waiting", running: "",
   done: "Done", failed: "Failed", declined: "Declined",
   cancelled: "Cancelled" };
 
+/** Ours, not yet heard by the device it goes to. */
+const queued = (t) => t.out && t.state === "waiting";
+
 async function renderDevice() {
   const d = S.dev;
   const all = await rpc("transfers").catch(() => []);
@@ -2096,10 +2099,13 @@ async function renderDevice() {
     h("small", {}, new Date(x.ts).toLocaleTimeString()), x.text,
     h("button", { class: "gear", title: "Copy", onclick: () => copy(x.text) },
       icon("copy")))
-    : h("div", { class: "xfer " + t.state, title: t.path ?? t.error ?? "" },
+    : h("div", { class: "xfer " + t.state, title: queued(t)
+      ? "Offered once that device is on: chatir stays up for it"
+      : t.path ?? t.error ?? "" },
       icon(t.out ? "up" : "down"),
       h("div", { class: "what" }, h("b", {}, t.name),
-        h("small", {}, [STATE[t.state], `${size(t.done)} / ${size(t.size)}`,
+        h("small", {}, [queued(t) ? "Queued" : STATE[t.state],
+          `${size(t.done)} / ${size(t.size)}`,
           t.state === "running" && rate(t.rate), t.error].filter(Boolean)
           .join(" · ")),
         h("progress", { max: t.size || 1, value: t.done })),
@@ -3905,7 +3911,7 @@ function wire() {
   $("snap-btn").append(icon("cam"));
   $("snap-btn").onclick = snap;
   $("snap-btn").classList.toggle("hidden", !navigator.mediaDevices);
-  $("attach-btn").title = "Attach (from 1 GB: directly, device to device)";
+  $("attach-btn").title = "Attach (from 64 MB: directly, device to device)";
   $("attach-btn").onclick = () => native
     ? invoke("pick").then(addPaths, () => {}) : $("picker").click();
   $("picker").onchange = (e) => {

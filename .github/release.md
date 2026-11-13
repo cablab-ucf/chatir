@@ -16,3 +16,5 @@ Each of these keeps itself up to date.
 - On NixOS: `services.chatir.enable = true;`.
 
 The installers fetch the files below. The `.dmg` and `.msi` work too, but a browser marks them as downloaded from the internet. macOS then asks you to allow chatir in System Settings → Privacy & Security, and Windows asks you to choose *More info → Run anyway*. `chatir-<platform>` is the terminal client and storage node; `.sig` files are chatir's signatures, checked by every update.
+
+**From irch**: chatir is irch renamed, the same people and spaces. Quit irch, then start chatir on each computer: it takes irch's folder. A phone links from a computer that has chatir and syncs its history.

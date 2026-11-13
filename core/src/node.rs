@@ -188,6 +188,8 @@ struct Local {
     read: BTreeMap<(Id, Ch), u64>,
     joined: BTreeMap<Id, u64>,
     peers: BTreeMap<EndpointId, EndpointAddr>,
+    // irch's, now `hosts`: its place kept, postcard is positional.
+    hosted: BTreeMap<Id, Vec<EndpointId>>,
     token: Option<[u8; 16]>,
 }
 
@@ -240,7 +242,7 @@ pub struct Notice {
 }
 
 impl Notice {
-    fn new(
+    pub(crate) fn new(
         space: Id,
         room: Ch,
         title: String,
@@ -956,7 +958,7 @@ enum Ask {
 
 /// A storage node's key for one space's small files: members have it.
 pub fn hold_token(token: &[u8; 16], space: &Id) -> [u8; 16] {
-    let mut h = blake3::Hasher::new_derive_key("chatir hold 1");
+    let mut h = blake3::Hasher::new_derive_key("irch hold 1");
     h.update(token).update(&space.0);
     h.finalize().as_bytes()[..16].try_into().expect("16 of 32")
 }
@@ -977,9 +979,9 @@ fn secret(path: &Path, link: Option<Key>) -> Result<Key> {
 }
 
 fn own_invite(me: &Me, peers: Vec<EndpointAddr>) -> Invite {
-    let k = crate::crypto::kdf("chatir own space", &[&me.seed]);
+    let k = crate::crypto::kdf("irch own space", &[&me.seed]);
     let nonce = k[..16].try_into().expect("16");
-    let key = crate::crypto::kdf("chatir own key", &[&me.seed]);
+    let key = crate::crypto::kdf("irch own key", &[&me.seed]);
     Invite { owner: me.id(), nonce, key, name: String::new(), dm: None, peers }
 }
 
@@ -1326,6 +1328,30 @@ impl Node {
         }
     }
 
+    /// `d`'s lane told to catch up, in a space we share where it has one:
+    /// asleep (its node down), it wakes, says it is here, and hears what
+    /// waits for it.
+    pub(crate) fn rouse(&self, d: EndpointId) {
+        for sp in self.all() {
+            let (url, k) = {
+                let b = lock(&sp.book);
+                let k = sp.inv.as_ref().map(|i| b.key(i).0);
+                let mut all = b.st.pushes_of(None).into_iter();
+                (all.find(|p| p.0 == d).map(|p| p.1), k)
+            };
+            let to = url.as_deref().and_then(crate::push::lane_of);
+            if let (Some(to), Some(k)) = (to, k) {
+                let f =
+                    [&[crate::push::OP][..], &ev_label(&sp.id, &k)].concat();
+                let dir = self.dir.clone();
+                tokio::spawn(
+                    async move { crate::push::event(&dir, &to, &f).await },
+                );
+                return;
+            }
+        }
+    }
+
     /// iroh asleep now if nothing needs it (not waiting out `IDLE`).
     pub async fn quiet(&self) -> bool {
         self.rest_iroh(Duration::ZERO).await
@@ -1531,6 +1557,7 @@ impl Node {
             p.insert(id, mark.max(newest.unwrap_or(0).min(now())));
         }
         lock(&self.rang).retain(|c| live.contains(c));
+        out.extend(self.offer_notices());
         // On disk only when it moved: this runs on every change.
         if lock(&self.prefs).told != was {
             self.save_prefs();
@@ -3930,6 +3957,15 @@ impl Node {
             self.passed(space, f);
             return Ok(files.get_bytes(hash).await?.to_vec());
         }
+        // An older irch's whole-sealed file, kept here from then.
+        let old = self.dir.join("blobs").join(f.hash.to_string());
+        if let Ok(ct) = std::fs::read(old)
+            && blake3::hash(&ct) == f.hash.0
+            && !ct.starts_with(crate::crypto::STREAM)
+        {
+            let pt = crate::crypto::open(&f.key.0, b"irch file", &ct);
+            return pt.context("damaged file");
+        }
         let len = crate::crypto::sealed_len(f.size).context("no such size")?;
         let files = self.pull(space, &f.hash, len).await?;
         let (n, h) = (self.clone(), (*space, f.hash));
@@ -4570,6 +4606,10 @@ impl Node {
         if changed {
             self.emit(Event::Presence { space: sp.id });
         }
+        // Back: what waits on it (an offer, a pull) tries now.
+        if changed && here {
+            self.send.kick.notify_waiters();
+        }
         // Gone, or back: a call it said before is over (if still on, it
         // says so again, after).
         if matches!(s.op, Op::Gone | Op::Here) {
@@ -4907,14 +4947,14 @@ async fn quiet(links: Links, d: EndpointId, c: Connection) {
 
 /// An event's label, for space `id` under key `k`: a relay sees no space.
 fn ev_label(id: &Id, k: &Key) -> Key {
-    crate::crypto::kdf("chatir event", &[&id.0, k])
+    crate::crypto::kdf("irch event", &[&id.0, k])
 }
 
 /// The ack device `d` owes for an event at `ts`: none but a member makes
 /// it, so no relay drops an op and acks it.
 fn ev_ack(id: &Id, k: &Key, ts: u64, d: &EndpointId) -> Key {
     crate::crypto::kdf(
-        "chatir event ack",
+        "irch event ack",
         &[&id.0, k, &ts.to_le_bytes(), d.as_bytes()],
     )
 }

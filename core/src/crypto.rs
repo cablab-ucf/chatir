@@ -52,7 +52,7 @@ pub fn open(key: &Key, aad: &[u8], b: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A file's sealed form begins so (an older one is `seal`ed whole).
-pub const STREAM: &[u8; 8] = b"chatir1\0";
+pub const STREAM: &[u8; 8] = b"irch-s1\0";
 const CHUNK: usize = 64 << 10;
 
 /// Its size, sealed: the head, and a tag per chunk (an empty file has one).
@@ -90,7 +90,7 @@ pub fn seal_stream(
             true => chunk(&mut r, CHUNK)?,
             false => vec![],
         };
-        let p = Payload { msg: &cur, aad: b"chatir file" };
+        let p = Payload { msg: &cur, aad: b"irch file" };
         let ct = aead(key).encrypt(&nonce(i, next.is_empty()).into(), p);
         w.write_all(&ct.map_err(|_| io::Error::other("seal"))?)?;
         if next.is_empty() {
@@ -118,7 +118,7 @@ pub fn open_stream(
             true => chunk(&mut r, CHUNK + 16)?,
             false => vec![],
         };
-        let p = Payload { msg: &cur, aad: b"chatir file" };
+        let p = Payload { msg: &cur, aad: b"irch file" };
         let pt = aead(key).decrypt(&nonce(i, next.is_empty()).into(), p);
         w.write_all(&pt.map_err(|_| bad())?)?;
         if next.is_empty() {
@@ -153,8 +153,8 @@ pub struct Me {
 
 impl Me {
     pub fn new(seed: Key) -> Self {
-        let user = SecretKey::from_bytes(&kdf("chatir user", &[&seed]));
-        let kem = kdf("chatir kem", &[&seed]).into();
+        let user = SecretKey::from_bytes(&kdf("irch user", &[&seed]));
+        let kem = kdf("irch kem", &[&seed]).into();
         Self { seed, user, kem }
     }
 
