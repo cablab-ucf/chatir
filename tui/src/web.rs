@@ -25,7 +25,8 @@ const ALPN: &[u8] = b"irweb/http/2";
 const HEAD: usize = 16 << 10;
 const BODY: usize = 8 << 20;
 const CSP: &str = "default-src 'self'; img-src 'self' data:; media-src \
-    'self' blob:; style-src 'self'; frame-ancestors 'none'; base-uri 'none'";
+    'self' blob:; style-src 'self'; object-src 'none'; frame-ancestors \
+    'none'; base-uri 'none'; form-action 'none'";
 
 struct Web {
     n: Arc<Node>,

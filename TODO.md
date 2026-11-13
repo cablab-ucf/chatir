@@ -40,8 +40,9 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       an admin's count (Rename, Channel) is quadratic; profiles keep four
 - [ ] A stolen seed's thief, retired by `Burn`, still posts ops dated
       before it (authors date their own)
-- [ ] The page's CSP and Tauri capabilities, narrowed to what it uses
-      (`ipc:` only in connect-src; event and clipboard alone): run it after
+- [ ] Run the app (each OS) with its narrowed CSP and capabilities
+      (`ipc:` only in connect-src; event listen/unlisten and clipboard
+      write alone): built and validated, never run
 - [ ] File transfers run at a stranger's 8 MiB window: iroh-blobs' pooled
       connections get no `irnet::wide`
 
