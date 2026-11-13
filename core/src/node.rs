@@ -188,6 +188,8 @@ struct Local {
     read: BTreeMap<(Id, Ch), u64>,
     joined: BTreeMap<Id, u64>,
     peers: BTreeMap<EndpointId, EndpointAddr>,
+    // irch's, now `hosts`: its place kept, postcard is positional.
+    hosted: BTreeMap<Id, Vec<EndpointId>>,
     token: Option<[u8; 16]>,
 }
 
@@ -956,7 +958,7 @@ enum Ask {
 
 /// A storage node's key for one space's small files: members have it.
 pub fn hold_token(token: &[u8; 16], space: &Id) -> [u8; 16] {
-    let mut h = blake3::Hasher::new_derive_key("chatir hold 1");
+    let mut h = blake3::Hasher::new_derive_key("irch hold 1");
     h.update(token).update(&space.0);
     h.finalize().as_bytes()[..16].try_into().expect("16 of 32")
 }
@@ -977,9 +979,9 @@ fn secret(path: &Path, link: Option<Key>) -> Result<Key> {
 }
 
 fn own_invite(me: &Me, peers: Vec<EndpointAddr>) -> Invite {
-    let k = crate::crypto::kdf("chatir own space", &[&me.seed]);
+    let k = crate::crypto::kdf("irch own space", &[&me.seed]);
     let nonce = k[..16].try_into().expect("16");
-    let key = crate::crypto::kdf("chatir own key", &[&me.seed]);
+    let key = crate::crypto::kdf("irch own key", &[&me.seed]);
     Invite { owner: me.id(), nonce, key, name: String::new(), dm: None, peers }
 }
 
@@ -3930,6 +3932,15 @@ impl Node {
             self.passed(space, f);
             return Ok(files.get_bytes(hash).await?.to_vec());
         }
+        // An older irch's whole-sealed file, kept here from then.
+        let old = self.dir.join("blobs").join(f.hash.to_string());
+        if let Ok(ct) = std::fs::read(old)
+            && blake3::hash(&ct) == f.hash.0
+            && !ct.starts_with(crate::crypto::STREAM)
+        {
+            let pt = crate::crypto::open(&f.key.0, b"irch file", &ct);
+            return pt.context("damaged file");
+        }
         let len = crate::crypto::sealed_len(f.size).context("no such size")?;
         let files = self.pull(space, &f.hash, len).await?;
         let (n, h) = (self.clone(), (*space, f.hash));
@@ -4907,14 +4918,14 @@ async fn quiet(links: Links, d: EndpointId, c: Connection) {
 
 /// An event's label, for space `id` under key `k`: a relay sees no space.
 fn ev_label(id: &Id, k: &Key) -> Key {
-    crate::crypto::kdf("chatir event", &[&id.0, k])
+    crate::crypto::kdf("irch event", &[&id.0, k])
 }
 
 /// The ack device `d` owes for an event at `ts`: none but a member makes
 /// it, so no relay drops an op and acks it.
 fn ev_ack(id: &Id, k: &Key, ts: u64, d: &EndpointId) -> Key {
     crate::crypto::kdf(
-        "chatir event ack",
+        "irch event ack",
         &[&id.0, k, &ts.to_le_bytes(), d.as_bytes()],
     )
 }

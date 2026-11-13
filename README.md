@@ -31,6 +31,12 @@ curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install
   `cargo tauri ios dev`. Linux needs webkit2gtk-4.1, gtk3, libsoup3, ALSA
   and, for calls, gstreamer plugins base, good, bad and libav.
 
+**From irch**: chatir is irch renamed, the same people and spaces. On a
+computer, chatir's first start takes irch's folder (app, terminal or storage
+node; quit irch first), and its `irch:` invites still work. A phone links
+from a computer that has chatir, and syncs its history. Identities made in
+chatir 0.4.0-0.4.1 are not irch's: their folder is kept beside, as `…-0.4`.
+
 Other modes of `chatir`: `--web [ADDR]` (the app's page from your own node,
 default 127.0.0.1:4724; the browser holds only a token, new each run; with
 `--web-link`, also a link from anywhere through

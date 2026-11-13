@@ -139,6 +139,14 @@ in {
         after = [ "network-online.target" ];
         serviceConfig = {
           User = "chatir";
+          # irch's node, taken once: chatir is irch renamed (`adopt`).
+          ExecStartPre = "+" + pkgs.writeShellScript "chatir-from-irch" ''
+            d=/var/lib/chatir/data
+            if [ -e /var/lib/irch/data/seed ] && [ ! -e $d/irch ]; then
+              { rmdir $d || mv $d $d-0.4; } && mv /var/lib/irch/data $d
+            fi
+            touch $d/irch && chown -R chatir:chatir $d
+          '';
           ExecStart =
             "${pick "chatir"}/bin/chatir --serve --dir /var/lib/chatir/data";
           Restart = "always"; RestartSec = 5;

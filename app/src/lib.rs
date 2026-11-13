@@ -1111,6 +1111,10 @@ pub fn run() {
 
 async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
     let r = async {
+        // irch's folder: a computer's alone (a phone's is irch's app's own).
+        let root = root(app)?;
+        let irch = root.with_file_name("dev.irch.chat");
+        chatir_core::adopt(cfg!(desktop).then_some(&*irch), &root)?;
         let dir = home(app)?;
         let notes =
             std::env::var_os("LOROH_VAULT").map(Into::into).or_else(|| {
