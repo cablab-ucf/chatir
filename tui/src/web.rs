@@ -1,10 +1,11 @@
 //! `--web`: the app's page, served by this node to its owner's browser,
 //! keys staying here. Calls and uploads are POSTs to `api/…`; events and
 //! call frames stream down as `[len u32][bytes]`, and only while the page
-//! is in sight. The same HTTP rides iroh as irp's irweb/http/2, so its page
-//! (`LINK#<id>;t=<token>`) opens this from any browser, with no open port
-//! or certificate. `api/` wants the token (`irweb-access`); the page is
-//! public, as its source is.
+//! is in sight. With `--web-link`, the same HTTP rides iroh as irp's
+//! irweb/http/2, so its page (`LINK#<id>;t=<token>`) opens this from any
+//! browser, with no open port or certificate (and that page holds the
+//! token). `api/` wants the token (`irweb-access`), fresh each run; the
+//! page is public, as its source is.
 
 use anyhow::{Context, Result, bail, ensure};
 use chatir_core::{Node, api, crypto};
@@ -41,18 +42,10 @@ pub async fn run(
     relays: Option<Vec<RelayUrl>>,
 ) -> Result<()> {
     let Some(addr) = addr else { return std::future::pending().await };
-    // Its own key, not the node's: a link says nothing of who you are, and
-    // deleting web-key retires it.
-    let f = dir.join("web-key");
-    let seed: [u8; 32] = match std::fs::read(&f).map(TryInto::try_into) {
-        Ok(Ok(k)) => k,
-        _ => {
-            let k = crypto::rand();
-            std::fs::write(&f, k)?; // in the node's own folder, 0700
-            k
-        }
-    };
-    let token = HEXLOWER.encode(&crypto::kdf("chatir web access", &[&seed]));
+    // Fresh each run, as is the link's key (not the node's: a link says
+    // nothing of who you are): a run's links die with it, and no relay
+    // ties one run to the next.
+    let token = HEXLOWER.encode(&crypto::rand::<32>());
     let (news, _) = broadcast::channel(256);
     let up = dir.join("offered");
     let w = Arc::new(Web { n, token, up, news, cap: Semaphore::new(256) });
@@ -71,9 +64,8 @@ pub async fn run(
             // irnet's endpoint, as the node's: on the pinned relay, else
             // the lab's (n0's only while that is down), where the page dials.
             let lab = r.is_empty();
-            let key = crypto::kdf("chatir web endpoint", &[&seed]);
             let ep = chatir_core::irnet::on(&r[..r.len().min(1)])
-                .secret_key(SecretKey::from_bytes(&key))
+                .secret_key(SecretKey::from_bytes(&crypto::rand()))
                 .alpns(vec![ALPN.to_vec()])
                 .bind()
                 .await?;

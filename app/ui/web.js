@@ -2,8 +2,8 @@
 // node over HTTP (chatir --web; tui/src/web.rs). Calls are POSTs; events
 // and call frames stream down while the page is in sight or in a call,
 // and nothing is said otherwise: no polls, no pings. Opened at the node
-// (http://127.0.0.1:4724/#<token>), the token is the fragment; through
-// irweb's page, its worker adds it.
+// (http://127.0.0.1:4724/#<token>, a token per run), the token is the
+// fragment; through irweb's page (--web-link), its worker adds it.
 (() => {
   if (window.__TAURI__) return;
   // Out of the address bar at once (history, sync, extensions read it

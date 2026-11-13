@@ -32,8 +32,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [ ] A storage node charges a file to the day's budget when asked, not
       when it has it; files and ops share one budget
 - [ ] A demoted admin backdates admin ops (authors date their own)
-- [ ] `--web`: the token is permanent, and the link through irp's page
-      hands it to that page; a token per run, the link behind its own flag
 - [ ] The installers check a signature's file, not its version, and
       nothing where minisign is absent
 - [ ] Android: FLAG_SECURE under "private"; the caller's name shows on a

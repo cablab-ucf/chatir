@@ -32,9 +32,10 @@ curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install
   and, for calls, gstreamer plugins base, good, bad and libav.
 
 Other modes of `chatir`: `--web [ADDR]` (the app's page from your own node,
-default 127.0.0.1:4724, and a link through
-[irp](https://github.com/cablab-ucf/irp)'s page; the browser holds only a
-token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
+default 127.0.0.1:4724; the browser holds only a token, new each run; with
+`--web-link`, also a link from anywhere through
+[irp](https://github.com/cablab-ucf/irp)'s page, which then holds it),
+`--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
 `--doctor [WHO]` (times each route to someone; rings nothing).
 
 ## Features
