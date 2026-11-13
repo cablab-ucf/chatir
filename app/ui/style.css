@@ -1064,6 +1064,7 @@ dialog .m-foot .spacer { flex: 1; }
   margin-top: 8px;
 }
 .choice:hover { background: var(--hover); }
+.choice { text-align: left; } /* a label that wraps reads as one */
 .switch {
   position: relative;
   display: flex;
