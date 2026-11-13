@@ -29,8 +29,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] A storage node charges a file to the day's budget when asked, not
-      when it has it; files and ops share one budget
 - [ ] A demoted admin backdates admin ops (authors date their own)
 - [ ] `--web`: the token is permanent, and the link through irp's page
       hands it to that page; a token per run, the link behind its own flag

@@ -791,8 +791,9 @@ pub struct Node {
     big: Option<String>,
     files: FsStore,
     held: Mutex<Option<std::fs::File>>,
-    // Per space, the day and what it took then (storage nodes).
-    budget: Mutex<BTreeMap<Id, (u64, u64)>>,
+    // Per space, of ops and (true) of files apart, the day and what it took
+    // then (storage nodes).
+    budget: Mutex<BTreeMap<(Id, bool), (u64, u64)>>,
     hosts: Mutex<BTreeMap<Id, Host>>,
     // Devices whose users proved them theirs (sync, calls).
     verified: Mutex<HashMap<EndpointId, (Id, Instant)>>,
@@ -2125,8 +2126,9 @@ impl Node {
                     let tags = tags.unwrap_or_default();
                     let ok =
                         |e: &Env| tags.is_empty() || tags.contains(&e.epoch);
-                    let fits =
-                        |r: &[u8]| self.budget(&sp.id, r.len() as u64).is_ok();
+                    let fits = |r: &[u8]| {
+                        self.budget(&sp.id, r.len() as u64, false).is_ok()
+                    };
                     let keep =
                         fresh.into_iter().filter(|(_, e, r)| ok(e) && fits(r));
                     keep.filter(|(i, e, r)| b.store(*i, e.ts, r, 0, false))
@@ -3934,17 +3936,28 @@ impl Node {
         Ok(b)
     }
 
-    /// Blob `h`, fetched from `from` in the background, kept.
-    fn fetch(&self, h: &Id, from: EndpointId) {
+    /// Blob `h`, fetched from `from` in the background, kept. Charged to
+    /// a space's files when asked (`charged`), so two asks at once never
+    /// both fit; none of it come, its share is given back.
+    fn fetch(&self, h: &Id, from: EndpointId, charged: Option<(Id, u64)>) {
         let (files, n) = (self.files.clone(), self.this.get().cloned());
         let hash = iroh_blobs::Hash::from_bytes(h.0);
         tokio::spawn(async move {
             let Some(n) = n.and_then(|n| n.upgrade()) else { return };
             n.knock(from);
-            let Ok(ep) = n.up().await else { return };
-            let got = files.downloader(&ep).download(hash, vec![from; 3]);
+            let got = match n.up().await {
+                Ok(ep) => files.downloader(&ep).download(hash, vec![from; 3]),
+                Err(e) => return warn!("keeping a file: {e:#}"),
+            };
             if let Err(e) = got.await {
                 warn!("keeping a file: {e:#}");
+                let none = files.observe(hash).await;
+                if let Some((sp, size)) = charged
+                    && none.is_ok_and(|b| b.ranges.is_empty())
+                {
+                    let mut b = lock(&n.budget);
+                    b.entry((sp, true)).and_modify(|u| u.1 -= size.min(u.1));
+                }
             }
         });
     }
@@ -3961,14 +3974,20 @@ impl Node {
         false
     }
 
-    /// Members' small files a storage node takes for a space: 25 MB each,
-    /// 4 GB a day, so no member fills its disk.
-    fn budget(&self, sp: &Id, size: u64) -> Result<(), &'static str> {
+    /// What a storage node takes for a space each day: 4 GB of ops, and
+    /// apart 4 GB of members' small files (25 MB each), so no member fills
+    /// its disk, nor crowds out the ops with files that never come.
+    fn budget(
+        &self,
+        sp: &Id,
+        size: u64,
+        file: bool,
+    ) -> Result<(), &'static str> {
         if Some(size) > crate::crypto::sealed_len(PREVIEW as u64) {
             return Err("over 25 MB: the sender's own storage node keeps it");
         }
         let (mut b, day) = (lock(&self.budget), now() / DAY);
-        let used = b.entry(*sp).or_insert((day, 0));
+        let used = b.entry((*sp, file)).or_insert((day, 0));
         if used.0 != day {
             *used = (day, 0);
         }
@@ -4006,7 +4025,7 @@ impl Node {
                     let no = "over 5 GB: storage nodes keep it only with their password";
                     tx.write_all(no.as_bytes()).await?;
                 } else {
-                    self.fetch(&h, from);
+                    self.fetch(&h, from, None);
                 }
             }
             Ask::Hold(sp, t, h)
@@ -4019,8 +4038,8 @@ impl Node {
                 if !self.files.has(hash).await? {
                     let size = self.verified(&[from], &h).await;
                     let size = size.context("not reachable, or not there")?.0;
-                    match self.budget(&sp, size) {
-                        Ok(()) => self.fetch(&h, from),
+                    match self.budget(&sp, size, true) {
+                        Ok(()) => self.fetch(&h, from, Some((sp, size))),
                         Err(no) => tx.write_all(no.as_bytes()).await?,
                     }
                 }
@@ -5264,6 +5283,21 @@ mod tests {
         assert!(matches!(a.find(&h, x).1, Admit::No));
         assert!(!lock(&a.verified).contains_key(&x));
         stop(a).await;
+    }
+
+    /// A storage node charges a member's file to the space's files, never
+    /// its ops, when asked; and gives it back if none of it came.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_that_never_comes_is_given_back() {
+        let s = start(&Net::Direct, "keeper").await;
+        let (sp, size) = (Id(rand()), 25 << 20);
+        let spent = |file| lock(&s.budget).get(&(sp, file)).map_or(0, |u| u.1);
+        s.budget(&sp, size, true).unwrap();
+        assert_eq!((spent(true), spent(false)), (size, 0));
+        let nobody = SecretKey::from_bytes(&rand()).public();
+        s.fetch(&Id(rand()), nobody, Some((sp, size)));
+        assert!(until(|| spent(true) == 0).await, "none came");
+        stop(s).await;
     }
 
     /// Events name no space; a relay can neither ack them nor (with a
