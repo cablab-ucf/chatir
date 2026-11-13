@@ -3004,8 +3004,9 @@ function notifyCheck() {
       ok ? "✓ " : "✗ ", text);
     put(box, h("label", {}, "Notifications on this phone"),
       row(a.notify, "chatir may show notifications"),
-      row(a.background, "chatir may run in the background (else, asleep " +
-        "in a pocket, Android cuts it off and it cannot ring)"),
+      row(a.background, "chatir, and the app holding pushir's connection " +
+        "if another, may run in the background (else, asleep in a pocket, " +
+        "Android cuts them off and nothing rings)"),
       row(a.calls, "calls may fill the screen when the phone is locked"),
       h("p", { class: "note" }, "It stays reachable on pushir's one quiet " +
         "connection, shared with every pushir app on the phone."),
