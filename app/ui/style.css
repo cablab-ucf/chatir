@@ -510,6 +510,8 @@ svg.icon {
 .msg.cont { margin-top: 0; }
 .msg.sel { background: var(--hover); box-shadow: inset 2px 0 0 var(--cyan); }
 dialog:has(table.keys) { width: min(760px, calc(100vw - 32px)); }
+dialog:has(.connect), dialog:has(table.conns), dialog:has(figure.chart) {
+  width: min(620px, calc(100vw - 32px)); }
 table.keys { border-collapse: collapse; width: 100%; font-size: 15px; }
 table.keys td { padding: 6px 8px; vertical-align: top; color: var(--text); }
 table.keys td:first-child { white-space: nowrap; width: 1%; }
@@ -1630,3 +1632,53 @@ button.info:hover { color: var(--text-strong); }
 .note.why { margin: 4px 0 0; font-weight: normal; text-transform: none; letter-spacing: 0; }
 .row.shared .gear { color: var(--muted); padding: 4px; }
 .row.shared .gear:hover { color: var(--text-strong); }
+
+/* Connect: what, sharing it from here, adding one here */
+.connect { display: grid; grid-template-columns: 1fr auto auto;
+  gap: 10px 8px; align-items: center; margin-top: 8px; }
+.connect .what { display: flex; align-items: center; gap: 8px;
+  font-weight: 600; }
+.connect .acts { display: flex; gap: 6px; justify-content: flex-end; }
+.connect .head { color: var(--muted); text-transform: uppercase;
+  font-size: 11px; letter-spacing: 0.05em; text-align: center; }
+.connect .btn { white-space: nowrap; }
+@media (max-width: 560px) {
+  .connect { grid-template-columns: auto 1fr; }
+  .connect .what { grid-column: 1 / -1; margin-top: 6px; }
+  .connect > span:first-child { display: none; }
+}
+
+/* Facts as a table: a name, its value */
+table.facts { width: 100%; border-collapse: collapse; margin: 6px 0; }
+table.facts th, table.facts td { padding: 5px 6px; text-align: left;
+  border-bottom: 1px solid var(--border); vertical-align: top; }
+table.facts th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+table.facts td { font-variant-numeric: tabular-nums; }
+table.facts.log td { font-size: 12px; color: var(--muted); }
+table.conns thead th { font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.04em; }
+table.conns small { color: var(--muted); }
+table.conns tr.go { cursor: pointer; }
+table.conns tr.go:hover { background: var(--hover); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--dim); }
+.dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.key.good { color: var(--green); }
+.key.soon { color: var(--yellow); }
+.key.bad { color: var(--red); }
+.key.unknown { color: var(--muted); }
+details summary { cursor: pointer; color: var(--muted); margin-top: 8px; }
+
+/* The day's traffic: sent up, received down, an hour a bar */
+figure.chart { margin: 6px 0 12px; }
+svg.chart { width: 100%; height: auto; display: block; }
+svg.chart .sent, figure.chart i.sent { fill: var(--brand); background: var(--brand); }
+svg.chart .got, figure.chart i.got { fill: var(--cyan); background: var(--cyan); }
+svg.chart .axis { stroke: var(--line); stroke-width: 0.5; }
+figure.chart figcaption { display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--muted); }
+figure.chart i { display: inline-block; width: 8px; height: 8px;
+  border-radius: 2px; margin: 0 3px 0 8px; }
+@media (max-width: 560px) {
+  table.conns th:nth-child(4), table.conns td:nth-child(4) { display: none; }
+}

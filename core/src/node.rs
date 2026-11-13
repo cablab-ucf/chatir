@@ -742,6 +742,8 @@ struct Iroh {
     ep: Endpoint,
     gossip: Gossip,
     router: Router,
+    // The relay keys it was made with (`relay-keys` then).
+    keys: Vec<(RelayUrl, String)>,
 }
 
 pub struct Node {
@@ -760,6 +762,8 @@ pub struct Node {
     route: Mutex<crate::voice::Route>,
     // Direct links to devices, closed once quiet (`QUIET_LINK`).
     links: Links,
+    // What each device and we moved this run.
+    pub(crate) traffic: Arc<crate::traffic::Traffic>,
     // Ops sent as events (`push::event`), by the ack each awaits (space,
     // time, device, live?), and how many left that way and how many were
     // dialed after all.
@@ -1095,6 +1099,7 @@ impl Node {
             served,
             relayed: AtomicBool::new(false),
             links: Links::default(),
+            traffic: Arc::default(),
             waits: Mutex::default(),
             echo: Mutex::default(),
             caught: Mutex::default(),
@@ -1280,25 +1285,30 @@ impl Node {
         let gossip =
             Gossip::builder().max_message_size(GOSSIP_MAX).spawn(ep.clone());
         let gate = Some(gate(n.clone()));
+        // Every link counted, each way (`traffic`).
+        use crate::traffic::Counted;
+        let t = &self.traffic;
+        let blobs = BlobsProtocol::new(&self.files, gate);
         let mut router = Router::builder(ep.clone())
-            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&self.files, gate))
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .accept(sync::ALPN, Proto(n.clone()))
-            .accept(BLOB, Proto(n.clone()))
-            .accept(HAND, Proto(n.clone()))
-            .accept(DIRECT, Proto(n.clone()))
-            .accept(crate::send::ALPN, Proto(n.clone()))
-            .accept(call::ALPN, Proto(n));
+            .accept(iroh_blobs::ALPN, Counted(blobs, t.clone()))
+            .accept(iroh_gossip::ALPN, Counted(gossip.clone(), t.clone()))
+            .accept(sync::ALPN, Counted(Proto(n.clone()), t.clone()))
+            .accept(BLOB, Counted(Proto(n.clone()), t.clone()))
+            .accept(HAND, Counted(Proto(n.clone()), t.clone()))
+            .accept(DIRECT, Counted(Proto(n.clone()), t.clone()))
+            .accept(crate::send::ALPN, Counted(Proto(n.clone()), t.clone()))
+            .accept(call::ALPN, Counted(Proto(n), t.clone()));
         // A storage node tells its devices the relay their lanes go on.
         if let Some(p) = &self.server {
-            router = router.accept(crate::push::ALPN, p.clone());
+            router =
+                router.accept(crate::push::ALPN, Counted(p.clone(), t.clone()));
         }
         let router = router.spawn();
         // The lab's relay down for 10 s: n0's, until it answers again.
         if matches!(self.net, Net::Default) {
             tokio::spawn(irnet::fallback(ep.clone()));
         }
-        Ok(Iroh { ep, gossip, router })
+        Ok(Iroh { ep, gossip, router, keys: keys(&self.dir) })
     }
 
     /// A connection to `to`, iroh up for it; `to` knocked first, so its
@@ -1312,7 +1322,9 @@ impl Node {
         self.knock(to.id);
         let ep = self.up().await?;
         self.findable(&[to.id]);
-        Ok(ep.connect(to, alpn).await?)
+        let c = ep.connect(to, alpn).await?;
+        self.traffic.count(&c);
+        Ok(c)
     }
 
     /// Whether `d` is up in `sp` (said `Here`, not `Gone`), or is one of
@@ -4810,8 +4822,64 @@ impl Node {
         })
     }
 
+    /// The devices worth listing (ours, those allowed, any linked this
+    /// run), newest news first: whose, our name for it, whether it is up
+    /// (as a space we share last heard), since when, when it last wrote,
+    /// how it is reached now, and what it and we moved this run.
+    pub async fn connections(self: &Arc<Self>) -> Vec<serde_json::Value> {
+        let (me, seen, allowed) =
+            (self.id(), self.traffic.seen(), self.allowed());
+        let mut devs: BTreeSet<EndpointId> =
+            self.devices().into_iter().map(|d| d.0).collect();
+        devs.extend(allowed.keys().chain(seen.keys()));
+        devs.remove(&self.device());
+        // Its newest word in any space: here or gone, and when.
+        let mut up: HashMap<EndpointId, (bool, u64)> = HashMap::new();
+        for sp in self.all() {
+            for ((_, d), (here, ts, _)) in lock(&sp.seen).iter() {
+                let e = up.entry(*d).or_insert((*here, *ts));
+                if *ts > e.1 {
+                    *e = (*here, *ts);
+                }
+            }
+        }
+        let row = |d: EndpointId| {
+            let user = self.whose(&d);
+            let wrote = user.and_then(|u| {
+                let of = |s: &Id| self.view(s, |st| st.devices_of(&u));
+                let all = self.spaces().into_iter().filter_map(|s| of(&s));
+                all.flatten().filter(|x| x.0 == d).map(|x| x.1).max()
+            });
+            let ok = allowed.contains_key(&d);
+            let name = allowed.get(&d).filter(|n| !n.is_empty()).cloned();
+            let t = seen.get(&d);
+            let (on, at) = up.get(&d).copied().unzip();
+            async move {
+                serde_json::json!({
+                    "id": d, "short": d.fmt_short().to_string(),
+                    "name": name.or_else(|| self.label(&d)),
+                    "user": user, "uname": user.and_then(|u| self.name_of(&u, None)),
+                    "own": user == Some(me), "allowed": ok,
+                    "up": on, "since": at, "wrote": wrote, "path": self.path(d).await,
+                    "sent": t.map_or(0, |t| t.sent), "got": t.map_or(0, |t| t.got),
+                    "open": t.map_or(0, |t| t.open), "linked": t.map(|t| t.last),
+                })
+            }
+        };
+        let mut v = n0_future::join_all(devs.into_iter().map(row)).await;
+        let news = |x: &serde_json::Value| {
+            ["since", "wrote", "linked"]
+                .iter()
+                .filter_map(|k| x[k].as_u64())
+                .max()
+        };
+        v.sort_by_key(|x| std::cmp::Reverse(news(x)));
+        v
+    }
+
     /// Our key for a relay (`url#key`, from whoever runs it), or none
-    /// (`url`): kept in `relay-keys`, used from the next start.
+    /// (`url`): kept in `relay-keys`, used as iroh next starts (at once,
+    /// if it is idle).
     pub async fn relay_key(&self, line: &str) -> Result<Option<bool>> {
         let (url, k) = relay(line).context("not a relay's address")?;
         ensure!(
@@ -4829,6 +4897,9 @@ impl Node {
             v.push(&new);
         }
         store::write(&f, v.join("\n").as_bytes())?;
+        // iroh idle: asleep now, so it wakes with the key (else at the next
+        // start).
+        self.rest_iroh(Duration::ZERO).await;
         Ok(match k.is_empty() {
             true => None,
             false => key_works(&url, k).await,
@@ -4836,10 +4907,19 @@ impl Node {
     }
 
     /// Our relay keys, each as its relay answers now (`key_works`).
-    pub async fn relay_keys(&self) -> Vec<(String, Option<bool>)> {
-        let checks = keys(&self.dir).into_iter().map(|(u, k)| async move {
-            let ok = key_works(&u, &k).await;
-            (u.to_string(), ok)
+    /// Each relay key: its relay, whether that relay takes it now, and
+    /// whether iroh runs with it (none while iroh sleeps: it wakes with
+    /// it); and the key, but its last four characters hidden.
+    pub async fn relay_keys(&self) -> Vec<serde_json::Value> {
+        let on = read(&self.iroh).as_ref().map(|i| i.keys.clone());
+        let checks = keys(&self.dir).into_iter().map(|(u, k)| {
+            let on = on.as_ref().map(|v| v.iter().any(|x| x.0 == u && x.1 == k));
+            async move {
+                let ok = key_works(&u, &k).await;
+                let tail = k.char_indices().rev().nth(3).map_or(0, |c| c.0);
+                let shown = format!("…{}", &k[tail..]);
+                serde_json::json!({ "url": u.to_string(), "ok": ok, "on": on, "key": shown })
+            }
         });
         n0_future::join_all(checks).await
     }

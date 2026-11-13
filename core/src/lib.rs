@@ -15,6 +15,7 @@ mod send;
 pub mod state;
 mod store;
 mod sync;
+mod traffic;
 pub mod usage;
 #[cfg(feature = "voice")]
 pub mod voice;

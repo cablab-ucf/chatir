@@ -222,6 +222,8 @@ pub enum Call {
         id: Id,
     },
     Transfers,
+    /// Every device worth listing, as it is now (`Node::connections`).
+    Connections,
     /// Others' devices ours send to and take from (`allowed`, as ssh's
     /// `authorized_keys`).
     Allowed,
@@ -475,6 +477,7 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
         Call::Hangup => json!(n.call(None).await?),
         Call::Mute { on } => json!(n.mute(on)),
         Call::Levels => json!(n.levels()),
+        Call::Connections => json!(n.connections().await),
         Call::Usage => {
             let log = crate::usage::read(n.dir());
             let log = &log[log.len().saturating_sub(500)..];
