@@ -3437,15 +3437,30 @@ async function ownerFlow(m) {
   if (ok) publish({ Owner: { user: m.id } });
 }
 
+/** What Android keeps from reaching you, and Fix: one setting a tap, the
+ * next shown once it is back. */
 async function health(ask = "") {
   if (!android) return;
   const a = await invoke("notify_check", { ask }).catch(() => null);
+  const asleep = (who) => `Android may stop ${who} while the phone sleeps`;
   const bad = a ? [!a.notify && "notifications are off",
-    !a.background && "Android cuts chatir off while the phone sleeps",
+    !a.background && !a.self && asleep("chatir"),
+    !a.background && a.self && a.holder &&
+      asleep(`${a.holder}, which carries chatir's pushes`),
     !a.calls && "calls cannot ring on a locked screen"].filter(Boolean) : [];
+  // Fix's next step: another app's battery is set in its settings.
+  const next = !a ? "" : !a.notify ? "Allow notifications"
+    : !a.background && a.self && a.holder
+      ? `In ${a.holder}'s settings: Battery › Unrestricted`
+    : !a.background ? "Allow chatir to run in the background"
+    : "Allow full-screen calls";
   put($("health"), bad.length > 0 && [
     h("b", {}, "Messages and calls may not reach you: "), bad.join("; "),
-    h("button", { class: "btn", onclick: () => health("fix") }, "Fix")]);
+    h("button", { class: "btn", title: next, onclick: (e) => {
+      e.target.disabled = true;
+      toast(next, false, 8e3);
+      health("fix");
+    } }, "Fix")]);
 }
 document.addEventListener("visibilitychange",
   () => !document.hidden && health());
@@ -3469,9 +3484,11 @@ function notifyCheck() {
       ok ? "✓ " : "✗ ", text);
     put(box, h("label", {}, "Notifications on this phone"),
       row(a.notify, "chatir may show notifications"),
-      row(a.background, "chatir, and the app holding pushir's connection " +
-        "if another, may run in the background (else, asleep in a pocket, " +
-        "Android cuts them off and nothing rings)"),
+      row(a.background, a.holder ? `chatir and ${a.holder} (it carries ` +
+        "chatir's pushes) may run in the background (else, asleep in a " +
+        "pocket, Android cuts them off and nothing rings)" : "chatir may " +
+        "run in the background (else, asleep in a pocket, Android cuts it " +
+        "off and nothing rings)"),
       row(a.calls, "calls may fill the screen when the phone is locked"),
       h("p", { class: "note" }, "It stays reachable on pushir's one quiet " +
         "connection, shared with every pushir app on the phone."),
