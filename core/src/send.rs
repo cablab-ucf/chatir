@@ -125,12 +125,21 @@ impl Stage {
     }
 }
 
+impl Row {
+    /// Offered, just now.
+    fn new(device: EndpointId, user: Id, name: &str, size: u64) -> Self {
+        let (name, stage, at) = (name.into(), Stage::Offered, now());
+        let (space, out, path, error) = (None, false, None, None);
+        Self { device, user, space, name, size, out, stage, path, error, at }
+    }
+}
+
 /// A transfer either way: `device` sends to us, or we to it; `space`,
 /// a chat offer's.
 #[derive(Serialize, Deserialize, Clone)]
 struct Row {
     device: EndpointId,
-    user: Option<Id>,
+    user: Id,
     space: Option<Id>,
     name: String,
     size: u64,
@@ -776,18 +785,8 @@ impl Node {
         let none = "not a device of yours or of anyone you share a space with";
         let user = self.whose(&device).context(none)?;
         let (id, s) = self.register(path, None, To::Device(device))?;
-        let row = Row {
-            device,
-            user: Some(user),
-            space: None,
-            name: s.name.clone(),
-            size: s.size,
-            out: true,
-            stage: Stage::Offered,
-            path: Some(s.path),
-            error: None,
-            at: now(),
-        };
+        let (out, path) = (true, Some(s.path));
+        let row = Row { out, path, ..Row::new(device, user, &s.name, s.size) };
         lock(&self.send.book).rows.insert(id, row);
         self.save_book();
         let offer = Ask::Offer(id, s.name, s.size, self.id());
@@ -913,18 +912,8 @@ impl Node {
                 sender is online";
             let from = from.context(gone)?;
             let name = f.clone().safe().name;
-            let row = Row {
-                device: from,
-                user: Some(who),
-                space: Some(*space),
-                name: name.clone(),
-                size: f.size,
-                out: false,
-                stage: Stage::Offered,
-                path: None,
-                error: None,
-                at: now(),
-            };
+            let space = Some(*space);
+            let row = Row { space, ..Row::new(from, who, &name, f.size) };
             lock(&self.send.book).rows.insert(id, row);
             self.begin(&id, &name, dir)?;
         }
@@ -1275,19 +1264,7 @@ impl Node {
             {
                 return false;
             }
-            let row = Row {
-                device: from,
-                user: Some(user),
-                space: None,
-                name: name.clone(),
-                size,
-                out: false,
-                stage: Stage::Offered,
-                path: None,
-                error: None,
-                at: now(),
-            };
-            b.rows.insert(id, row);
+            b.rows.insert(id, Row::new(from, user, &name, size));
         }
         self.save_book();
         self.emit(Event::Incoming { id, device: from, user, name, size });
