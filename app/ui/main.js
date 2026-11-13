@@ -617,14 +617,15 @@ const badge = (n) =>
 function renderSidebar() {
   // At first, and after each update (Android's installer takes back
   // full-screen calls from apps it installs from a file): ask together.
+  // Welcomed first: a fresh device asks once it has a name.
   const v = S.me?.version;
-  if (android && v && store.get("asked") !== v && !modalOpen()) {
+  if (android && v && S.me.name !== "anon" && store.get("asked") !== v &&
+    !modalOpen()) {
     store.set("asked", v);
     askAlerts();
   }
-  put($("server-header"), h("button", { class: "brand",
-    title: "Settings and more", "aria-label": "Settings and more",
-    onclick: (e) => mainMenu(e.currentTarget) }, "chatir"),
+  put($("server-header"), h("button", { class: "brand", title: "Settings",
+    onclick: () => settings() }, "chatir"),
     h("button", { title: "Add a space (create or join)", onclick: addSpace },
       icon("plus")));
   const d = dms();
@@ -742,7 +743,7 @@ function channelList(s) {
         onclick: (e) => { e.stopPropagation(); newRoom(s, ch); },
       }, icon("plus")),
       s.admin && h("button", {
-        class: "gear", title: "Edit Channel",
+        class: "gear", title: "Edit channel",
         onclick: (e) => {
           e.stopPropagation();
           menu(e.currentTarget, chanMenu(s, ch));
@@ -772,7 +773,7 @@ function channelList(s) {
 
 // Its link is how tydig, or a note, points here.
 const chanMenu = (s, ch) => [
-  ["Copy Link", "link", () => copy(`chatir://open/${s.id}/${ch.id}`,
+  ["Copy link", "link", () => copy(`chatir://open/${s.id}/${ch.id}`,
     "Copied the channel's link: paste it in tydig's Share › chatir")],
   ...s.admin ? ["-", ["Rename or Delete", "pencil", () => editChannel(ch)],
     ["Move Up", "up", () => reorder(s, ch.id, -1)],
@@ -878,7 +879,8 @@ const callers = (ids) => ids.length > 0 && h("div", { class: "callers" },
 function renderUserPanel() {
   const me = S.me;
   put($("user-panel"),
-    h("div", { class: "who", title: "My Account", onclick: settings },
+    h("div", { class: "who", title: "Settings",
+      onclick: () => settings("account") },
       avatar(me.id, me.name, "sm", !me.invisible),
       h("div", { class: "names" }, h("b", {}, me.name),
         h("small", {}, me.invisible ? "Invisible" : "Online"))),
@@ -886,7 +888,8 @@ function renderUserPanel() {
       class: "panel-btn", onclick: toggleInvisible,
       title: me.invisible ? "Go online" : "Go invisible",
     }, icon(me.invisible ? "eyeOff" : "eye")),
-    h("button", { class: "panel-btn", title: "My Account", onclick: settings },
+    h("button", { class: "panel-btn", title: "Settings",
+      onclick: () => settings() },
       icon("gear")));
 }
 
@@ -951,10 +954,10 @@ function renderEmpty() {
       "phone number: devices talk directly over iroh, and everything is " +
       "end-to-end encrypted."),
     h("button", { class: "btn", onclick: createFlow }, "Create a space"), " ",
-    h("button", { class: "btn grey", onclick: joinFlow },
-      "Join with an invite"),
-    h("p", { class: "note" }, "Already use chatir elsewhere? ",
-      h("span", { class: "link", onclick: linkFlow }, "Link this device"))));
+    h("button", { class: "btn grey", onclick: () => joinFlow() },
+      "Join with an invite"), " ",
+    h("button", { class: "btn grey", onclick: () => linkFlow() },
+      "I use chatir on another device")));
 }
 
 // ---------- calls ----------
@@ -1823,7 +1826,7 @@ function toolbar(m) {
     !inThread() && tool("thread", "Reply in thread", () => openThread(m.id)),
     m.text && tool("copy", "Copy", () => copy(m.text, "Copied")),
     tool("note", "Add to notes", () => toNotes(m)),
-    tool("link", "Copy Link", () => copy(`chatir://open/${S.sid}/${S.ch}/${m.id}`,
+    tool("link", "Copy link", () => copy(`chatir://open/${S.sid}/${S.ch}/${m.id}`,
       "Copied its link: it opens here for anyone in this space")),
     tool("pin", m.pinned ? "Unpin" : "Pin",
       () => publish({ Pin: { target: m.id, on: !m.pinned } })),
@@ -2003,26 +2006,6 @@ function menu(anchor, items, align) {
     items.map((it) => it === "-" ? h("hr") : it && item(it))), align);
 }
 
-// As Signal's: everything about you and this device, from the logo.
-function mainMenu(anchor) {
-  const alerts = () => modal((finish) => h("div", {},
-    h("div", { class: "m-body" }, h("h2", {}, "Notifications"), notifyCheck()),
-    foot(h("button", { class: "btn", onclick: () => finish() }, "OK"))));
-  menu(anchor, [
-    ["Settings", "gear", settings, "accent"],
-    ["Your devices", "phone", devicesFlow],
-    ["Link a device", "userPlus", linkDevice],
-    ["Profiles and signing out", "users", profilesFlow],
-    android && ["Notifications", "chat", alerts],
-    "-",
-    ["Files shared from this device", "disk", sharedFlow],
-    ["Network use", "speaker", usageFlow],
-    !mobile() && ["Keyboard shortcuts", "key", keysHelp],
-    "-",
-    [`Check for updates (chatir ${S.me.version})`, "down", () => updates(false)],
-  ]);
-}
-
 function closeDm(d) {
   quiet(call("hide", { space: d.id, on: true }));
   if (S.sid === d.id) S.sid = null;
@@ -2039,26 +2022,28 @@ const levels = (s) => [["All", "All messages"], ["Mentions", "Only @mentions"],
 function dmMenu(anchor) {
   const s = cur();
   // Notes to self: on every device of ours, nothing to call or leave.
-  if (s.self) return menu(anchor, [["Your devices", "link", devicesFlow]]);
+  if (s.self) {
+    return menu(anchor, [["Your devices", "phone", () => settings("devices")]]);
+  }
   menu(anchor, [
     ["Call", "ring", () => callIn(s.id)],
-    ["Storage Nodes", "disk", () => storageFlow(s)],
+    ["Storage nodes", "disk", () => storageFlow(s)],
     ["Close", "x", () => closeDm(s)],
     "-", ...levels(s), "-",
-    ["Delete Conversation", "trash", leaveSpace, "danger"],
+    ["Delete conversation", "trash", leaveSpace, "danger"],
   ]);
 }
 
 function spaceMenu(anchor) {
   const s = cur();
   menu(anchor, [
-    ["Invite People", "userPlus", invitePeople, "accent"],
-    s.admin && ["Create Channel", "plus", createChannel],
-    s.admin && ["Rename Space", "pencil", renameSpace],
-    s.admin && ["Reset Invite Links", "key", resetInvites],
-    ["Storage Nodes", "disk", () => storageFlow(s)],
+    ["Invite people", "userPlus", invitePeople, "accent"],
+    s.admin && ["Create channel", "plus", createChannel],
+    s.admin && ["Rename space", "pencil", renameSpace],
+    s.admin && ["Reset invite links", "key", resetInvites],
+    ["Storage nodes", "disk", () => storageFlow(s)],
     "-", ...levels(s), "-",
-    ["Leave Space", "logout", leaveSpace, "danger"],
+    ["Leave space", "logout", leaveSpace, "danger"],
   ]);
 }
 
@@ -2128,7 +2113,7 @@ function storageFlow(focus) {
         } else storageFlow(focus);
       } }, "Run one on this computer, always on");
     return h("div", {},
-      h("div", { class: "m-body" }, h("h2", {}, "Storage Nodes"),
+      h("div", { class: "m-body" }, h("h2", {}, "Storage nodes"),
         h("p", { class: "sub" }, "A storage node keeps a space or " +
           "conversation encrypted, never its keys, so messages wait there " +
           "while everyone is offline. Each node keeps only those switched " +
@@ -2373,9 +2358,9 @@ async function addSpace() {
     h("p", { class: "sub" }, "Spaces live only on their members' devices. " +
       "There is nothing to sign up for."),
     h("button", { class: "choice", onclick: () => finish("create") },
-      icon("plus"), "Create My Own"),
+      icon("plus"), "Create my own"),
     h("button", { class: "choice", onclick: () => finish("join") },
-      icon("link"), "Join with an Invite")));
+      icon("link"), "Join with an invite")));
   if (v === "create") createFlow();
   if (v === "join") joinFlow();
 }
@@ -2398,7 +2383,7 @@ async function nameDevice() {
   if (store.get("named")) return;
   const name = await ask({ title: "What is this device called?",
     sub: "Your other devices list it by this name. You can change it in " +
-      "My Account › Your devices.", label: "Device name",
+      "Settings › Devices.", label: "Device name",
     value: S.me.device_name ?? "", ok: "Save" });
   store.set("named", "1");
   if (name && name !== S.me.device_name) {
@@ -2462,25 +2447,54 @@ async function addCard(code, p) {
   schedule("side");
 }
 
-async function linkFlow() {
+async function linkFlow(profile = null) {
+  // Someone already (spaces of its own): linked in a profile beside it.
+  if (!profile && S.spaces.some((x) => !x.self)) return linkFlow(await ask({
+    title: "Link in a new profile",
+    sub: `This device is already ${S.me.name}, with spaces of its own. ` +
+      "You elsewhere opens in a new profile beside it, nothing lost; " +
+      "switch in Settings › Devices › Profiles.",
+    label: "New profile's name", value: "Linked", ok: "Continue",
+    maxLength: 32 }) || undefined);
+  if (profile === undefined) return;
   let code = await ask({ title: "Link this device",
-    sub: "On your other device, open My Account › Link a device and paste " +
-      "its code here, or type its short code. This device becomes you, " +
-      "with all your spaces.",
-    label: "Link code", placeholder: "chatir:link:… or k7m-x9q-p3a-b2c", ok: "Link",
-    maxLength: 8192, scan: true });
+    sub: "On a device where you use chatir, open Settings › Devices " +
+      "› Add another device. Scan its code, paste it, or type its " +
+      "short code: this device becomes you, with all your spaces.",
+    label: "Link code", placeholder: "chatir:link:… or k7m-x9q-p3a-b2c",
+    ok: "Link", maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code) code = await long(code);
   if (!code) return;
+  const wait = toast("Linking…", false, 60e3);
   try {
-    await invoke("link", { code });
+    await invoke("link", { code, profile });
   } catch (e) {
+    wait.remove();
     return toast(String(e), true);
   }
-  S.me = await rpc("me");
-  renderUserPanel();
-  toast("Linked. Your spaces arrive as your other devices are reached.");
-  schedule("side");
+  // A new person here: the page starts over as them.
+  store.set("linked", "1");
+  location.reload();
+}
+
+/** A device's first run: start afresh, become a device of yours that is
+ * elsewhere, or join. Asked at each start until it has a name or a space. */
+async function welcome() {
+  if (S.me.name !== "anon" || S.spaces.some((x) => !x.self)) return;
+  const pick = await modal((finish) => h("div", { class: "m-body" },
+    h("h2", {}, "Welcome to chatir"),
+    h("p", { class: "sub" }, "Private, peer-to-peer chat: no servers, no " +
+      "accounts, no phone number. Everything is end-to-end encrypted."),
+    h("button", { class: "choice", onclick: () => finish("new") },
+      icon("plus"), "I'm new to chatir"),
+    h("button", { class: "choice", onclick: () => finish("link") },
+      icon("link"), "I use chatir on another device"),
+    h("button", { class: "choice", onclick: () => finish("join") },
+      icon("userPlus"), "I have an invite")));
+  if (pick === "new") await named();
+  if (pick === "link") await linkFlow();
+  if (pick === "join") await joinFlow();
 }
 
 async function open(id) {
@@ -2523,84 +2537,161 @@ async function banFlow(m, on) {
   quiet(call("ban", { space: S.sid, user: m.id, on }));
 }
 
-function settings() {
-  modal((finish) => {
+// ---------- settings ----------
+
+/** Settings' tabs: each kind of thing in one, each thing in one place. */
+const TABS = { account: "Account", devices: "Devices", privacy: "Privacy",
+  look: "Appearance", network: "Network", about: "About" };
+
+const toggle = (title, small, checked, change) => h("label",
+  { class: "switch" }, h("span", {}, title, h("small", {}, small)),
+  h("input", { type: "checkbox", checked,
+    onchange: (e) => change(e.target.checked) }), h("i"));
+
+/** Every setting of yours and this device's, by tab, from one door: the
+ * logo, your name, Note to self. A flow of its own (a code, a list)
+ * takes the dialog, so Settings closes for it. */
+function settings(tab = store.get("tab")) {
+  if (!TABS[tab]) tab = "account";
+  return modal((finish) => {
+    const go = (fn) => () => { finish(null); fn(); };
+    const nav = h("div", { class: "chips tabs", role: "tablist" });
+    const body = h("div", { class: "m-body" });
+    const show = (k) => {
+      store.set("tab", k);
+      put(nav, Object.entries(TABS).map(([t, label]) => h("button", {
+        class: "chip" + (t === k ? " on" : ""), role: "tab",
+        "aria-selected": `${t === k}`, onclick: () => show(t) }, label)));
+      put(body, TAB[k](go));
+    };
+    show(tab);
+    return h("div", { class: "settings" },
+      h("div", { class: "m-head" }, h("h2", {}, "Settings"), nav), body,
+      foot(h("button", { class: "btn grey", onclick: () => finish(null) },
+        "Done")));
+  });
+}
+
+const TAB = {
+  account: (go) => {
     const name = h("input", { type: "text", value: S.me.name, maxLength: 64 });
-    const save = async () => {
+    // Kept as it is left: no button of its own.
+    name.addEventListener("change", async () => {
       const n = name.value.trim();
-      if (n && n !== S.me.name) await quiet(call("set_name", { name: n }));
+      if (!n || n === S.me.name) return;
+      await quiet(call("set_name", { name: n }));
       S.me = await rpc("me");
       renderUserPanel();
       schedule("members", "msgs");
-      finish(true);
-    };
-    name.addEventListener("keydown", (e) => e.key === "Enter" && save());
-    const sw = (title, small, checked, change) => h("label",
-      { class: "switch" }, h("span", {}, title, h("small", {}, small)),
-      h("input", { type: "checkbox", checked,
-        onchange: (e) => change(e.target.checked) }), h("i"));
-    return h("div", {},
-      h("div", { class: "m-body" },
-        h("h2", {}, "My Account"),
-        h("p", { class: "note" }, `chatir ${S.me.version} on ${S.me.device}`),
-        h("label", {}, "Display name"), name,
-        h("label", {}, "Theme"),
-        h("div", { class: "chips" }, ...Object.entries(THEMES).map(([k, v]) =>
-          h("button", {
-            class: "chip" + (document.documentElement.dataset.theme === k
-              ? " on" : ""),
-            onclick: (e) => {
-              theme(k);
-              for (const c of e.currentTarget.parentNode.children) {
-                c.classList.toggle("on", c === e.currentTarget);
-              }
-            },
-          }, swatch(k), v))),
-        h("label", {}, "User ID (your public key)"),
-        h("div", { class: "row" },
-          h("input", { class: "field mono", type: "text", value: S.me.id,
-            readOnly: true }),
-          h("button", { class: "btn grey",
-            onclick: () => copy(S.me.id, "ID copied") }, "Copy")),
-        sw("Invisible", "Others see you offline; typing stays private. " +
-          "Calls you join still show.", S.me.invisible,
-        (on) => setInvisible(on)),
-        sw("Link previews", "Made on this device when you send a link: " +
-          "the site (for a paper, arXiv, PubMed or Crossref) sees your " +
-          "address then. Nobody else asks it.",
-        previews(), (on) => store.set("previews", on ? "1" : "0")),
-        sw("Private notifications", "Banners say only that something came, " +
-          "not who sent it or what it says.", S.private,
-        (on) => invoke("private", { on }).then((v) => S.private = v)),
-        sw("Silent", "On this device only: calls and messages still show, " +
-          "with no ring or sound.", S.silent,
-        (on) => invoke("silent", { on }).then((v) => S.silent = v)),
-        sw("Vim keys", "Esc in the composer picks messages: j/k, r, e, dd; " +
-          "? lists them.", vimKeys(), (on) => store.set("vim", on ? "1" : "0")),
-        android && notifyCheck(),
-        h("button", {
-          class: "choice", onclick: () => { finish(null); linkDevice(); },
-        }, icon("phone"), "Link a device"),
-        h("button", {
-          class: "choice", onclick: () => { finish(null); storageFlow(); },
-        }, icon("disk"), "Storage nodes"),
-        h("button", {
-          class: "choice", onclick: () => { finish(null); sharedFlow(); },
-        }, icon("disk"), "Files shared from this device"),
-        h("button", {
-          class: "choice", onclick: () => { finish(null); usageFlow(); },
-        }, icon("speaker"), "Network use"),
-        h("button", {
-          class: "choice", onclick: () => { finish(null); profilesFlow(); },
-        }, icon("users"), "Devices, profiles and signing out"),
-        h("button", {
-          class: "choice", onclick: () => { finish(null); updates(false); },
-        }, icon("down"), `Check for updates (this is ${S.me.version})`),
-        h("p", { class: "note" }, "Your identity is a key on your devices. " +
-          "Messages are end-to-end encrypted; read positions stay here.")),
-      foot(cancel(finish),
-        h("button", { class: "btn", onclick: save }, "Save")));
-  });
+      toast("Name saved");
+    });
+    name.addEventListener("keydown", (e) => e.key === "Enter" && name.blur());
+    return [
+      h("label", {}, "Display name"), name,
+      h("p", { class: "note" }, "What the members of your spaces see."),
+      h("label", {}, "User ID (your public key)"),
+      h("div", { class: "row" },
+        h("input", { class: "field mono", type: "text", value: S.me.id,
+          readOnly: true }),
+        h("button", { class: "btn grey",
+          onclick: () => copy(S.me.id, "ID copied") }, "Copy")),
+      h("button", { class: "choice", onclick: go(myCard) }, icon("userPlus"),
+        "Your contact code"),
+      h("p", { class: "note" }, "You are a key kept on your devices: no " +
+        "server, no account, no phone number. Messages are end-to-end " +
+        "encrypted; read positions stay on each device."),
+    ];
+  },
+  devices: (go) => {
+    const list = h("div", {}, h("p", { class: "note" }, "Listing…"));
+    rpc("devices").then((ds) => put(list, ds.map((d) => h("div",
+      { class: "row shared" },
+      h("span", {}, h("b", {}, d.name ?? "Unnamed"),
+        h("small", {}, ` · ${d.device} · ` +
+          (d.this ? "this device" : `wrote ${ago(d.seen)}`))),
+      !d.this && h("button", { class: "btn grey",
+        onclick: go(() => sendTo(d)) }, "Send"),
+      h("button", { class: "btn grey", onclick: go(() =>
+        rename(d.id, d.name, () => settings("devices"))) }, "Rename")))),
+    () => put(list));
+    return [
+      h("p", { class: "sub" }, "Each device of yours is you: same spaces, " +
+        "same messages. One you do not know means your link code leaked."),
+      list,
+      h("button", { class: "choice", onclick: go(linkDevice) },
+        icon("userPlus"), "Add another device"),
+      h("button", { class: "choice", onclick: go(linkFlow) }, icon("link"),
+        "Link this device to your other device"),
+      h("button", { class: "choice", onclick: go(profilesFlow) },
+        icon("users"), "Profiles and signing out"),
+      h("button", { class: "choice danger", onclick: go(retireFlow) },
+        icon("trash"), "A device was lost or stolen"),
+    ];
+  },
+  privacy: () => [
+    toggle("Invisible", "Others see you offline; typing stays private. " +
+      "Calls you join still show.", S.me.invisible, (on) => setInvisible(on)),
+    toggle("Private notifications", "Banners say only that something " +
+      "came, not who sent it or what it says.", S.private,
+    (on) => invoke("private", { on }).then((v) => S.private = v)),
+    toggle("Silent", "On this device only: calls and messages still show, " +
+      "with no ring or sound.", S.silent,
+    (on) => invoke("silent", { on }).then((v) => S.silent = v)),
+    toggle("Link previews", "Made on this device when you send a link: " +
+      "the site (for a paper, arXiv, PubMed or Crossref) sees your address " +
+      "then. Nobody else asks it.", previews(),
+    (on) => store.set("previews", on ? "1" : "0")),
+    h("p", { class: "note" }, "How loud each space is (all messages, " +
+      "@mentions, nothing): its own menu, under Notify."),
+    android && notifyCheck(),
+  ],
+  look: (go) => [
+    h("label", {}, "Theme"),
+    h("div", { class: "chips" }, ...Object.entries(THEMES).map(([k, v]) =>
+      h("button", {
+        class: "chip" + (document.documentElement.dataset.theme === k
+          ? " on" : ""),
+        onclick: (e) => {
+          theme(k);
+          for (const c of e.currentTarget.parentNode.children) {
+            c.classList.toggle("on", c === e.currentTarget);
+          }
+        },
+      }, swatch(k), v))),
+    toggle("Vim keys", "Esc in the composer picks messages: j/k, r, e, dd; " +
+      "? lists them.", vimKeys(), (on) => store.set("vim", on ? "1" : "0")),
+    !mobile() && h("button", { class: "choice", onclick: go(keysHelp) },
+      icon("key"), "Keyboard shortcuts"),
+  ],
+  network: (go) => [
+    h("p", { class: "sub" }, "No server holds your messages: members' " +
+      "devices do, and storage nodes you run keep them while everyone is " +
+      "away."),
+    h("button", { class: "choice", onclick: go(() => storageFlow()) },
+      icon("disk"), "Storage nodes"),
+    h("button", { class: "choice", onclick: go(sharedFlow) }, icon("file"),
+      "Files shared from this device"),
+    h("button", { class: "choice", onclick: go(usageFlow) }, icon("cloud"),
+      "Network use, relays and connections"),
+  ],
+  about: (go) => [
+    h("p", { class: "sub" }, `chatir ${S.me.version} on ` +
+      `${S.me.device_name || S.me.device}`),
+    h("button", { class: "choice", onclick: go(() => updates(false)) },
+      icon("down"), "Check for updates"),
+    h("button", { class: "choice", onclick: go(() =>
+      openLink("https://github.com/cablab-ucf/chatir")) }, icon("link"),
+    "Source code (GPL-3.0-or-later)"),
+  ],
+};
+
+/** Text to one device of ours alone, nothing kept anywhere else. */
+async function sendTo(d) {
+  const text = await ask({ title: `Send to ${d.name ?? d.device}`,
+    sub: "Straight to that device alone, nothing kept anywhere else. It " +
+      "must be awake.", label: "Text or link", ok: "Send", maxLength: 4000 });
+  if (text) quiet(call("hand", { device: d.id, text })
+    .then(() => toast("Sent")));
 }
 
 async function profilesFlow() {
@@ -2625,7 +2716,7 @@ async function profilesFlow() {
         icon("trash"), "A device was lost or stolen")),
     foot(cancel(finish))));
   if (!go) return;
-  if (go.devices) return devicesFlow();
+  if (go.devices) return settings("devices");
   if (go.burn) return retireFlow();
   let name = go.use;
   if (go.make) {
@@ -2716,30 +2807,6 @@ async function usageFlow() {
         .map((e) => h("div", { class: "row shared" },
           h("small", {}, new Date(e.ts).toLocaleTimeString()),
           h("span", {}, line(e)))))),
-    foot(h("button", { class: "btn grey", onclick: () => finish(null) },
-      "Done"))));
-}
-
-async function devicesFlow() {
-  const ds = await rpc("devices").catch(() => []);
-  modal((finish) => h("div", {},
-    h("div", { class: "m-body" }, h("h2", {}, "Your devices"),
-      h("p", { class: "sub" }, "Every device linked to you, by when it " +
-        "last wrote. One you do not know means your link code leaked."),
-      ds.map((d) => h("div", { class: "row shared" },
-        h("span", {}, h("b", {}, d.name ?? "Unnamed"),
-          h("small", {}, ` · ${d.device} · ` +
-            (d.this ? "this device" : `wrote ${ago(d.seen)}`))),
-        !d.this && h("button", { class: "btn grey", onclick: async () => {
-          const text = await ask({ title: `Send to ${d.name ?? d.device}`,
-            sub: "Straight to that device alone, nothing kept anywhere else. " +
-              "It must be awake.", label: "Text or link", ok: "Send",
-            maxLength: 4000 });
-          if (text) quiet(call("hand", { device: d.id, text })
-            .then(() => toast("Sent")));
-        } }, "Send"),
-        h("button", { class: "btn grey", onclick: () => rename(d.id, d.name,
-          () => devicesFlow()) }, "Rename")))),
     foot(h("button", { class: "btn grey", onclick: () => finish(null) },
       "Done"))));
 }
@@ -2957,11 +3024,12 @@ function notifyCheck() {
 
 async function linkDevice() {
   const code = await call("link_code").catch(() => null);
-  if (code) showCode({ title: "Link a device", label: "Your link code", code,
-    secret: true, space: null,
-    note: "Open chatir on the new device, choose Link this device, and paste " +
-      "or scan this. It becomes you: keep this code secret, and never " +
-      "post it anywhere." });
+  if (code) showCode({ title: "Add another device", label: "Your link code",
+    code, secret: true, space: null,
+    note: "On the new device, open chatir and choose \u201cI use chatir on " +
+      "another device\u201d (or Settings \u203a Devices \u203a Link this " +
+      "device), then scan or paste this, or use a short code. It becomes " +
+      "you: keep this code secret, and never post it anywhere." });
 }
 
 function quickSwitch(start = "") {
@@ -3206,8 +3274,8 @@ function stopEdit() {
 }
 
 async function createChannel() {
-  const name = await ask({ title: "Create Channel", label: "Channel name",
-    placeholder: "new-channel", ok: "Create Channel" });
+  const name = await ask({ title: "Create channel", label: "Channel name",
+    placeholder: "new-channel", ok: "Create channel" });
   if (!name) return;
   const id = randomId(8);
   await publish({ Channel: { id, name: slug(name) } });
@@ -3216,12 +3284,12 @@ async function createChannel() {
 }
 
 async function editChannel(ch) {
-  const name = await ask({ title: "Edit Channel", label: "Channel name",
+  const name = await ask({ title: "Edit channel", label: "Channel name",
     sub: "Leave the name empty to delete the channel.", value: ch.name });
   if (name === null) return;
   if (name !== "") return publish({ Channel: { id: ch.id, name: slug(name) } });
-  const ok = await confirmBox({ title: "Delete Channel",
-    sub: `Delete #${ch.name} for everyone?`, ok: "Delete Channel" });
+  const ok = await confirmBox({ title: "Delete channel",
+    sub: `Delete #${ch.name} for everyone?`, ok: "Delete channel" });
   if (ok) publish({ Channel: { id: ch.id, name: null } });
 }
 
@@ -3251,7 +3319,7 @@ async function pinsFlow() {
 }
 
 async function renameSpace() {
-  const name = await ask({ title: "Rename Space", label: "Space name",
+  const name = await ask({ title: "Rename space", label: "Space name",
     value: cur().name });
   if (name) publish({ Rename: { name } });
 }
@@ -3301,7 +3369,7 @@ async function leaveSpace() {
       "they keep theirs. To just put it away, close it (✕).",
     ok: "Delete" } : { title: `Leave '${s.name}'`,
     sub: `Leave ${s.name}? Its history is deleted from your devices, and ` +
-      "you need a new invite to come back.", ok: "Leave Space" });
+      "you need a new invite to come back.", ok: "Leave space" });
   if (!ok) return;
   await quiet(call("leave", { space: s.id }));
   S.sid = null;
@@ -3808,7 +3876,12 @@ async function start() {
   });
   await loadSidebar();
   health();
-  nameDevice();
+  if (store.get("linked")) {
+    store.set("linked", "");
+    toast("Linked: this device is you. Your spaces arrive as your other " +
+      "devices are reached.", false, 8e3);
+  }
+  welcome().then(nameDevice);
   if (!S.spaces.length) renderHeader();
   const url = await invoke("opened").catch(() => null);
   if (url) openUrl(url);

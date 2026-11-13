@@ -18,7 +18,7 @@ curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install
   or track this repo in [Obtainium](https://obtainium.imranr.dev).
 - **iPhone**: [chatir.ipa](https://github.com/cablab-ucf/chatir/releases/latest/download/chatir.ipa)
   in [AltStore](https://altstore.io) or [SideStore](https://sidestore.io).
-- **Storage node** (always on): a space's *Storage Nodes → Run one on this
+- **Storage node** (always on): a space's *Storage nodes → Run one on this
   computer*, or `install.sh … | sh -s -- --server`, optionally with
   `--push-relay https://pushir.you.example`.
 - **NixOS**: `inputs.chatir.url = "github:cablab-ucf/chatir";` and
@@ -60,7 +60,7 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   links; optional password. They are met at a relay: not on LAN only.
 - Search, Ctrl+K, vim keys; profiles, linked devices, themes, *Network
   use* and *Check connections*.
-- *Add to notes* ([loroh](https://github.com/cablab-ucf/siroh)) and *Copy Link*
+- *Add to notes* ([loroh](https://github.com/cablab-ucf/siroh)) and *Copy link*
   ([tydig](https://github.com/cablab-ucf/tydig)).
 
 ## How it works
