@@ -42,8 +42,9 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       and pushir's JNI, passes clippy for aarch64-linux-android)
 - [ ] iOS: the data folder (seed, device key) goes to iCloud and computer
       backups: `NSURLIsExcludedFromBackupKey` on it, as Android's no_backup
-- [ ] Every control op refolds all of them: a member's flood of ops only
-      an admin's count (Rename, Channel) is quadratic; profiles keep four
+- [ ] Whom the walk ever made an admin (or named owner) stays walked: a
+      demoted admin's flood of backdated ops refolds each (a member's
+      never: set apart, or judged where dated)
 - [ ] A stolen seed's thief, retired by `Burn`, still posts ops dated
       before it (authors date their own)
 - [ ] `--web` saves files up to 25 MB (`file` is in memory): a streaming GET
