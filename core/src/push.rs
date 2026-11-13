@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 
-pub const ALPN: &[u8] = b"chatir/push/5";
+pub const ALPN: &[u8] = b"spaces/push/1";
 const SLOW: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, Deserialize)]
@@ -367,9 +367,9 @@ fn frames_are_told_apart() {
         id: SecretKey::from_bytes(&[1; 32]).public(),
         secret: [2; 32],
     };
-    let push = format!("{l} chatir:mentions");
+    let push = format!("{l} level:mentions");
     assert!(lane_of(&push) == Some(l));
-    assert!(lane_of("chatir:off").is_none());
+    assert!(lane_of("level:off").is_none());
 }
 
 /// A stranger is told no relay; a device we sync with is.

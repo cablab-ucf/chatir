@@ -89,7 +89,7 @@ pub fn local_storage() -> Option<String> {
     // /run is root's on Linux; elsewhere (C:\\run) anyone could plant one.
     let run = cfg!(target_os = "linux").then(|| "/run/chatir/code".into());
     let p = std::env::var_os("CHATIR_CODE_FILE").map(Into::into).or(run);
-    let mine = dirs::data_dir().map(|d| d.join("chatir-serve").join("code"));
+    let mine = Some(data(true).join("code"));
     let read = |p| std::fs::read_to_string(p).ok();
     let code = p.and_then(read).or_else(|| mine.and_then(read))?;
     let code = code.trim().to_string();
@@ -105,43 +105,20 @@ pub fn profile(root: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// irch's folder `from`, taken once as `to`: chatir is irch renamed, the
-/// same people, spaces and files. A chatir folder from before (0.4.0-1,
-/// whose people are others now) is kept beside it, as `…-0.4`, and this
-/// starts afresh. `irch` in `to` marks one past this: nothing after
-/// (an irch run since) displaces it.
-pub fn adopt(
-    from: Option<&std::path::Path>,
-    to: &std::path::Path,
-) -> anyhow::Result<()> {
-    let mark = to.join("irch");
-    let has = |d: &std::path::Path| {
-        ["seed", "profiles"].iter().any(|f| d.join(f).exists())
-    };
-    if !mark.exists() {
-        let from = from.filter(|f| has(f));
-        if let Some(f) = from {
-            let lock = std::fs::File::open(profile(f).join("lock"));
-            if lock.is_ok_and(|l| l.try_lock().is_err()) {
-                let f = f.display();
-                anyhow::bail!("irch is running on {f}: stop it, and retry");
-            }
-        }
-        if to.exists() && (has(to) || from.is_some()) {
-            let mut aside = to.as_os_str().to_owned();
-            aside.push("-0.4");
-            std::fs::rename(to, aside)?;
-        }
-        if let Some(f) = from {
-            std::fs::rename(f, to)?;
-        }
-    }
-    std::fs::create_dir_all(to)?;
-    Ok(std::fs::write(mark, "")?)
+/// Where a platform's data folder (`platform`) keeps ours: a format's
+/// own, so a new one starts afresh beside the old, which it never touches.
+pub fn home(platform: &std::path::Path) -> std::path::PathBuf {
+    platform.join("v1")
+}
+
+/// The terminal client's folder, or a storage node's.
+pub fn data(serve: bool) -> std::path::PathBuf {
+    let app = if serve { "chatir-serve" } else { "chatir" };
+    home(&dirs::data_dir().unwrap_or_default().join(app))
 }
 
 /// What signing out takes away.
-pub const MINE: [&str; 21] = [
+pub const MINE: [&str; 20] = [
     "seed",
     "device",
     "local",
@@ -149,7 +126,6 @@ pub const MINE: [&str; 21] = [
     "closed",
     "spaces",
     "files",
-    "blobs",
     "offered",
     "wake.json",
     "chatir.log",
@@ -172,30 +148,4 @@ pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
-}
-
-#[test]
-fn irch_is_taken_once() {
-    let d = std::env::temp_dir().join(format!("chatir-adopt-{}", now()));
-    let (irch, to) = (d.join("irch"), d.join("chatir"));
-    let put = |p: &std::path::Path, f, s| {
-        std::fs::create_dir_all(p).unwrap();
-        std::fs::write(p.join(f), s).unwrap();
-    };
-    put(&irch, "seed", "theirs");
-    put(&to, "seed", "0.4's");
-    adopt(Some(&irch), &to).unwrap();
-    let read = |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap();
-    assert_eq!(read(to.join("seed")), "theirs");
-    assert_eq!(read(d.join("chatir-0.4").join("seed")), "0.4's");
-    // An irch run since starts afresh: it displaces nothing.
-    put(&irch, "seed", "new");
-    adopt(Some(&irch), &to).unwrap();
-    assert_eq!(read(to.join("seed")), "theirs");
-    // A phone's 0.4 folder, no irch beside: set aside, a fresh start.
-    let phone = d.join("phone");
-    put(&phone, "seed", "0.4's");
-    adopt(None, &phone).unwrap();
-    assert!(!phone.join("seed").exists() && d.join("phone-0.4").exists());
-    let _ = std::fs::remove_dir_all(d);
 }

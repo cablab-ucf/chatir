@@ -336,7 +336,7 @@ async fn a_reply_to_you_is_a_mention_while_asleep() {
     let mine = b.publish(&id, post(ch, "anyone up?", None)).await.unwrap();
     until("a has it", || texts(&a, &id, &ch) == ["anyone up?"]).await;
     b.set_level(&id, chatir_core::Level::Mentions);
-    until("a has b's lane", || told(&a, &id, &b, "chatir:mentions")).await;
+    until("a has b's lane", || told(&a, &id, &b, "level:mentions")).await;
     let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
     until("b knows a", named).await;
     b.shutdown().await;

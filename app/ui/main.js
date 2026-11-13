@@ -2317,7 +2317,7 @@ function storageFlow(focus) {
           checked: s.storage.find((y) => y.node === x.node)?.on,
           onchange: (e) => keep(s, x.node, e.target.checked) }), h("i")))));
     const code = h("input",
-      { type: "text", placeholder: "chatir:host:…", maxLength: 8192 });
+      { type: "text", placeholder: "Storage code", maxLength: 8192 });
     const pair = async () => {
       const c = code.value.trim();
       if (!c) return;
@@ -2637,7 +2637,7 @@ async function joinFlow(card) {
     sub: "Paste their contact code (Contacts › My contact code).",
     label: "Contact code" } : { title: "Join a space",
     sub: "Paste an invite someone shared with you, or type its short code.",
-    label: "Invite", placeholder: "chatir:join:… or k7m-x9q-p3a-b2c", ok: "Join",
+    label: "Invite", placeholder: "Invite code, or k7m-x9q-p3a-b2c", ok: "Join",
     maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code && !card) code = await long(code);
@@ -2647,7 +2647,7 @@ async function joinFlow(card) {
 /** What the invite is to, and from whom, before anything is sent. */
 async function joinCode(code) {
   const p = await rpc("peek", { code }).catch(() => null);
-  if (!p) return toast("That is not a chatir invite", true);
+  if (!p) return toast("That is not an invite", true);
   if (p.card) return addCard(code, p);
   if (!p.joined) {
     const ok = await modal((finish) => h("div", {},
@@ -2691,7 +2691,7 @@ async function linkFlow(profile = null) {
     sub: "On a device where you use chatir, open Settings › Devices " +
       "› Add another device. Scan its code, paste it, or type its " +
       "short code: this device becomes you, with all your spaces.",
-    label: "Link code", placeholder: "chatir:link:… or k7m-x9q-p3a-b2c",
+    label: "Link code", placeholder: "Link code, or k7m-x9q-p3a-b2c",
     ok: "Link", maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
   if (code) code = await long(code);

@@ -140,10 +140,7 @@ async fn main() -> Result<()> {
     let exe = std::env::current_exe()?;
     if c.install {
         if let Some(r) = &c.push_relay {
-            let data = dirs::data_dir().unwrap_or_default();
-            let d = data.join("chatir-serve");
-            chatir_core::adopt(Some(&data.join("irch-serve")), &d)?;
-            chatir_core::push::set_relay(&d, r)?;
+            chatir_core::push::set_relay(&chatir_core::data(true), r)?;
         }
         return service::install(&exe);
     }
@@ -165,16 +162,7 @@ async fn main() -> Result<()> {
         (_, false) => Net::Relay(c.relay),
         _ => Net::Default,
     };
-    let home = if c.serve { "chatir-serve" } else { "chatir" };
-    let dir = match c.dir {
-        Some(d) => d,
-        None => {
-            let data = dirs::data_dir().unwrap_or_default();
-            let irch = if c.serve { "irch-serve" } else { "irch" };
-            chatir_core::adopt(Some(&data.join(irch)), &data.join(home))?;
-            data.join(home)
-        }
-    };
+    let dir = c.dir.unwrap_or_else(|| chatir_core::data(c.serve));
     let (api, web) = (c.api, c.web);
     let ui = !(c.serve || c.headless || c.api || web.is_some())
         && c.doctor.is_none();

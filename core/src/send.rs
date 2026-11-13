@@ -30,7 +30,7 @@ use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 use tracing::warn;
 
-pub const ALPN: &[u8] = b"chatir/send/1";
+pub const ALPN: &[u8] = b"spaces/send/1";
 /// Asked for, checked and noted as one: 4 to 16 MiB ran as fast on
 /// loopback; smaller loses less when a transfer stops (streams × this is
 /// in flight).

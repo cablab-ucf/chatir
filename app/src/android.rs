@@ -249,9 +249,7 @@ fn text(e: &Env, s: &JString) -> String {
 }
 
 fn profile(e: &Env, dir: &JString) -> PathBuf {
-    let root = PathBuf::from(text(e, dir));
-    // Woken before the app ever opened: a 0.4 folder steps aside here too.
-    let _ = chatir_core::adopt(None, &root);
+    let root = chatir_core::home(std::path::Path::new(&text(e, dir)));
     chatir_core::profile(&root)
 }
 

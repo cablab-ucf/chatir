@@ -73,9 +73,9 @@ fn limit() -> u64 {
 
 /// What opens in memory, to preview; larger files are saved.
 const PREVIEW: usize = 25 << 20;
-const BLOB: &[u8] = b"chatir/blob/1";
+const BLOB: &[u8] = b"spaces/blob/1";
 /// Ops dialed straight to a space's devices: `space ‖ sealed op` a stream.
-const DIRECT: &[u8] = b"chatir/op/1";
+const DIRECT: &[u8] = b"spaces/op/1";
 /// A direct link quiet this long is closed: open links are pinged every 5 s.
 const QUIET_LINK: Duration = Duration::from_secs(10);
 /// Untouched this long with nothing open, iroh sleeps (`rest_iroh`).
@@ -94,7 +94,7 @@ const LANE_BEATS: u64 = 5;
 const PROVED: Duration = Duration::from_secs(7 * 60);
 
 /// Text handed to one of our own devices: one link, nothing kept elsewhere.
-const HAND: &[u8] = b"chatir/hand/1";
+const HAND: &[u8] = b"spaces/hand/1";
 const PARKED: usize = 32 << 20;
 /// Refused ops a space remembers, so sync brings none again.
 const REJECTED: usize = 4096;
@@ -191,8 +191,6 @@ struct Local {
     read: BTreeMap<(Id, Ch), u64>,
     joined: BTreeMap<Id, u64>,
     peers: BTreeMap<EndpointId, EndpointAddr>,
-    // irch's, now `hosts`: its place kept, postcard is positional.
-    hosted: BTreeMap<Id, Vec<EndpointId>>,
     token: Option<[u8; 16]>,
 }
 
@@ -962,9 +960,8 @@ enum Ask {
 
 /// A storage node's key for one space's small files: members have it.
 pub fn hold_token(token: &[u8; 16], space: &Id) -> [u8; 16] {
-    let mut h = blake3::Hasher::new_derive_key("irch hold 1");
-    h.update(token).update(&space.0);
-    h.finalize().as_bytes()[..16].try_into().expect("16 of 32")
+    let k = crate::crypto::kdf("hold", &[token, &space.0]);
+    k[..16].try_into().expect("16 of 32")
 }
 
 /// Made only where none is: unreadable, a key is never replaced.
@@ -983,9 +980,9 @@ fn secret(path: &Path, link: Option<Key>) -> Result<Key> {
 }
 
 fn own_invite(me: &Me, peers: Vec<EndpointAddr>) -> Invite {
-    let k = crate::crypto::kdf("irch own space", &[&me.seed]);
+    let k = crate::crypto::kdf("own space", &[&me.seed]);
     let nonce = k[..16].try_into().expect("16");
-    let key = crate::crypto::kdf("irch own key", &[&me.seed]);
+    let key = crate::crypto::kdf("own key", &[&me.seed]);
     Invite { owner: me.id(), nonce, key, name: String::new(), dm: None, peers }
 }
 
@@ -1793,8 +1790,8 @@ impl Node {
         // How loud we are here: members ring us only for what we would show.
         let url = match self.level(id) {
             Level::All => url,
-            Level::Mentions => format!("{url} chatir:mentions"),
-            Level::Off => format!("{url} chatir:off"),
+            Level::Mentions => format!("{url} level:mentions"),
+            Level::Off => format!("{url} level:off"),
         };
         let (me, dev) = (self.id(), self.device());
         let has = self.view(id, |s| s.push(&me, &dev).map(str::to_string));
@@ -3972,15 +3969,6 @@ impl Node {
             self.passed(space, f);
             return Ok(files.get_bytes(hash).await?.to_vec());
         }
-        // An older irch's whole-sealed file, kept here from then.
-        let old = self.dir.join("blobs").join(f.hash.to_string());
-        if let Ok(ct) = std::fs::read(old)
-            && blake3::hash(&ct) == f.hash.0
-            && !ct.starts_with(crate::crypto::STREAM)
-        {
-            let pt = crate::crypto::open(&f.key.0, b"irch file", &ct);
-            return pt.context("damaged file");
-        }
         let len = crate::crypto::sealed_len(f.size).context("no such size")?;
         let files = self.pull(space, &f.hash, len).await?;
         let (n, h) = (self.clone(), (*space, f.hash));
@@ -4962,14 +4950,14 @@ async fn quiet(links: Links, d: EndpointId, c: Connection) {
 
 /// An event's label, for space `id` under key `k`: a relay sees no space.
 fn ev_label(id: &Id, k: &Key) -> Key {
-    crate::crypto::kdf("irch event", &[&id.0, k])
+    crate::crypto::kdf("event", &[&id.0, k])
 }
 
 /// The ack device `d` owes for an event at `ts`: none but a member makes
 /// it, so no relay drops an op and acks it.
 fn ev_ack(id: &Id, k: &Key, ts: u64, d: &EndpointId) -> Key {
     crate::crypto::kdf(
-        "irch event ack",
+        "event ack",
         &[&id.0, k, &ts.to_le_bytes(), d.as_bytes()],
     )
 }
@@ -5140,11 +5128,11 @@ pub(crate) fn open(u: &reqwest::Url) -> bool {
     u.scheme() == "https" && ip.is_none_or(|a| public(&a))
 }
 
-/// How loud a device asked to be in a space (its push's `chatir:mentions`
-/// or `chatir:off`; all, if it says neither).
+/// How loud a device asked to be in a space (its push's `level:mentions`
+/// or `level:off`; all, if it says neither).
 fn level_of(push: &str) -> Level {
     let has = |t| push.split_whitespace().any(|x| x == t);
-    match (has("chatir:off"), has("chatir:mentions")) {
+    match (has("level:off"), has("level:mentions")) {
         (true, _) => Level::Off,
         (_, true) => Level::Mentions,
         _ => Level::All,
