@@ -195,14 +195,39 @@ pub enum Call {
         space: Id,
         channel: Ch,
     },
-    Decline {
-        space: Id,
-        channel: Ch,
-    },
+    /// A call ringing here, or a file offered to us.
+    Decline(Declined),
     SetLevel {
         space: Id,
         level: crate::Level,
     },
+    /// A file to one device alone (ours, or a member's we know), straight.
+    SendTo {
+        device: iroh::EndpointId,
+        path: String,
+    },
+    /// A file offered to us (`Event::Incoming`), pulled into `dir`.
+    Accept {
+        id: Id,
+        dir: String,
+    },
+    /// A transfer stopped, either way.
+    Cancel {
+        id: Id,
+    },
+    Transfers,
+    /// Someone's devices, from the spaces we share.
+    DevicesOf {
+        user: Id,
+    },
+}
+
+/// `decline`: a call (`space`, `channel`) or an offered file (`id`).
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum Declined {
+    Call { space: Id, channel: Ch },
+    File { id: Id },
 }
 
 pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
@@ -434,8 +459,24 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
         }
         Call::RelayKey { line } => json!(n.relay_key(&line).await?),
         Call::RelayKeys => json!(n.relay_keys().await),
-        Call::Decline { space, channel } => {
+        Call::Decline(Declined::Call { space, channel }) => {
             json!(n.decline(&space, channel).await)
+        }
+        Call::Decline(Declined::File { id }) => {
+            json!(n.decline_file(&id).await?)
+        }
+        Call::SendTo { device, path } => {
+            json!({ "id": n.send_to(device, std::path::Path::new(&path)).await? })
+        }
+        Call::Accept { id, dir } => {
+            let p = n.accept(&id, std::path::Path::new(&dir)).await?;
+            json!({ "path": p.display().to_string() })
+        }
+        Call::Cancel { id } => json!(n.cancel(&id).await?),
+        Call::Transfers => json!(n.transfers()),
+        Call::DevicesOf { user } => {
+            let row = |(id, name, seen)| json!({ "id": id, "name": name, "seen": seen });
+            json!(n.devices_of(&user).into_iter().map(row).collect::<Vec<_>>())
         }
         Call::Ringing { space, channel } => {
             json!(n.ringing(&space, channel).await)
@@ -542,4 +583,14 @@ fn space(n: &Node, id: &Id) -> Option<Value> {
                 "short": node.fmt_short().to_string() }))
             .collect::<Vec<_>>(),
     }))
+}
+
+#[test]
+fn decline_takes_a_call_or_a_file() {
+    let (id, ch) = (Id([1; 32]), Ch([2; 8]));
+    let c = |v| serde_json::from_value::<Call>(v).unwrap();
+    let f = c(json!({ "cmd": "decline", "id": id }));
+    assert!(matches!(f, Call::Decline(Declined::File { id: i }) if i == id));
+    let call = c(json!({ "cmd": "decline", "space": id, "channel": ch }));
+    assert!(matches!(call, Call::Decline(Declined::Call { .. })));
 }
