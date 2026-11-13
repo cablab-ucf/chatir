@@ -141,6 +141,7 @@
     link: no("link the node itself: chatir --link"),
   };
   window.__TAURI__ = {
+    web: true, // no paths here: files go as files
     core: {
       invoke: async (cmd, args, o) => {
         if (!calls[cmd]) throw `not in a browser (${cmd})`;

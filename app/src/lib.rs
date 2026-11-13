@@ -229,22 +229,58 @@ async fn chatir(
 
 #[cfg(desktop)]
 #[tauri::command]
-async fn pick(app: AppHandle) -> Vec<String> {
+async fn pick(app: AppHandle) -> Vec<Value> {
     use tauri_plugin_dialog::DialogExt;
     let got = tauri::async_runtime::spawn_blocking(move || {
         app.dialog().file().blocking_pick_files()
     });
     let got = got.await.ok().flatten().unwrap_or_default();
-    let got: Vec<_> =
-        got.into_iter().filter_map(|f| f.into_path().ok()).collect();
-    PICKED.lock().unwrap_or_else(|e| e.into_inner()).extend(got.clone());
-    got.iter().map(|p| p.to_string_lossy().into()).collect()
+    chosen(got.into_iter().filter_map(|f| f.into_path().ok()).collect())
 }
 
 #[cfg(mobile)]
 #[tauri::command]
-fn pick() -> Vec<String> {
+fn pick() -> Vec<Value> {
     vec![]
+}
+
+/// Files the person chose (picked or dropped), each with its size: the
+/// page may offer these, by path, never copied.
+fn chosen(paths: Vec<std::path::PathBuf>) -> Vec<Value> {
+    let files: Vec<_> = paths.into_iter().filter(|p| p.is_file()).collect();
+    PICKED.lock().unwrap_or_else(|e| e.into_inner()).extend(files.clone());
+    let size =
+        |p: &std::path::Path| std::fs::metadata(p).map_or(0, |m| m.len());
+    files
+        .iter()
+        .map(|p| json!({ "path": p.to_string_lossy(), "size": size(p) }))
+        .collect()
+}
+
+/// Where a file comes to by default: the downloads folder.
+#[tauri::command]
+fn downloads(app: AppHandle) -> Result<String, String> {
+    let d = app.path().download_dir().or_else(|_| home(&app));
+    Ok(d.map_err(|e| e.to_string())?.to_string_lossy().into())
+}
+
+/// A folder the person picks, for a file to come to.
+#[tauri::command]
+async fn pick_dir(app: AppHandle) -> Option<String> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        let got = tauri::async_runtime::spawn_blocking(move || {
+            app.dialog().file().blocking_pick_folder()
+        });
+        let p = got.await.ok().flatten()?.into_path().ok()?;
+        Some(p.to_string_lossy().into())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        None
+    }
 }
 
 #[cfg(desktop)]
@@ -911,6 +947,13 @@ pub fn run() {
                 sight(w.app_handle());
             }
             tauri::WindowEvent::Focused(_) => sight(w.app_handle()),
+            // Dropped files, by path: offered as picked ones are, uncopied.
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop {
+                paths,
+                ..
+            }) => {
+                let _ = w.emit("dropped", chosen(paths.clone()));
+            }
             _ => {}
         });
     let b = b.setup(|app| {
@@ -1001,6 +1044,8 @@ pub fn run() {
         stop_here,
         notify_check,
         pick,
+        pick_dir,
+        downloads,
         log,
         profiles,
         use_profile,
