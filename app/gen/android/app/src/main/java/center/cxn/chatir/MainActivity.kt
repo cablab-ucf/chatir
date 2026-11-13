@@ -19,12 +19,17 @@ class MainActivity : TauriActivity() {
   // Over a locked phone now: the page asks as it loads (`chatirLock`), for
   // a call that rings before there is a page to tell.
   @Volatile private var locked = false
+  // "Private notifications": nothing of chatir in screenshots or recents,
+  // nor over the lock screen, where a ring would name its caller (there,
+  // its notification says "Incoming call", and Answer asks to unlock).
+  private var veiled = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // The UI is dark: light system-bar icons whatever the system theme.
     val bars = SystemBarStyle.dark(Color.TRANSPARENT)
     enableEdgeToEdge(bars, bars)
     Wake.release() // a push may have started chatir first
+    veil(Wake.veiled(dataDir.absolutePath))
     answerable(intent)
     overLock(ringing(intent))
     super.onCreate(savedInstanceState)
@@ -58,22 +63,31 @@ class MainActivity : TauriActivity() {
     it.scheme == "chatir" && (it.host == "ring" || it.host == "call")
   } == true
 
-  /** A ringing call, or one under way: shown over the lock screen, the
-   *  screen lit and kept on. Only then, never for the rest of chatir. */
+  fun veil(on: Boolean) {
+    veiled = on
+    val f = WindowManager.LayoutParams.FLAG_SECURE
+    if (on) window.addFlags(f) else window.clearFlags(f)
+  }
+
+  /** A ringing call, or one under way: shown over the lock screen (not
+   *  veiled), the screen lit and kept on. Only then, never for the rest
+   *  of chatir. */
+  @Suppress("DEPRECATION")
   fun overLock(on: Boolean) {
+    val show = on && !veiled
     if (Build.VERSION.SDK_INT >= 27) {
-      setShowWhenLocked(on)
+      setShowWhenLocked(show)
       setTurnScreenOn(on)
     } else {
-      @Suppress("DEPRECATION")
-      val f = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-      if (on) window.addFlags(f) else window.clearFlags(f)
+      val s = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+      val t = WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+      if (show) window.addFlags(s) else window.clearFlags(s)
+      if (on) window.addFlags(t) else window.clearFlags(t)
     }
     val keep = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
     if (on) window.addFlags(keep) else window.clearFlags(keep)
     // Over a locked phone, the call alone: no way into the rest of chatir.
-    locked = on && getSystemService(KeyguardManager::class.java)
+    locked = show && getSystemService(KeyguardManager::class.java)
       .isKeyguardLocked
     web?.evaluateJavascript(
       "document.documentElement.classList.toggle('lockscreen', $locked)", null)

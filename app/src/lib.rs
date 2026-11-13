@@ -811,7 +811,10 @@ async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
 /// Banners that say only that something came: on, off, or as it is.
 #[tauri::command]
 fn private(app: AppHandle, on: Option<bool>) -> Result<bool, String> {
-    flag(&app, "private", on)
+    let on = flag(&app, "private", on)?;
+    #[cfg(target_os = "android")]
+    android::veil(&app, on);
+    Ok(on)
 }
 
 /// This device on silent (calls and messages shown, no sound): on, off,
@@ -913,6 +916,20 @@ pub fn run() {
     let b = b.setup(|app| {
         app.manage(App(watch::channel(None).0));
         FG.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The seed and device key stay on this phone: out of iCloud and
+        // computer backups (Android's are, by no_backup.xml).
+        #[cfg(target_os = "ios")]
+        if let Ok(d) = root(app.handle()) {
+            use objc2_foundation::NSURLIsExcludedFromBackupKey as KEY;
+            use objc2_foundation::{NSNumber, NSURL};
+            let _ = std::fs::create_dir_all(&d);
+            let yes = NSNumber::new_bool(true);
+            if let Some(u) = NSURL::from_directory_path(&d) {
+                // Safety: this key's value is a boolean NSNumber.
+                let _ =
+                    unsafe { u.setResourceValue_forKey_error(Some(&yes), KEY) };
+            }
+        }
         #[cfg(desktop)]
         tray(app);
         // WebKitGTK keeps getUserMedia off unless asked.

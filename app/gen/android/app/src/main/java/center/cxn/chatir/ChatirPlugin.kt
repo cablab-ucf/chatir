@@ -93,11 +93,14 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
     ))
   }
 
+  /** "background": chatir, and the app holding the phone's pushir
+   *  connection (pasa, perhaps), both exempt: as `allowAlerts` asks. */
   @Command
   fun alerts(invoke: Invoke) {
     invoke.resolve(JSObject()
       .put("notify", notificationsAllowed(activity))
-      .put("background", unrestricted(activity))
+      .put("background", unrestricted(activity) &&
+        org.pushir.Pushir.exempt(activity))
       .put("calls", fullScreen(activity)))
   }
 
@@ -206,6 +209,14 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
 
   @PermissionCallback
   private fun allowed(invoke: Invoke) = invoke.resolve()
+
+  /** "Private notifications", as the page reads or switches it. */
+  @Command
+  fun veil(invoke: Invoke) {
+    val on = invoke.parseArgs(OnArgs::class.java).on
+    activity.runOnUiThread { (activity as? MainActivity)?.veil(on) }
+    invoke.resolve()
+  }
 
   @Command
   fun share(invoke: Invoke) {
