@@ -40,6 +40,7 @@ get() {
       "ahead)." >&2
     printf 'Install unchecked? [y/N] ' >&2
     read -r a 2>/dev/null </dev/tty && [ "$a" = y ] || exit 1
+    CHATIR_UNCHECKED=1 # asked once, for every file
   }
   curl -fL --progress-bar "$1" -o "$2"
   check "$1" "$2"
