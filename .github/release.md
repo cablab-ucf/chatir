@@ -17,4 +17,5 @@ Each of these keeps itself up to date.
 
 The installers fetch the files below. The `.dmg` and `.msi` work too, but a browser marks them as downloaded from the internet. macOS then asks you to allow chatir in System Settings → Privacy & Security, and Windows asks you to choose *More info → Run anyway*. `chatir-<platform>` is the terminal client and storage node; `.sig` files are chatir's signatures, checked by every update.
 
-**0.4.3 starts afresh**: identities, keys and codes no longer name the app, so a rename never changes them again. Each device opens to a new start: make your identity on one and link the others. Earlier data stays where it was, untouched.
+
+**From 0.4.2 or before**: 0.4.3 started afresh: identities, keys and codes no longer name the app, so a rename never changes them again. Each device opens to a new start: make your identity on one and link the others. Earlier data stays where it was, untouched.
