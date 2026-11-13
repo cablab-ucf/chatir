@@ -2740,8 +2740,8 @@ async function createFlow() {
 async function joinFlow(card) {
   if (!(await named())) return;
   let code = await ask(card ? { title: "Add a contact",
-    sub: "Paste their contact code (Contacts › My contact code).",
-    label: "Contact code" } : { title: "Join a space",
+    sub: "Paste or scan their contact code (Contacts › My contact code).",
+    label: "Contact code", ok: "Add", maxLength: 8192, scan: true } : { title: "Join a space",
     sub: "Paste an invite someone shared with you, or type its short code.",
     label: "Invite", placeholder: "Invite code, or k7m-x9q-p3a-b2c", ok: "Join",
     maxLength: 8192, scan: true });
@@ -3442,16 +3442,11 @@ async function ownerFlow(m) {
 async function health(ask = "") {
   if (!android) return;
   const a = await invoke("notify_check", { ask }).catch(() => null);
-  const asleep = (who) => `Android may stop ${who} while the phone sleeps`;
   const bad = a ? [!a.notify && "notifications are off",
-    !a.background && !a.self && asleep("chatir"),
-    !a.background && a.self && a.holder &&
-      asleep(`${a.holder}, which carries chatir's pushes`),
+    !a.background && "Android may stop chatir while the phone sleeps",
     !a.calls && "calls cannot ring on a locked screen"].filter(Boolean) : [];
-  // Fix's next step: another app's battery is set in its settings.
+  // Fix's next step.
   const next = !a ? "" : !a.notify ? "Allow notifications"
-    : !a.background && a.self && a.holder
-      ? `In ${a.holder}'s settings: Battery › Unrestricted`
     : !a.background ? "Allow chatir to run in the background"
     : "Allow full-screen calls";
   put($("health"), bad.length > 0 && [
@@ -3484,11 +3479,8 @@ function notifyCheck() {
       ok ? "✓ " : "✗ ", text);
     put(box, h("label", {}, "Notifications on this phone"),
       row(a.notify, "chatir may show notifications"),
-      row(a.background, a.holder ? `chatir and ${a.holder} (it carries ` +
-        "chatir's pushes) may run in the background (else, asleep in a " +
-        "pocket, Android cuts them off and nothing rings)" : "chatir may " +
-        "run in the background (else, asleep in a pocket, Android cuts it " +
-        "off and nothing rings)"),
+      row(a.background, "chatir may run in the background (else, asleep " +
+        "in a pocket, Android cuts it off and nothing rings)"),
       row(a.calls, "calls may fill the screen when the phone is locked"),
       h("p", { class: "note" }, "It stays reachable on pushir's one quiet " +
         "connection, shared with every pushir app on the phone."),

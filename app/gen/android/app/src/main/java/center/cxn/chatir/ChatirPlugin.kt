@@ -97,17 +97,13 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
     activity.startActivity(Intent(act, uri))
   }
 
-  /** "background": chatir, and the app holding the phone's pushir
-   *  connection (pasa, perhaps), both exempt: as `allowAlerts` asks. */
+  /** "background": chatir exempt, so the phone's pushir connection is
+   *  held by an app Android lets run asleep (chatir, if no other is). */
   @Command
   fun alerts(invoke: Invoke) {
-    val self = unrestricted(activity)
     invoke.resolve(JSObject()
       .put("notify", notificationsAllowed(activity))
-      .put("background", self && org.pushir.Pushir.exempt(activity))
-      // Which is stopped asleep: chatir, or the app holding the connection.
-      .put("self", self)
-      .put("holder", org.pushir.Pushir.holder(activity))
+      .put("background", unrestricted(activity))
       .put("calls", fullScreen(activity)))
   }
 
@@ -142,9 +138,6 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
           activity.packageName)
       activity.startActivity(i)
     } else if (!unrestricted(activity)) unrestrict()
-    // The app holding the phone's pushir connection (pasa, perhaps), not
-    // killed either: our rings come through it.
-    else if (org.pushir.Pushir.ask(activity)) Unit
     else if (!fullScreen(activity)) runCatching {
       val uri = android.net.Uri.parse("package:" + activity.packageName)
       activity.startActivity(Intent(
