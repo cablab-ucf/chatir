@@ -73,14 +73,22 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
 - Short codes (`k7m-x9q-p3a-b2c`, one minute, one try, a PAKE:
   [pairir](https://github.com/cablab-ucf/pairir)) for invites and device
   links; optional password. They are met at a relay: not on LAN only.
-- Search, Ctrl+K, vim keys; profiles, linked devices, themes, *Network
-  use* and *Check connections*.
+- *Connect* (the sidebar's +): every code there is, each shared from here
+  or added here: you on another device (link code), a person (contact
+  code), a space (invite), a device for files (its key), a storage node.
+- Channels dragged into order (admins); Ctrl+B hides the sidebar; images
+  pasted straight in; QR codes scanned with the camera you pick.
+- Search, Ctrl+K, vim keys; profiles, linked devices, themes; *Network
+  use* (a table and the day's traffic an hour a bar, relay keys and their
+  state) and *Devices* (who is up and since when, direct or relayed, bytes
+  each way this run; a tap opens one).
 - *Add to notes* ([loroh](https://github.com/cablab-ucf/siroh)) and *Copy link*
   ([tydig](https://github.com/cablab-ucf/tydig)).
 
 ## How it works
 
-- **Identity**: one seed is you on every device; Ed25519 signatures. Your
+- **Identity**: one seed is you on every device, one ID for all of them;
+  each device has its own key besides (iroh's). Ed25519 signatures. Your
   own private space records what you joined and your settings.
 - **Spaces** are grow-only sets of sealed ops (XChaCha20-Poly1305 under the
   epoch key); state is a deterministic fold in `(time, id)` order.

@@ -637,6 +637,7 @@ const badge = (n) =>
   n ? h("span", { class: "badge" }, String(Math.min(n, 99))) : null;
 
 function renderSidebar() {
+  if (S.dragging) return; // its rows stay as they are under the pointer
   // At first, and after each update (Android's installer takes back
   // full-screen calls from apps it installs from a file): ask together.
   // Welcomed first: a fresh device asks once it has a name.
@@ -648,7 +649,9 @@ function renderSidebar() {
   }
   put($("server-header"), h("button", { class: "brand", title: "Settings",
     onclick: () => settings() }, "chatir"),
-    h("button", { title: "Add a space (create or join)", onclick: addSpace },
+    !mobile() && h("button", { class: "fold", title: "Hide the sidebar " +
+      "(Ctrl+B)", onclick: () => hideSidebar(true) }, icon("chevron")),
+    h("button", { title: "Connect: spaces, people, devices", onclick: connectHub },
       icon("plus")));
   const d = dms();
   const shut = S.spaces.filter((s) => s.dm && s.closed && s.id !== S.sid);
@@ -668,6 +671,8 @@ function renderSidebar() {
       } }, icon("chevron"), h("span", { class: "name" },
       `Closed (${shut.length})`)), !fold && dmList(shut),
     h("div", { class: "space dms" }, h("span", { class: "name" }, "Devices"),
+      h("button", { class: "gear", title: "Who is up, what moved",
+        onclick: connectionsFlow }, icon("eye")),
       h("button", { class: "gear", title: "Add device", onclick: linkDevice },
         icon("plus"))),
     devices().map((d) => h("div", {
@@ -753,7 +758,7 @@ function channelList(s) {
           renderSidebar();
         },
       }, icon("chevron"), h("small", {}, String(n)));
-      return h("div", {
+      return drag(h("div", {
         class: `channel${active ? " active" : ""}` +
           (unread && !active ? " unread" : ""),
         onclick: () => select(s.id, ch.id), role: "button", tabindex: 0,
@@ -761,13 +766,7 @@ function channelList(s) {
           e.preventDefault();
           menu(e.currentTarget, chanMenu(s, ch));
         },
-        draggable: s.admin,
-        ondragstart: (e) => e.dataTransfer.setData("ch", ch.id),
-        ondragover: (e) => s.admin && e.preventDefault(),
-        ondrop: (e) => {
-          e.preventDefault();
-          reorder(s, e.dataTransfer.getData("ch"), ch.id);
-        },
+        "data-ch": ch.id,
       }, icon("hash"), h("span", { class: "name" }, ch.name),
       !active && badge(marks), fold,
       h("button", {
@@ -780,7 +779,7 @@ function channelList(s) {
           e.stopPropagation();
           menu(e.currentTarget, chanMenu(s, ch));
         },
-      }, icon("gear")), ch.call.length > 0 && icon("speaker"));
+      }, icon("gear")), ch.call.length > 0 && icon("speaker")), s, ch);
     }).flatMap((row, i) => {
       const ch = s.channels[i];
       // Folded, only the thread being read stays in view.
@@ -1424,7 +1423,11 @@ function render(tokens, root) {
       add(el);
       stack.push(el);
     } else if (t.nesting === -1) stack.pop();
-    else if (t.type === "text") add(...tagged(t.content));
+    // A link's own text (youtube.com/@name) is no mention.
+    else if (t.type === "text") {
+      add(...(stack.some((e) => e.classList?.contains("link"))
+        ? [unbent(t.content)] : tagged(t.content)));
+    }
     else if (t.type === "code_inline") add(h("code", {}, t.content));
     else if (t.type === "fence" || t.type === "code_block") {
       add(code(t.content.replace(/\n$/, ""), t.info.trim().split(/\s/)[0]));
@@ -2001,6 +2004,12 @@ function renderMembers() {
 
 // ---------- devices ----------
 
+/** The sidebar out of the way, or back (a desktop's; kept). */
+function hideSidebar(on = !document.body.classList.contains("folded")) {
+  document.body.classList.toggle("folded", on);
+  store.set("folded", on ? "1" : "0");
+}
+
 /** Devices files go to and come from, as scp's hosts: our others, and
  * others' we allowed (by key, as ssh's). */
 function devices() {
@@ -2198,16 +2207,9 @@ function allowedList(go) {
       renderSidebar();
       settings("devices");
     }) }, icon("trash"))));
-  return h("div", {}, rows, choice("plus", "Allow a device", "By its key: " +
-    "Settings › Devices on it shows it", go(async () => {
-    const key = await ask({ title: "Allow a device", label: "Its key",
-      placeholder: "64 hex characters", maxLength: 64, ok: "Next" });
-    if (!key) return settings("devices");
-    const name = await ask({ title: "Allow a device", label: "Name",
-      placeholder: "Whose, and which", ok: "Allow" });
-    if (name !== null && name !== undefined) await quiet(allow(key, name));
-    settings("devices");
-  })));
+  return h("div", {}, rows, choice("plus", "Allow a device", "By its key, " +
+    "scanned or pasted", go(() => allowByKey().then(() =>
+      settings("devices")))));
 }
 
 // ---------- popovers ----------
@@ -2460,16 +2462,31 @@ const cancel = (finish) =>
 
 async function scanQR() {
   let stream;
+  // The camera picked last time, else the one facing away.
+  const open = (id) => navigator.mediaDevices.getUserMedia({ video: id
+    ? { deviceId: { exact: id } } : { facingMode: "environment" } });
   try {
     if (!window.jsQR) await new Promise((ok, no) => document.head.append(
       h("script", { src: "./vendor/jsQR.js", onload: ok, onerror: no })));
-    stream = await navigator.mediaDevices.getUserMedia(
-      { video: { facingMode: "environment" } });
+    stream = await open(store.get("camera")).catch(() => open());
   } catch (e) {
     return toast(`No camera: ${e?.message ?? e}`, true), null;
   }
   const video = h("video", { class: "scan", autoplay: true, muted: true,
     playsInline: true, srcObject: stream });
+  // Named only once one is allowed: the list is read after.
+  const cams = (await navigator.mediaDevices.enumerateDevices()
+    .catch(() => [])).filter((d) => d.kind === "videoinput");
+  const now = stream.getVideoTracks()[0]?.getSettings().deviceId;
+  const pick = cams.length > 1 && h("select", { class: "field",
+    title: "Camera", onchange: async (e) => {
+      const s = await open(e.target.value).catch(() => null);
+      if (!s) return toast("That camera did not start", true);
+      stream.getTracks().forEach((t) => t.stop());
+      stream = video.srcObject = s;
+      store.set("camera", e.target.value);
+    } }, cams.map((d, i) => h("option", { value: d.deviceId,
+    selected: d.deviceId === now }, d.label || `Camera ${i + 1}`)));
   const c = h("canvas");
   const g = c.getContext("2d", { willReadFrequently: true });
   let live = true;
@@ -2489,7 +2506,7 @@ async function scanQR() {
     return h("div", {},
       h("div", { class: "m-body" }, h("h2", {}, "Scan the code"),
         h("p", { class: "sub" }, "Hold the other device's code in view."),
-        video),
+        pick, video),
       foot(cancel(finish)));
   });
   live = false;
@@ -2608,6 +2625,69 @@ async function showCode({ title, label, code, note, secret, space }) {
         h("button", { class: "btn grey", onclick: () => finish(null) },
         "Done")));
   });
+}
+
+/** Every code there is, by what it connects: sharing it from here on the
+ * left, taking one on this device on the right. */
+function connectHub() {
+  const s = cur();
+  const space = s && !s.dm && !s.self ? s : null;
+  const local = S.me.local_storage;
+  return modal((finish) => {
+    const go = (f) => () => { finish(null); f(); };
+    const act = ([label, f, tip], cls = "grey") => h("button", {
+      class: "btn " + cls, title: tip ?? "", disabled: !f, onclick: f && go(f),
+    }, label);
+    const row = (ic, what, tip, give, ...take) => [
+      h("span", { class: "what" }, icon(ic), what, " ", info(tip)),
+      act(give), h("span", { class: "acts" }, take.map((t) => act(t, "")))];
+    return h("div", { class: "m-body" }, h("h2", {}, "Connect"),
+      h("div", { class: "connect" },
+        h("span"), h("small", { class: "head" }, "Share"),
+        h("small", { class: "head" }, "Add here"),
+        row("phone", "You, on another device", "You are one ID, the same " +
+          "on all your devices; each device has a key of its own. A link " +
+          "code makes another device you: keep it secret.",
+        ["Link code", linkDevice], ["Link this device", () => linkFlow()]),
+        row("userPlus", "A person", "Your contact code lets anyone message " +
+          "you, with no space in common.",
+        ["Contact code", myCard], ["Add contact", () => joinFlow(true)]),
+        row("hash", "A space", "An invite carries the space's key: whoever " +
+          "holds it can read and post. Share it privately.",
+        [space ? "Invite" : "Invite…", space && invitePeople,
+          space ? `To ${space.name}` : "Open a space first"],
+        ["Join", () => joinFlow()], ["Create", createFlow]),
+        row("file", "A device, for files", "Files go straight between " +
+          "devices that allow each other's key, as ssh keys do. Your own " +
+          "devices need no key.",
+        ["Device key", deviceKey], ["Allow device", allowByKey]),
+        row("disk", "A storage node", "An always-on device that keeps your " +
+          "spaces' sealed messages while everyone is away.",
+        local ? ["Its code", () => showCode({ title: "This computer's " +
+          "storage node", label: "Its storage code", code: local })]
+          : ["Run one", !android && !ios && (() => storageFlow())],
+        ["Add node", () => storageFlow()])));
+  });
+}
+
+/** This device's key, for whoever allows it (not secret). */
+function deviceKey() {
+  showCode({ title: "This device's key", label: "Its key", code: S.me.endpoint,
+    note: "Whoever allows this key can send files straight to this device " +
+      "and take them from it, once you allow theirs. Not secret: it is " +
+      "not your ID, which is the same on all your devices." });
+}
+
+/** One of someone else's devices allowed, by its key (scanned or pasted). */
+async function allowByKey() {
+  let key = await ask({ title: "Allow a device", label: "Its key",
+    sub: "On it: Connect › Device key.", placeholder: "64 hex characters",
+    maxLength: 64, ok: "Next", scan: true });
+  if (key === SCAN) key = await scanQR();
+  if (!key) return;
+  const name = await ask({ title: "Allow a device", label: "Name",
+    placeholder: "Whose, and which", ok: "Allow" });
+  if (name !== null && name !== undefined) await quiet(allow(key.trim(), name));
 }
 
 async function addSpace() {
@@ -2852,8 +2932,9 @@ const TAB = {
     return [
       h("label", {}, "Name ", info("What the members of your spaces see.")),
       name,
-      h("label", {}, "ID ", info("Your public key. You are a key kept on " +
-        "your devices: no server, no account, no phone number.")),
+      h("label", {}, "Your ID ", info("One for you, the same on all your " +
+        "devices (each device also has a key of its own, under Devices). " +
+        "No server, no account, no phone number.")),
       h("div", { class: "row" },
         h("input", { class: "field mono", type: "text", value: S.me.id,
           readOnly: true }),
@@ -2861,6 +2942,9 @@ const TAB = {
           onclick: () => copy(S.me.id, "ID copied") }, icon("copy"))),
       choice("userPlus", "Contact code", "A code anyone can add you by, " +
         "with no space in common", go(myCard)),
+      choice("link", "Connect", "Every code there is: you on another " +
+        "device, people, spaces, devices for files, storage nodes",
+      go(connectHub)),
     ];
   },
   devices: (go) => {
@@ -2891,8 +2975,8 @@ const TAB = {
         "and come from, straight, as ssh keys: each side allows the other. " +
         "Kept in the data folder's `allowed` file, a key and name a line.")),
       allowedList(go),
-      h("label", {}, "This device's key ", info("Give it to whoever " +
-        "allows this device.")),
+      h("label", {}, "This device's key ", info("This device's own, not " +
+        "your ID: give it to whoever allows this device for files.")),
       h("div", { class: "row" },
         h("input", { class: "field mono", type: "text", value: S.me.endpoint,
           readOnly: true }),
@@ -2945,8 +3029,10 @@ const TAB = {
       "spaces' sealed messages and files", go(() => storageFlow())),
     choice("file", "Shared files", "Files this device serves, each to one " +
       "space's members", go(sharedFlow)),
-    choice("cloud", "Network", "What chatir sent and received, relays, " +
-      "and a check of your connections", go(usageFlow)),
+    choice("cloud", "Network use", "What chatir sent and received, an " +
+      "hour a bar, and relay keys", go(usageFlow)),
+    choice("users", "Devices", "Who is up, how each is reached, what " +
+      "moved", go(connectionsFlow)),
   ],
   about: (go) => [
     h("p", { class: "sub" }, `chatir ${S.me.version} · ` +
@@ -3027,7 +3113,44 @@ function forgetPage() {
 }
 
 const amount = (b = 0) => b < 1e6 ? `${(b / 1e3).toFixed(1)} kB`
-  : `${(b / 1e6).toFixed(1)} MB`;
+  : b < 1e9 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e9).toFixed(2)} GB`;
+const span = (s = 0) => s < 3600 ? `${Math.round(s / 60)} min`
+  : s < 172800 ? `${(s / 3600).toFixed(1)} h` : `${Math.round(s / 86400)} days`;
+
+/** The last day's traffic an hour a bar: sent up, received down. Each
+ * iroh run is counted as it ends (it slept, or chatir stopped). */
+function trafficChart(ends, since) {
+  const bins = Array.from({ length: 24 }, () => [0, 0]);
+  for (const e of ends) {
+    const i = Math.min(23, Math.floor((e.ts - since) / 36e5));
+    if (i >= 0) [bins[i][0], bins[i][1]] = [bins[i][0] + (e.out ?? 0),
+      bins[i][1] + (e.in ?? 0)];
+  }
+  const top = Math.max(1, ...bins.flat());
+  const svg = (tag, a) => {
+    const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [k, v] of Object.entries(a)) e.setAttribute(k, v);
+    return e;
+  };
+  const c = svg("svg", { viewBox: "0 0 240 84", class: "chart", role: "img",
+    "aria-label": "Sent and received, an hour a bar, the last day" });
+  bins.forEach(([o, g], i) => {
+    const [ho, hg] = [36 * o / top, 36 * g / top];
+    const t = svg("title", {});
+    t.textContent = `${24 - i} h ago: sent ${amount(o)}, received ${amount(g)}`;
+    const col = svg("g", {});
+    col.append(t, svg("rect", { x: i * 10 + 1, y: 40 - ho, width: 8,
+      height: Math.max(ho, o ? 0.5 : 0), class: "sent" }),
+    svg("rect", { x: i * 10 + 1, y: 42, width: 8,
+      height: Math.max(hg, g ? 0.5 : 0), class: "got" }));
+    c.append(col);
+  });
+  c.append(svg("line", { x1: 0, x2: 240, y1: 41, y2: 41, class: "axis" }));
+  return h("figure", { class: "chart" }, c, h("figcaption", {},
+    h("span", {}, "24 h ago"), h("span", {}, h("i", { class: "sent" }),
+      "sent ", h("i", { class: "got" }), "received · top ", amount(top)),
+    h("span", {}, "now")));
+}
 
 /** When iroh ran and what it moved (usage log), and on Android the app's
  * own packets, pushir's socket among them, as the phone counts them. */
@@ -3036,86 +3159,155 @@ async function usageFlow() {
   if (!u) return toast("No usage log here", true);
   const phone = android &&
     await invoke("notify_check", { ask: "traffic" }).catch(() => null);
-  const day = u.log.filter((e) => e.ts > Date.now() - 864e5);
-  const runs = [...day.filter((e) => e.ev === "down"), u.now];
-  const sum = (k) => runs.reduce((n, e) => n + (e[k] ?? 0), 0);
-  const woke = day.filter((e) => e.ev === "woken").length;
-  const relay = sum("out") && Math.round(100 * sum("relay_out") / sum("out"));
-  const line = (e) => e.ev === "down"
-    ? `iroh off after ${Math.round(e.s / 60)} min: ${amount(e.out)} out, ` +
-      `${amount(e.in)} in, ${e.conns} connections, ${e.probes ?? 0} probes`
-    : e.ev === "up" ? "iroh on" : "woken by a push";
+  const since = Date.now() - 864e5;
+  const day = u.log.filter((e) => e.ts > since);
+  // Each iroh's own count, as it slept or chatir stopped; and the one on.
+  const ends = [...day.filter((e) => e.ev === "down" || e.ev === "iroh asleep"),
+    { ...u.now, ts: Date.now() }];
+  const sum = (k) => ends.reduce((n, e) => n + (e[k] ?? 0), 0);
+  const out = sum("out");
+  const via = out ? Math.round(100 * sum("relay_out") / out) : 0;
+  const row = (k, v, tip) => h("tr", {}, h("th", {}, k, tip && [" ", info(tip)]),
+    h("td", {}, v));
+  const what = (e) => ({ up: "chatir started", down: "chatir stopped",
+    woken: "woken by a push", "iroh asleep": "iroh slept" })[e.ev] ?? e.ev;
   modal((finish) => h("div", {},
     h("div", { class: "m-body" }, h("h2", {}, "Network use"),
-      h("p", { class: "sub" }, `The last day: iroh on ` +
-        `${Math.round(sum("s") / 60)} min over ${runs.length} runs, woken ` +
-        `by a push ${woke} times. Sent ${amount(sum("out"))} (${relay}% ` +
-        `through a relay), received ${amount(sum("in"))}; ` +
-        `${sum("datagrams_in")} packets in; ${sum("probes")} network ` +
-        "probes. iroh's own count: not the TLS or DNS around it."),
-      h("p", { class: "sub" }, u.lane
-        ? `Pushes: ${u.lane}, one quiet socket, ` + (u.wakes
-          ? "answering: iroh sleeps while nothing needs it."
-          : "not answering now: iroh stays on so you are still reached.")
-        : "No push relay here: iroh stays on."),
-      h("button", { class: "choice", onclick: relayKey }, icon("pencil"),
-        "Relay key: no speed limit through a relay"),
+      h("table", { class: "facts" }, h("tbody", {},
+        row("Sent", `${amount(out)}` + (out ? `, ${via}% through a relay` : "")),
+        row("Received", amount(sum("in"))),
+        row("Links opened", sum("conns")),
+        row("Network checks", sum("probes"), "iroh's probes of the " +
+          "network: each a few packets"),
+        row("Woken by a push", day.filter((e) => e.ev === "woken").length),
+        row("Running", span(u.now.s), "This run of chatir"),
+        row("Pushes", u.lane ? `${new URL(u.lane).host}, ` +
+          (u.wakes ? "wakes iroh: it sleeps while idle" : "iroh stays on")
+          : "none: iroh stays on", "A quiet socket on a push relay wakes " +
+          "this device when something comes"))),
+      h("p", { class: "note" }, "The last 24 hours, iroh's own count: not " +
+        "the TLS or DNS around it."),
+      trafficChart(ends, since),
+      h("label", {}, "Relay speed ", info("What cannot go direct goes " +
+        "through a relay, which caps its speed for free use. A key from " +
+        "whoever runs it lifts the cap, for you alone. Direct links have " +
+        "no cap.")),
       relayKeys(),
-      h("button", { class: "choice", onclick: (e) => {
-        e.target.textContent = "Checking…";
-        rpc("doctor", { user: null }).then((d) => {
-          e.target.textContent = `Relay ${d.relay.map((r) => r.url +
-            (r.up ? "" : " (down)")).join(", ") || "none"}. ` + reach(d);
-        }, (err) => { e.target.textContent = String(err); });
-      } }, icon("eye"), "Check connections to your devices"),
-      phone && h("p", { class: "sub" }, `Since the phone started, chatir ` +
-        `sent ${phone.tx_packets} packets (${amount(phone.tx_bytes)}) and ` +
-        `received ${phone.rx_packets} (${amount(phone.rx_bytes)}), ` +
-        `pushir's socket included. Battery: ${phone.battery}% (the whole ` +
-        "phone; Android counts each app's share)."),
+      h("button", { class: "choice", onclick: () => { finish(null);
+        connectionsFlow(); } }, icon("users"), "Devices: who is up, " +
+        "how they are reached, what moved"),
+      phone && h("table", { class: "facts" }, h("tbody", {},
+        row("Phone: sent", `${amount(phone.tx_bytes)} (${phone.tx_packets} ` +
+          "packets)", "Since the phone started, chatir's packets, " +
+          "pushir's socket included, as Android counts them"),
+        row("Phone: received", `${amount(phone.rx_bytes)} ` +
+          `(${phone.rx_packets} packets)`),
+        row("Battery", `${phone.battery}%`, "The whole phone's; Android " +
+          "counts each app's share"))),
       phone && h("button", { class: "choice", onclick: () =>
         quiet(invoke("notify_check", { ask: "battery" })) },
-      icon("speaker"), "Android's battery use by app"),
-      h("div", { class: "qs-list" }, [...day].reverse().slice(0, 100)
-        .map((e) => h("div", { class: "row shared" },
-          h("small", {}, new Date(e.ts).toLocaleTimeString()),
-          h("span", {}, line(e)))))),
+      icon("eye"), "Android's battery use by app"),
+      h("details", {}, h("summary", {}, "Log"),
+        h("table", { class: "facts log" }, h("tbody", {},
+          [...day].reverse().slice(0, 100).map((e) => h("tr", {},
+            h("td", {}, new Date(e.ts).toLocaleTimeString()),
+            h("td", {}, what(e)),
+            h("td", {}, e.out != null ? `↑ ${amount(e.out)} ↓ ${amount(e.in)}`
+              : ""))))))),
     foot(h("button", { class: "btn grey", onclick: () => finish(null) },
       "Done"))));
 }
 
-/** A key from whoever runs a relay lifts its speed limit for us: big
- * files that cannot go direct. Sent to that relay only. */
-async function relayKey() {
+/** A relay key (`url#key`, from whoever runs it), set or replaced. Only
+ * that relay sees it, and says here whether it takes it. */
+async function relayKey(url = "") {
   const line = await ask({ title: "Relay key", label: "Relay and key",
-    sub: "From whoever runs the relay (pushir: make key). Only that relay " +
-      "sees it, and says here whether it takes it. In use from chatir's " +
-      "next start.",
-    placeholder: "https://pushir.example#key", maxLength: 300 });
+    sub: "From whoever runs the relay (pushir: make key).",
+    value: url ? `${url}#` : "", placeholder: "https://pushir.example#key",
+    maxLength: 300 });
   if (!line) return;
   const ok = await call("relay_key", { line }).catch(() => undefined);
-  if (ok !== undefined) toast(keyWord(line.split("#")[0], ok), ok === false,
-    8e3);
+  if (ok === false) toast("That relay does not take this key: check it", true);
+  else if (ok !== undefined) toast(ok ? "Taken" : "Kept; the relay did not answer");
 }
 
-/** What a relay says of our key for it. */
-const keyWord = (url, ok) => ok === true
-  ? `${url} takes the key: no speed limit there, from chatir's next start`
-  : ok === false ? `${url} does not know this key (kept; check it)`
-  : `${url} did not say (down, or not pushir's relay); kept`;
-
-/** Our relay keys, each as its relay answers now, with Remove. */
+/** Each relay key as its relay answers now, whether iroh runs with it,
+ * and Edit and Remove; Add one. */
 function relayKeys() {
-  const box = h("div", {}, h("small", {}, "Checking relay keys…"));
-  rpc("relay_keys").then((ks) => put(box, ks.map(([url, ok]) =>
-    h("div", { class: "row shared" },
-      h("span", {}, (ok ? "✓ " : ok === false ? "✗ " : "? ") +
-        keyWord(url, ok).replace(", from chatir's next start", "")),
-      h("button", { class: "btn grey", onclick: async (e) => {
-        await quiet(call("relay_key", { line: url }));
-        e.target.closest(".row").remove();
-      } }, "Remove")))), () => box.remove());
+  const box = h("div", {}, h("small", {}, "Asking each relay…"));
+  const state = (k) => k.ok === false ? ["bad", "✗ Not taken: check the key"]
+    : k.ok == null ? ["unknown", "? The relay did not answer"]
+    : k.on === false ? ["soon", "✓ Taken: no cap once chatir restarts"]
+    : ["good", "✓ No cap"];
+  // A key asked for in the dialog this one is in: Network use again after.
+  const add = h("button", { class: "btn grey", onclick: () =>
+    relayKey().then(usageFlow) }, "Add key");
+  rpc("relay_keys").then((ks) => put(box, ks.length ? [ks.map((k) => {
+    const [cls, say] = state(k);
+    return h("div", { class: "row shared" },
+      h("span", {}, h("b", {}, new URL(k.url).host),
+        h("small", {}, ` key ${k.key} · `), h("span", { class: `key ${cls}` },
+          say)),
+      h("span", {},
+        h("button", { class: "gear", title: "Edit", onclick: () =>
+          relayKey(k.url).then(usageFlow) }, icon("pencil")),
+        h("button", { class: "gear", title: "Remove", onclick: async () => {
+          await quiet(call("relay_key", { line: k.url }));
+          put(box, relayKeys());
+        } }, icon("trash"))));
+  }), add] : h("div", { class: "row shared" }, h("small", {}, "No key: " +
+    "through a relay, files go at its free rate."), add)), () => box.remove());
   return box;
+}
+
+/** Every device worth listing: up or not and since when, how it is
+ * reached, what it and we moved this run; live while open. One of ours,
+ * or one allowed, opens on a tap. */
+function connectionsFlow() {
+  const body = h("div", {}, h("small", {}, "Reading…"));
+  let ms = {};
+  const seen = (x) => x.up ? `up ${x.since ? span((Date.now() - x.since) / 1e3) : ""}`
+    : x.since ? `left ${ago(x.since)}` : x.wrote ? `wrote ${ago(x.wrote)}`
+    : "not seen";
+  const path = (x) => x.path === "direct" ? "direct"
+    : x.path === "none" ? "—" : "relay";
+  const draw = (list) => put(body, list.length ? h("table", { class: "facts conns" },
+    h("thead", {}, h("tr", {}, ["", "Device", "Seen", "Link", "↑ Sent",
+      "↓ Received"].map((t) => h("th", {}, t)))),
+    h("tbody", {}, list.map((x) => {
+      const go = (x.own || x.allowed) && (() => {
+        $("modal").close?.();
+        openDevice({ id: x.id, name: x.name, own: x.own });
+      });
+      return h("tr", { class: go ? "go" : "", onclick: go || null,
+        title: go ? "Open it" : "Allow it (Connect) to send it files" },
+      h("td", {}, h("i", { class: "dot " + (x.up ? "on" : "") })),
+      h("td", {}, h("b", {}, x.name ?? x.short),
+        h("small", {}, x.own ? " yours" : x.uname ? ` ${x.uname}'s` : "",
+          x.allowed ? " · allowed" : "")),
+      h("td", {}, seen(x)),
+      h("td", {}, path(x) + (ms[x.short] != null ? ` · ${ms[x.short]} ms` : "")),
+      h("td", {}, amount(x.sent)), h("td", {}, amount(x.got)));
+    }))) : h("p", { class: "note" }, "No device yet: link one of yours, " +
+    "or allow one (Connect)."));
+  const load = () => rpc("connections").then(draw, () => {});
+  load();
+  const tick = setInterval(load, 3000);
+  return modal((finish) => h("div", {},
+    h("div", { class: "m-body" }, h("h2", {}, "Devices"),
+      h("p", { class: "sub" }, "This run's traffic; up as the spaces you " +
+        "share last heard."), body,
+      h("button", { class: "btn grey", onclick: (e) => {
+        e.target.disabled = true;
+        e.target.textContent = "Measuring…";
+        rpc("doctor", { user: null }).then((d) => {
+          ms = Object.fromEntries(d.devices.map((x) => [x.device, x.ms]));
+          e.target.textContent = "Measured";
+          load();
+        }, () => { e.target.textContent = "Could not measure"; });
+      } }, "Measure each link")),
+    foot(h("button", { class: "btn grey", onclick: () => finish(null) },
+      "Done")))).finally(() => clearInterval(tick));
 }
 
 /** How far one of ours went, in icons: no connection; ✓ left here, the
@@ -3577,6 +3769,65 @@ async function editChannel(ch) {
 
 const slug = (s) => s.trim().toLowerCase().replace(/\s+/g, "-");
 
+/** An admin's channel, dragged with the mouse to its new place (a line
+ * shows where it lands); a click is still a click. The page's own drag
+ * and drop is not used: a desktop app takes drops for files. */
+function drag(row, s, ch) {
+  if (!s.admin) return row;
+  row.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0 ||
+      e.target.closest("button")) return;
+    const list = () => [...row.parentNode.querySelectorAll(".channel[data-ch]")];
+    const mark = (r, k) => list().forEach((x) =>
+      x.classList.toggle("drop-" + k, x === r));
+    let on = false;
+    let at = null;
+    const move = (m) => {
+      if (!on && Math.abs(m.clientY - e.clientY) < 6) return;
+      on = S.dragging = true;
+      row.classList.add("dragging");
+      m.preventDefault();
+      const r = list().find((x) => {
+        const b = x.getBoundingClientRect();
+        return m.clientY >= b.top && m.clientY < b.bottom;
+      });
+      if (!r) return;
+      const b = r.getBoundingClientRect();
+      at = { id: r.dataset.ch, below: m.clientY > b.top + b.height / 2 };
+      mark(at.below ? null : r, "above");
+      mark(at.below ? r : null, "below");
+    };
+    const up = () => {
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      list().forEach((x) => x.classList.remove("drop-above", "drop-below",
+        "dragging"));
+      S.dragging = false;
+      if (!on) return;
+      // The click that ends a drag (if one comes, at once) opens nothing.
+      const eat = (c) => c.stopPropagation();
+      addEventListener("click", eat, { capture: true, once: true });
+      setTimeout(() => removeEventListener("click", eat, { capture: true }));
+      if (at) place(s, ch.id, at.id, at.below);
+      renderSidebar();
+    };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", up);
+  });
+  return row;
+}
+
+/** `id` put just before (or after) channel `to`. */
+function place(s, id, to, after) {
+  const ids = s.channels.map((c) => c.id).filter((x) => x !== id);
+  const i = ids.indexOf(to);
+  if (i < 0 || to === id) return;
+  ids.splice(i + (after ? 1 : 0), 0, id);
+  if (ids.join() !== s.channels.map((c) => c.id).join()) {
+    publish({ Order: { channels: ids } });
+  }
+}
+
 function reorder(s, id, to) {
   const ids = s.channels.map((c) => c.id);
   const from = ids.indexOf(id);
@@ -3767,7 +4018,8 @@ const KEYS = [
   ["n", "add to notes"], ["x", "close this DM"], ["/", "search"],
   [":", "a /command"], ["i, a, o", "back to typing"],
   ["Ctrl+K", "jump to a channel or DM; @ for anyone to message"],
-  ["Ctrl+F", "search"], ["Alt+↑/↓", "previous / next channel"],
+  ["Ctrl+F", "search"], ["Ctrl+B", "hide or show the sidebar"],
+  ["Alt+↑/↓", "previous / next channel"],
   ["/command", "in the composer: /nick, /join, /dm, /me, /shrug, /thread, " +
     "/invite, /close, /leave, /notes"],
 ];
@@ -3896,7 +4148,10 @@ function wire() {
     b.setAttribute("aria-label", b.title);
   }
   $("menu-btn").append(icon("menu"));
-  $("menu-btn").onclick = () => document.body.classList.toggle("drawer");
+  // A phone's drawer; a desktop's sidebar, hidden, back.
+  $("menu-btn").onclick = () => mobile()
+    ? document.body.classList.toggle("drawer") : hideSidebar(false);
+  document.body.classList.toggle("folded", store.get("folded") === "1");
   $("members-btn").append(icon("users"));
   $("search-btn").append(icon("search"));
   $("search-btn").onclick = () => searchFlow();
@@ -3967,9 +4222,23 @@ function wire() {
     e.preventDefault();
     if (!native && chan() && !cur()?.locked) addFiles([...e.dataTransfer.files]);
   });
+  // A copied image (a screenshot) is an item, not a file, in WebKitGTK:
+  // named by its type if it came with no name.
   addEventListener("paste", (e) => {
-    const files = [...(e.clipboardData?.files ?? [])];
-    if (files.length && chan()) addFiles(files);
+    const items = [...(e.clipboardData?.items ?? [])]
+      .filter((i) => i.kind === "file").map((i) => i.getAsFile());
+    const got = items.filter(Boolean).length ? items.filter(Boolean)
+      : [...(e.clipboardData?.files ?? [])];
+    const files = got.map((f) => f.name ? f : new File([f],
+      `pasted-${Date.now()}.${(f.type.split("/")[1] ?? "bin").split("+")[0]}`,
+      { type: f.type }));
+    if (!files.length) return;
+    e.preventDefault();
+    if (S.dev) {
+      for (const f of files) {
+        upload(f).then((path) => sendFiles([{ path, name: f.name }]), () => {});
+      }
+    } else if (chan() && !cur()?.locked) addFiles(files);
   });
   $("emoji-btn").append(icon("smile"));
   $("emoji-btn").onclick = (e) =>
@@ -4036,6 +4305,10 @@ function wire() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       quickSwitch();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" &&
+      !mobile()) {
+      e.preventDefault();
+      hideSidebar();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();
       searchFlow();

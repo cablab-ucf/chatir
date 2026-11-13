@@ -769,7 +769,7 @@ impl Node {
     }
 
     /// Whose device `d` is: ours, or a member's in a space we share.
-    fn whose(&self, d: &EndpointId) -> Option<Id> {
+    pub(crate) fn whose(&self, d: &EndpointId) -> Option<Id> {
         if self.devices().iter().any(|x| x.0 == *d) {
             return Some(self.id());
         }
@@ -1128,6 +1128,7 @@ impl Node {
         });
         let mut cs = vec![first];
         cs.extend(n0_future::join_all(more).await.into_iter().flatten());
+        cs[1..].iter().for_each(|c| self.traffic.count(c));
         // The device we pull from is the one we chose.
         cs.iter().for_each(irnet::wide);
         self.stage(id, Stage::Running);
