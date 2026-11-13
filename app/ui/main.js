@@ -513,11 +513,13 @@ async function loadMessages() {
     { space: s.id, channel: ch.id, before: null, limit });
   if (s.id !== S.sid || ch.id !== S.ch) return; // selection moved on
   const top = msgs[0];
-  // Older pages stay only if they still join the newest: a burst longer
-  // than a page since would leave a hole between them.
+  // Older pages stay only if they still join the newest (a burst longer
+  // than a page since would leave a hole between them), and only while
+  // scrolled up to read them: at the bottom, the newest page alone, so a
+  // channel left open keeps a page, not all it ever got.
   const joined = top && S.msgs.some((m) => m.id === top.id);
-  const older = msgs.length < limit || !joined ? [] : S.msgs.filter((m) =>
-    m.ts < top.ts || (m.ts === top.ts && m.id < top.id));
+  const older = msgs.length < limit || !joined || nearBottom() ? []
+    : S.msgs.filter((m) => m.ts < top.ts || (m.ts === top.ts && m.id < top.id));
   S.msgs = older.concat(msgs);
   S.more = msgs.length >= limit && (!older.length || S.more);
   if (S.newFrom === undefined) computeNewFrom();
@@ -1585,19 +1587,40 @@ const INLINE = 8 << 20;
 const PIXELS = 50e6;
 const BIG = new Error("Too large to show: save it");
 
+/** What the chat shows of a photo: at most this long a side. Shown at
+ * full size, each would be width × height × 4 bytes while on screen. */
+const THUMB = 1024;
+
 function image(f) {
   if (!images.has(f.hash)) {
     if (images.size >= 64) images.delete(images.keys().next().value);
-    images.set(f.hash, rpc("file", { space: S.sid, file: f })
-      .then((b64) => {
-        const head = atob(b64.slice(0, 1 << 20));
-        const b = Uint8Array.from(head, (c) => c.charCodeAt(0));
-        if (pixels(b) > PIXELS) throw BIG;
-        return `data:${mime(f.name)};base64,${b64}`;
-      })
+    images.set(f.hash, full(f).then((src) => shrink(src, mime(f.name)))
       .catch((e) => (images.delete(f.hash), Promise.reject(e))));
   }
   return images.get(f.hash);
+}
+
+/** The photo itself, as a data: URL (not kept: the lightbox's alone). */
+const full = (f) => rpc("file", { space: S.sid, file: f }).then((b64) => {
+  const head = atob(b64.slice(0, 1 << 20));
+  const b = Uint8Array.from(head, (c) => c.charCodeAt(0));
+  if (pixels(b) > PIXELS) throw BIG;
+  return `data:${mime(f.name)};base64,${b64}`;
+});
+
+/** `src` at most `THUMB` a side; a GIF's frames as they are. */
+async function shrink(src, type) {
+  if (type === "image/gif") return src;
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const k = THUMB / Math.max(img.naturalWidth, img.naturalHeight);
+  if (!(k < 1)) return src;
+  const c = document.createElement("canvas");
+  [c.width, c.height] = [img.naturalWidth * k, img.naturalHeight * k]
+    .map(Math.round);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL(type === "image/jpeg" ? type : "image/png", 0.9);
 }
 
 // A loop: `Uint8Array.from` with a mapper takes seconds for 25 MB.
@@ -1735,8 +1758,11 @@ async function preview(f) {
 }
 
 function lightbox(src, f) {
+  // The chat's smaller copy at once, the photo itself once read.
+  const img = h("img", { src, alt: f.name });
+  full(f).then((s) => img.isConnected && (img.src = s), () => {});
   modal((finish) => h("div", { class: "lightbox", onclick: () => finish(null) },
-    h("img", { src, alt: f.name }),
+    img,
     h("div", { class: "row" }, h("span", {}, f.name),
       h("button", { class: "btn grey", onclick: (e) => {
         e.stopPropagation();

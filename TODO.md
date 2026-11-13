@@ -29,7 +29,7 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] Run v0.4.3 on an Android phone and an iPhone: "private" keeps
+- [ ] Run v0.4.4 on an Android phone and an iPhone: "private" keeps
       chatir out of screenshots and the lock screen, Alerts checks
       pushir's owner, iOS backups leave the data folder out (built by its
       release run, never run)
