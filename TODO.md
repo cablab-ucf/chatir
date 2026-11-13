@@ -49,6 +49,16 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       worth it. A demoted admin backdating admin ops: the same list on
       the demoting `Role`, the same cost
 
+## Files device to device (`send.rs`)
+- [ ] The app and `--web` let `send_to` read only a picked file, and
+      `accept` write only where the user chose, as they gate offers
+- [ ] Each stream waits a round trip between blocks: ask the next before
+      the last ends, for links far away (100 ms: about 7 Gbit/s at 8×8)
+- [ ] Fewer streams on a slow link: 64 blocks in flight finish late, so
+      little is kept if it drops early
+- [ ] A chat offer's sender sees no transfers (who fetched, how far)
+- [ ] Measure between two machines, and on a phone's battery
+
 ## Delivery
 - [ ] One DM per person: one row, histories merged; `dm` and calls use the
       DM both are in
