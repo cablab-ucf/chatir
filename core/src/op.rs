@@ -3,7 +3,7 @@
 
 use crate::crypto::{self, Key, kdf};
 use crate::{Ch, Id};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, ensure};
 use data_encoding::BASE32_NOPAD_NOCASE as B32;
 use iroh::{EndpointAddr, EndpointId, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -250,11 +250,12 @@ impl Invite {
         Self { owner, nonce, key, name: name.into(), dm, peers }
     }
 
-    /// Bound to the owner: a forged owner is another, empty space. irch's
-    /// derivations (here and for keys, epochs and ops): its people and
-    /// spaces are chatir's.
+    /// Bound to the owner, and a DM to whom it is with: a forged owner, or
+    /// a group's invite passed off as a DM (a contact card's `alien` rule,
+    /// a keeper's say), is another, empty space. A group's id has no `dm`.
     pub fn id(&self) -> Id {
-        Id(kdf("irch space", &[&self.owner.0, &self.nonce]))
+        let dm = self.dm.as_ref().map_or(&[][..], |d| &d.0[..]);
+        Id(kdf("space", &[&self.owner.0, &self.nonce, dm]))
     }
 
     /// A contact card: a DM with its own owner, met in to start real ones.
@@ -271,26 +272,41 @@ impl Invite {
     }
 }
 
-pub fn code<T: Serialize>(kind: &str, v: &T) -> String {
-    let b = postcard::to_allocvec(v).expect("encodes");
-    format!("chatir:{kind}:{}", B32.encode(&b).to_lowercase())
+/// What a code is, its first byte: no app name in it, so a rename breaks
+/// none (an `app:kind:` before it, as older ones had, is passed over).
+const KINDS: [&str; 3] = ["join", "link", "host"];
+
+fn kind_byte(kind: &str) -> u8 {
+    let i = KINDS.iter().position(|k| *k == kind).expect("a kind");
+    i as u8 + 1
 }
 
-/// A chatir code, or irch's (the same), but a link's: that names a running
-/// irch, which speaks no chatir.
-pub fn uncode<T: DeserializeOwned>(kind: &str, s: &str) -> Result<T> {
+pub fn code<T: Serialize>(kind: &str, v: &T) -> String {
+    let b = postcard::to_allocvec(v).expect("encodes");
+    B32.encode(&[&[kind_byte(kind)][..], &b].concat()).to_lowercase()
+}
+
+/// The kind of code `s` is, if it is one.
+pub fn kind(s: &str) -> Option<&'static str> {
     let s = s.trim();
-    let irch = s.strip_prefix(&format!("irch:{kind}:"));
-    let body = s.strip_prefix(&format!("chatir:{kind}:"));
-    let body = body.or(irch.filter(|_| kind != "link")).ok_or_else(|| {
-        let why = match irch {
-            Some(_) => ": make one in chatir, on a device that has it",
-            None => "",
-        };
-        anyhow!("not a chatir {kind} code{why}")
-    })?;
-    let b = B32.decode(body.as_bytes()).context("damaged code")?;
-    postcard::from_bytes(&b).context("damaged code")
+    let b = B32.decode(s.rsplit(':').next()?.as_bytes()).ok()?;
+    KINDS.get(usize::from(*b.first()?).checked_sub(1)?).copied()
+}
+
+pub fn uncode<T: DeserializeOwned>(kind: &str, s: &str) -> Result<T> {
+    let body = s.trim().rsplit(':').next().unwrap_or_default();
+    let b = B32.decode(body.as_bytes()).context("not a code")?;
+    let (k, b) = b.split_first().context("not a code")?;
+    ensure!(*k == kind_byte(kind), "not {} code", article(kind));
+    postcard::from_bytes(b).context("damaged code")
+}
+
+fn article(kind: &str) -> &'static str {
+    match kind {
+        "join" => "an invite",
+        "link" => "a link",
+        _ => "a storage",
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -320,26 +336,14 @@ pub struct Signed {
 }
 
 pub fn tag(key: &Key) -> [u8; 8] {
-    kdf("irch epoch", &[key])[..8].try_into().expect("8 bytes")
+    kdf("epoch", &[key])[..8].try_into().expect("8 bytes")
 }
 
-/// Before this, ops signed without their epoch (v1) still count: history.
-pub const CUTOVER: u64 = 1_794_700_800_000;
-
-/// v2 signs the epoch too, so nobody re-seals an op under another key.
-fn tbs(
-    v: u8,
-    space: &Id,
-    e: &[u8; 8],
-    ts: u64,
-    d: &EndpointId,
-    op: &Op,
-) -> Vec<u8> {
-    let b = match v {
-        1 => postcard::to_allocvec(&("irch op", space, ts, d, op)),
-        _ => postcard::to_allocvec(&("irch op 2", space, e, ts, d, op)),
-    };
-    b.expect("op")
+/// What an op's author signs: the epoch too, so nobody re-seals an op
+/// under another key.
+fn tbs(space: &Id, e: &[u8; 8], ts: u64, d: &EndpointId, op: &Op) -> Vec<u8> {
+    let ctx = format!("{} op", crypto::PROTO);
+    postcard::to_allocvec(&(ctx, space, e, ts, d, op)).expect("op")
 }
 
 fn aad(space: &Id, e: &Env) -> Vec<u8> {
@@ -359,7 +363,7 @@ pub fn seal(
     op: Op,
 ) -> (Signed, Vec<u8>) {
     let epoch = tag(key);
-    let msg = tbs(2, space, &epoch, ts, &device, &op);
+    let msg = tbs(space, &epoch, ts, &device, &op);
     let author = Id(*user.public().as_bytes());
     let mut e = Env { epoch, ts, live: op.live(), ct: vec![] };
     let inner = Inner { author, device, sig: user.sign(&msg), op };
@@ -371,7 +375,7 @@ pub fn seal(
 }
 
 /// Decrypt and verify, or with `known` (from our own log), re-read one
-/// checked as that version. Returns the version its signature has.
+/// checked before. Returns its signature's version.
 pub fn open(
     space: &Id,
     key: &Key,
@@ -381,15 +385,14 @@ pub fn open(
     let pt = crypto::open(key, &aad(space, e), &e.ct)?;
     let i: Inner = postcard::from_bytes(&pt).ok()?;
     let pk = PublicKey::from_bytes(&i.author.0).ok()?;
-    let msg = |v| tbs(v, space, &e.epoch, e.ts, &i.device, &i.op);
-    let ok = |v: &u8| known.is_some() || pk.verify(&msg(*v), &i.sig).is_ok();
-    let old = known.is_some() || e.ts < CUTOVER;
-    let v = known.into_iter().chain([2]).chain(old.then_some(1)).find(ok)?;
+    let msg = tbs(space, &e.epoch, e.ts, &i.device, &i.op);
+    (known.is_some() || pk.verify(&msg, &i.sig).is_ok()).then_some(())?;
+    let v = known.unwrap_or(2);
     if i.op.live() != e.live || !fits(&i.op) {
         return None;
     }
     let (id, author, device, op) =
-        (op_id(&i.author, &msg(v)), i.author, i.device, i.op);
+        (op_id(&i.author, &msg), i.author, i.device, i.op);
     Some((Signed { id, author, device, ts: e.ts, op, epoch: e.epoch }, v))
 }
 
@@ -415,24 +418,9 @@ fn sealed() {
 }
 
 #[test]
-fn old_signatures_count_only_before_the_cutover() {
+fn an_op_too_big_to_show_is_dropped() {
     let (sk, dev) = (SecretKey::generate(), SecretKey::generate().public());
     let (sp, key) = (Id([1; 32]), crypto::rand());
-    let v1 = |ts| {
-        let op = Op::Here;
-        let sig = sk.sign(&tbs(1, &sp, &tag(&key), ts, &dev, &op));
-        let author = Id(*sk.public().as_bytes());
-        let i = Inner { author, device: dev, sig, op };
-        let mut e = Env { epoch: tag(&key), ts, live: true, ct: vec![] };
-        e.ct = crypto::seal(
-            &key,
-            &aad(&sp, &e),
-            &postcard::to_allocvec(&i).unwrap(),
-        );
-        e
-    };
-    assert_eq!(open(&sp, &key, &v1(CUTOVER - 1), None).map(|s| s.1), Some(1));
-    assert!(open(&sp, &key, &v1(CUTOVER), None).is_none());
     // Too big to show anyone: dropped wherever it lands.
     let big = Op::Post {
         channel: Ch([1; 8]),
@@ -444,6 +432,30 @@ fn old_signatures_count_only_before_the_cutover() {
     assert!(
         open(&sp, &key, &postcard::from_bytes(&raw).unwrap(), None).is_none()
     );
+}
+
+/// A code is its kind and body alone: an app's name before it is passed
+/// over, case is not kept, and one kind is never taken for another.
+#[test]
+fn codes_name_no_app() {
+    let c = code("link", &(7u8, 9u16));
+    assert!(c.chars().all(|c| c.is_ascii_alphanumeric()), "{c}");
+    assert_eq!(kind(&c), Some("link"));
+    let back = |s: &str| uncode::<(u8, u16)>("link", s).ok();
+    assert_eq!(back(&format!("someapp:link:{c}")), Some((7, 9)));
+    assert_eq!(back(&format!(" {} ", c.to_uppercase())), Some((7, 9)));
+    let e = uncode::<(u8, u16)>("join", &c).unwrap_err();
+    assert_eq!(e.to_string(), "not an invite code");
+    assert_eq!(kind("hello"), None);
+}
+
+/// A DM's id names whom it is with: a group's invite with a `dm` added is
+/// another, empty space.
+#[test]
+fn a_dm_id_binds_whom_it_is_with() {
+    let g = Invite::new(Id([1; 32]), "", None);
+    let d = Invite { dm: Some(Id([2; 32])), ..g.clone() };
+    assert_ne!(g.id(), d.id());
 }
 
 #[cfg(test)]

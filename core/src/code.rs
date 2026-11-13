@@ -6,8 +6,9 @@ use crate::Net;
 use anyhow::{Result, bail, ensure};
 use pairir::End;
 
-/// A code is chatir's alone: pairir salts it with this.
-const APP: &str = "chatir";
+/// Our codes' own: pairir salts them with this (the protocol's name, not
+/// the app's).
+const APP: &str = crate::crypto::PROTO;
 
 /// Where giver and taker meet: our own relays, or (none) the lab's.
 fn relays(net: &Net) -> Result<Vec<iroh::RelayUrl>> {
@@ -36,7 +37,7 @@ pub async fn take(
 ) -> Result<String> {
     let long = pairir::take(&relays(net)?, APP, code, password).await?;
     let long = String::from_utf8(long.to_vec())?;
-    ensure!(long.starts_with("chatir:"), "not a chatir code");
+    ensure!(crate::op::kind(&long).is_some(), "not a code");
     Ok(long)
 }
 
@@ -50,7 +51,7 @@ async fn a_short_code_hands_over_its_long_one() {
     let relay = Server::spawn(cfg).await.unwrap();
     let url = format!("http://{}/", relay.http_addr().unwrap());
     let net = Net::Relay(vec![url.parse().unwrap()]);
-    let long = "chatir:invite:abc".to_string();
+    let long = crate::op::code("join", &7u8);
     let (code, end) = give(&net, long.clone(), None).await.unwrap();
     assert_eq!(code.len(), 15, "xxx-xxx-xxx-xxx");
     assert_eq!(take(&net, &code.to_uppercase(), None).await.unwrap(), long);

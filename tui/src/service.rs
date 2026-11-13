@@ -90,8 +90,7 @@ pub fn install(exe: &Path) -> Result<()> {
         let _ = run("schtasks", &["/End", "/TN", TASK]);
         run("schtasks", &["/Run", "/TN", TASK])?;
     }
-    let code = dirs::data_dir().context("no data dir")?;
-    let code = code.join("chatir-serve").join("code");
+    let code = chatir_core::data(true).join("code");
     for _ in 0..60 {
         if let Ok(c) = std::fs::read_to_string(&code) {
             println!("A storage node runs here from now on, kept up to date.");

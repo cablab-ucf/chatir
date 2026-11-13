@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use tokio::sync::{broadcast, mpsc};
 
-pub const ALPN: &[u8] = b"chatir/av/1";
+pub const ALPN: &[u8] = b"spaces/av/1";
 // A screen's keyframe fits; 128 held for a slow page stay within 128 MiB.
 const MAX_FRAME: usize = 1 << 20;
 // A frame's first byte: audio, video, a keyframe opening a group, or the

@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const ALPN: &[u8] = b"chatir/sync/2";
+pub const ALPN: &[u8] = b"spaces/sync/1";
 pub type Bucket = (u32, u32, [u8; 16]);
 /// A session's whole time: a slow one resumes next time, a stalled one ends.
 pub const LIMIT: Duration = Duration::from_secs(300);
@@ -62,7 +62,7 @@ pub enum Admit {
 
 /// Where a space's members meet under `key`: unknown to anyone without it.
 pub fn room(space: &Id, key: &Key) -> [u8; 32] {
-    kdf("irch room", &[&space.0, key])
+    kdf("room", &[&space.0, key])
 }
 
 fn said(space: &Id, room: &[u8; 32], to: &EndpointId) -> Vec<u8> {

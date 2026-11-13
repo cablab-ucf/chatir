@@ -10,7 +10,8 @@ async fn start(name: &str, serve: bool, big: Option<&str>) -> Arc<Node> {
     let dir = std::env::temp_dir().join(format!("chatir-big-{t}-{name}"));
     let (net, notes, link) = (Net::Direct, None, None);
     let (name, big) = (name.into(), big.map(Into::into));
-    Node::start(Config { dir, name, net, link, serve, notes, big })
+    let inbox = None;
+    Node::start(Config { dir, name, net, link, serve, notes, big, inbox })
         .await
         .unwrap()
 }

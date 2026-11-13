@@ -45,6 +45,7 @@ async fn on(
         serve,
         notes: None,
         big: None,
+        inbox: None,
     };
     Node::start(cfg).await.unwrap()
 }
@@ -302,7 +303,7 @@ async fn a_members_out_alone_locks_nothing() {
     // m holds the key and answers b's sync: "Out", and a rekey of its own.
     let ep = chatir_core::irnet::endpoint()
         .relay_mode(iroh::RelayMode::Disabled)
-        .alpns(vec![b"chatir/sync/2".to_vec()])
+        .alpns(vec![b"spaces/sync/1".to_vec()])
         .clear_ip_transports()
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
         .unwrap()

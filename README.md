@@ -31,11 +31,10 @@ curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install
   `cargo tauri ios dev`. Linux needs webkit2gtk-4.1, gtk3, libsoup3, ALSA
   and, for calls, gstreamer plugins base, good, bad and libav.
 
-**From irch**: chatir is irch renamed, the same people and spaces. On a
-computer, chatir's first start takes irch's folder (app, terminal or storage
-node; quit irch first), and its `irch:` invites still work. A phone links
-from a computer that has chatir, and syncs its history. Identities made in
-chatir 0.4.0-0.4.1 are not irch's: their folder is kept beside, as `…-0.4`.
+**From 0.4.2 and before**: 0.4.3 starts afresh, its data in a new folder
+(`v1` in the old one, which it leaves as it was): make your identity on one
+device and link the others. Keys, ids and codes no longer name the app, so a
+rename never changes them again.
 
 Other modes of `chatir`: `--web [ADDR]` (the app's page from your own node,
 default 127.0.0.1:4724; the browser holds only a token, new each run; with
@@ -56,13 +55,15 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
   `--big-password`; the app sends 64 MiB and up directly, below), any size
   shared from your device. Media to 25 MB is kept by the space's storage
   nodes, so it shows inline with the sender away.
-- Files straight to a device (yours, or someone's you share a space with),
-  and from 64 MiB in a chat: nothing hashed first, many streams over
-  eight connections, each 4 MiB block checked, resumed after a drop or a
-  restart (4 Gbit/s over loopback, both ends on one 4-core machine). One
-  sent to a device that is off waits: its lane wakes it, it is offered
-  the file once up, and the sender stays up (asking before it quits) till
-  it is done.
+- Files straight to a device, as scp: your own, or one you allowed by its
+  key (as ssh's `authorized_keys`: the data folder's `allowed`, a key and
+  name a line; each side allows the other), taken at once into Downloads
+  (a storage node: `received` in its folder); in a chat, those from 64 MiB.
+  Nothing hashed first, many streams over eight connections, each 4 MiB
+  block checked, resumed after a drop or a restart (4 Gbit/s over
+  loopback, both ends on one 4-core machine). One sent to a device that
+  is off waits: its lane wakes it, it takes the file once up, and the
+  sender stays up (asking before it quits) till it is done.
 - Voice and video calls with screen sharing; a call rings all of someone's
   devices, answered or declined on one, the others stop.
 - Delivery marks: here only, left here, kept by a storage node, on their
