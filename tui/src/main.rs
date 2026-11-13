@@ -246,5 +246,9 @@ async fn main() -> Result<()> {
     if fresh {
         restart(&exe)?;
     }
+    // Done: `--api`'s read of stdin, still waiting, would hold tokio up.
+    if api {
+        std::process::exit(0);
+    }
     Ok(())
 }

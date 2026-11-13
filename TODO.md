@@ -34,7 +34,7 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       someone (who then sees the owner's ops alone). Bind it in a new
       space form, kept beside irch's, never in place of it
 - [ ] Take an irch folder on a real Windows, macOS and NixOS machine
-- [ ] Run v0.4.1 on an Android phone and an iPhone: "private" keeps
+- [ ] Run v0.4.2 on an Android phone and an iPhone: "private" keeps
       chatir out of screenshots and the lock screen, Alerts checks
       pushir's owner, iOS backups leave the data folder out (built by its
       release run, never run)

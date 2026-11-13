@@ -53,13 +53,16 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
   ScienceDirect, Nature) show title, authors, venue, year and abstract,
   from arXiv, PubMed or Crossref rather than the publisher.
 - Files sealed in chunks: up to 5 GB kept by storage nodes (more with
-  `--big-password`), any size shared from your device. Media to 25 MB is
-  kept by the space's storage nodes, so it shows inline with the sender
-  away.
+  `--big-password`; the app sends 64 MiB and up directly, below), any size
+  shared from your device. Media to 25 MB is kept by the space's storage
+  nodes, so it shows inline with the sender away.
 - Files straight to a device (yours, or someone's you share a space with),
-  and offers past 1 GiB in a chat: nothing hashed first, many streams over
+  and from 64 MiB in a chat: nothing hashed first, many streams over
   eight connections, each 4 MiB block checked, resumed after a drop or a
-  restart (4 Gbit/s over loopback, both ends on one 4-core machine).
+  restart (4 Gbit/s over loopback, both ends on one 4-core machine). One
+  sent to a device that is off waits: its lane wakes it, it is offered
+  the file once up, and the sender stays up (asking before it quits) till
+  it is done.
 - Voice and video calls with screen sharing; a call rings all of someone's
   devices, answered or declined on one, the others stop.
 - Delivery marks: here only, left here, kept by a storage node, on their

@@ -209,13 +209,16 @@ pub enum Call {
         #[serde(default)]
         name: Option<String>,
     },
-    /// A file offered to us (`Event::Incoming`), pulled into `dir`.
+    /// A file offered to us (`Event::Incoming`), pulled into `dir`. A
+    /// transfer is `transfer` (`--api` keeps `id` for the call's own).
     Accept {
+        #[serde(rename = "transfer", alias = "id")]
         id: Id,
         dir: String,
     },
     /// A transfer stopped, either way.
     Cancel {
+        #[serde(rename = "transfer", alias = "id")]
         id: Id,
     },
     Transfers,
@@ -225,12 +228,18 @@ pub enum Call {
     },
 }
 
-/// `decline`: a call (`space`, `channel`) or an offered file (`id`).
+/// `decline`: a call (`space`, `channel`) or an offered file (`transfer`).
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub enum Declined {
-    Call { space: Id, channel: Ch },
-    File { id: Id },
+    Call {
+        space: Id,
+        channel: Ch,
+    },
+    File {
+        #[serde(rename = "transfer", alias = "id")]
+        id: Id,
+    },
 }
 
 pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
@@ -595,6 +604,10 @@ fn decline_takes_a_call_or_a_file() {
     let c = |v| serde_json::from_value::<Call>(v).unwrap();
     let f = c(json!({ "cmd": "decline", "id": id }));
     assert!(matches!(f, Call::Decline(Declined::File { id: i }) if i == id));
+    let f = c(json!({ "cmd": "decline", "transfer": id }));
+    assert!(matches!(f, Call::Decline(Declined::File { id: i }) if i == id));
+    let f = c(json!({ "cmd": "accept", "transfer": id, "dir": "d" }));
+    assert!(matches!(f, Call::Accept { id: i, .. } if i == id));
     let call = c(json!({ "cmd": "decline", "space": id, "channel": ch }));
     assert!(matches!(call, Call::Decline(Declined::Call { .. })));
 }

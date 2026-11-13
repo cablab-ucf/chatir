@@ -242,7 +242,7 @@ pub struct Notice {
 }
 
 impl Notice {
-    fn new(
+    pub(crate) fn new(
         space: Id,
         room: Ch,
         title: String,
@@ -1328,6 +1328,30 @@ impl Node {
         }
     }
 
+    /// `d`'s lane told to catch up, in a space we share where it has one:
+    /// asleep (its node down), it wakes, says it is here, and hears what
+    /// waits for it.
+    pub(crate) fn rouse(&self, d: EndpointId) {
+        for sp in self.all() {
+            let (url, k) = {
+                let b = lock(&sp.book);
+                let k = sp.inv.as_ref().map(|i| b.key(i).0);
+                let mut all = b.st.pushes_of(None).into_iter();
+                (all.find(|p| p.0 == d).map(|p| p.1), k)
+            };
+            let to = url.as_deref().and_then(crate::push::lane_of);
+            if let (Some(to), Some(k)) = (to, k) {
+                let f =
+                    [&[crate::push::OP][..], &ev_label(&sp.id, &k)].concat();
+                let dir = self.dir.clone();
+                tokio::spawn(
+                    async move { crate::push::event(&dir, &to, &f).await },
+                );
+                return;
+            }
+        }
+    }
+
     /// iroh asleep now if nothing needs it (not waiting out `IDLE`).
     pub async fn quiet(&self) -> bool {
         self.rest_iroh(Duration::ZERO).await
@@ -1533,6 +1557,7 @@ impl Node {
             p.insert(id, mark.max(newest.unwrap_or(0).min(now())));
         }
         lock(&self.rang).retain(|c| live.contains(c));
+        out.extend(self.offer_notices());
         // On disk only when it moved: this runs on every change.
         if lock(&self.prefs).told != was {
             self.save_prefs();
@@ -4580,6 +4605,10 @@ impl Node {
         };
         if changed {
             self.emit(Event::Presence { space: sp.id });
+        }
+        // Back: what waits on it (an offer, a pull) tries now.
+        if changed && here {
+            self.send.kick.notify_waiters();
         }
         // Gone, or back: a call it said before is over (if still on, it
         // says so again, after).

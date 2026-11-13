@@ -47,14 +47,16 @@ const PER_PEER: usize = 512;
 /// A block whose hash differs is asked again this many times a round.
 const TRIES: u8 = 3;
 /// Offers in a space this big go device to device, not through iroh-blobs.
-pub const BIG: u64 = 1 << 30;
+pub const BIG: u64 = 64 << 20;
 /// Progress is told every tick; finished blocks noted on disk every
 /// `FLUSH` ticks (5 s), data synced first.
 const TICK: Duration = Duration::from_millis(250);
 const FLUSH: u32 = 20;
-/// The longest wait between tries to reach a sender (a network change
-/// tries at once).
+/// The longest wait between tries to reach a sender, or the device we
+/// offer to (a network change, or that device back, tries at once).
 const PATIENCE: Duration = Duration::from_secs(600);
+/// A device we offer to, asleep, is woken by its lane at most this often.
+const ROUSE: Duration = Duration::from_secs(3600);
 /// A stream silent this long mid-block is given up.
 const STALL: Duration = Duration::from_secs(60);
 /// Transfers listed at most, and offers waiting from one device: offers
@@ -201,6 +203,8 @@ pub(crate) struct Sends {
     busy: Mutex<HashMap<EndpointId, usize>>,
     // Changed since last told (`touch`).
     dirty: Mutex<HashSet<Id>>,
+    // Offers to us shown as a notice (once a run).
+    shown: Mutex<HashSet<Id>>,
     // A network change: waiting pulls try again now.
     pub(crate) kick: Arc<tokio::sync::Notify>,
 }
@@ -582,7 +586,7 @@ fn shape() -> (usize, usize) {
 /// Pulls `id` until it is whole, fails or is stopped; between tries, a
 /// wait that doubles to `PATIENCE`, or less if the network changes.
 async fn run(n: Weak<Node>, id: Id, from: EndpointId, part: Arc<Part>) {
-    let mut wait = Duration::from_secs(1);
+    let (mut wait, mut roused) = (Duration::from_secs(1), None::<Instant>);
     loop {
         let Some(node) = n.upgrade() else { return };
         let left = part.left();
@@ -592,9 +596,46 @@ async fn run(n: Weak<Node>, id: Id, from: EndpointId, part: Arc<Part>) {
             Err(Pull::Retry) if part.left() < left => {
                 wait = Duration::from_secs(1)
             }
+            // Its sender asleep: woken by its lane, now and then.
+            Err(Pull::Retry) if roused.is_none_or(|t| t.elapsed() > ROUSE) => {
+                node.rouse(from);
+                roused = Some(Instant::now());
+            }
             Err(Pull::Retry) => {}
         }
         node.stage(&id, Stage::Waiting);
+        let kick = node.send.kick.clone();
+        drop(node);
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = kick.notified() => {}
+        }
+        wait = (wait * 2).min(PATIENCE);
+    }
+}
+
+/// Our offer `id` to `to`, until it is heard (`Waiting` till then): asked
+/// again, sooner when `to` shows up or the network changes; woken by its
+/// lane if asleep.
+async fn deliver(n: Weak<Node>, id: Id, to: EndpointId) {
+    let (mut wait, mut roused) = (Duration::from_secs(1), None::<Instant>);
+    loop {
+        let Some(node) = n.upgrade() else { return };
+        let r = node.row(&id).filter(|r| r.stage == Stage::Waiting);
+        let Some(r) = r else { return };
+        let offer = Ask::Offer(id, r.name, r.size, node.id());
+        match timeout(Duration::from_secs(15), node.say(to, &offer)).await {
+            Ok(Ok(a)) if a[..] == [OK] => {
+                return node.stage(&id, Stage::Offered);
+            }
+            // Heard, not taken yet (it may not know us yet): asked again.
+            Ok(Ok(_)) => {}
+            _ if roused.is_none_or(|t| t.elapsed() > ROUSE) => {
+                node.rouse(to);
+                roused = Some(Instant::now());
+            }
+            _ => {}
+        }
         let kick = node.send.kick.clone();
         drop(node);
         tokio::select! {
@@ -775,7 +816,7 @@ impl Node {
     }
 
     /// `path` to `device` alone (ours, or a member's we know): served from
-    /// here, offered there, if it is reachable now. Its id.
+    /// here, offered there now or once it is reachable (`deliver`). Its id.
     pub async fn send_to(
         self: &Arc<Self>,
         device: EndpointId,
@@ -786,30 +827,46 @@ impl Node {
         let none = "not a device of yours or of anyone you share a space with";
         let user = self.whose(&device).context(none)?;
         let (id, s) = self.register(path, name, To::Device(device))?;
-        let (out, path) = (true, Some(s.path));
-        let row = Row { out, path, ..Row::new(device, user, &s.name, s.size) };
-        lock(&self.send.book).rows.insert(id, row);
+        let (out, path, stage) = (true, Some(s.path), Stage::Waiting);
+        let r = Row::new(device, user, &s.name, s.size);
+        lock(&self.send.book).rows.insert(id, Row { out, path, stage, ..r });
         self.save_book();
-        let offer = Ask::Offer(id, s.name, s.size, self.id());
-        let said =
-            timeout(Duration::from_secs(15), self.say(device, &offer)).await;
-        if let Ok(Ok(r)) = &said
-            && r[..] == [OK]
-        {
-            self.touch(&id);
-            return Ok(id);
-        }
-        let mut b = lock(&self.send.book);
-        b.served.remove(&id);
-        b.rows.remove(&id);
-        drop(b);
-        self.save_book();
-        match said {
-            Ok(Ok(_)) => bail!("that device did not take it"),
-            _ => {
-                bail!("that device is not reachable now (asleep, or offline?)")
-            }
-        }
+        self.touch(&id);
+        tokio::spawn(deliver(Arc::downgrade(self), id, device));
+        Ok(id)
+    }
+
+    /// A transfer under way, or one we offer that is not over: the node
+    /// stays up for it, out of sight too (it serves what we send).
+    pub fn transferring(&self) -> bool {
+        let out = |r: &Row| r.out && !r.stage.over();
+        !lock(&self.send.runs).is_empty()
+            || !lock(&self.send.busy).is_empty()
+            || lock(&self.send.book).rows.values().any(out)
+    }
+
+    /// Files offered us, waiting on an answer: a notice each, once a run.
+    pub(crate) fn offer_notices(&self) -> Vec<crate::Notice> {
+        let new: Vec<(Id, Row)> = {
+            let b = lock(&self.send.book);
+            let mut shown = lock(&self.send.shown);
+            let new = b.rows.iter().filter(|(id, r)| {
+                !r.out && r.stage == Stage::Offered && shown.insert(**id)
+            });
+            new.map(|(id, r)| (*id, r.clone())).collect()
+        };
+        let notice = |(id, r): (Id, Row)| {
+            let who = self.name_of(&r.user, None);
+            let who = who.unwrap_or_else(|| r.user.to_string()[..8].into());
+            let mb = r.size as f64 / 1e6;
+            let size = match mb < 1e3 {
+                true => format!("{mb:.0} MB"),
+                false => format!("{:.1} GB", mb / 1e3),
+            };
+            let body = format!("{}, {size}", r.name);
+            crate::Notice::new(id, Default::default(), who, body, false, false)
+        };
+        new.into_iter().map(notice).collect()
     }
 
     /// Pull `id`, offered to us, into `dir`: where it will be once whole.
@@ -966,8 +1023,19 @@ impl Node {
         runs.insert(*id, Run { part, _task: AbortOnDropHandle::new(task) });
     }
 
-    /// Pulls accepted before a restart go on.
+    /// Pulls accepted before a restart go on, and offers not yet heard.
     pub(crate) fn resume_sends(self: &Arc<Self>) {
+        let unheard: Vec<(Id, EndpointId)> = {
+            let b = lock(&self.send.book);
+            let w = b
+                .rows
+                .iter()
+                .filter(|r| r.1.out && r.1.stage == Stage::Waiting);
+            w.map(|(id, r)| (*id, r.device)).collect()
+        };
+        for (id, d) in unheard {
+            tokio::spawn(deliver(Arc::downgrade(self), id, d));
+        }
         let on = |r: &Row| {
             !r.out && matches!(r.stage, Stage::Waiting | Stage::Running)
         };
@@ -1254,6 +1322,10 @@ impl Node {
         let name = f.safe().name;
         {
             let mut b = lock(&self.send.book);
+            // Asked again, its answer lost: taken already.
+            if b.rows.get(&id).is_some_and(|r| r.device == from && !r.out) {
+                return true;
+            }
             let waiting = b
                 .rows
                 .values()
