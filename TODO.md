@@ -29,7 +29,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] A demoted admin backdates admin ops (authors date their own)
 - [ ] `--web`: the token is permanent, and the link through irp's page
       hands it to that page; a token per run, the link behind its own flag
 - [ ] The installers check a signature's file, not its version, and
@@ -44,7 +43,14 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       demoted admin's flood of backdated ops refolds each (a member's
       never: set apart, or judged where dated)
 - [ ] A stolen seed's thief, retired by `Burn`, still posts ops dated
-      before it (authors date their own)
+      before it (authors date their own). A burn could list its author's
+      ops as its device holds them and refuse the rest (a hash of them
+      tells no peer which: the ids, 32 bytes each), but the thief holds
+      the seed and burns too, dated earlier, listing its own: only what
+      every burn lists is sound (a thief erases, never adds). A new op
+      0.4.0 drops, and a pass before the walk (as `forfeit`): not yet
+      worth it. A demoted admin backdating admin ops: the same list on
+      the demoting `Role`, the same cost
 - [ ] `--web` saves files up to 25 MB (`file` is in memory): a streaming GET
 - [ ] The page's CSP and Tauri capabilities, narrowed to what it uses
       (`ipc:` only in connect-src; event and clipboard alone): run it after
