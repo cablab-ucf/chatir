@@ -8,7 +8,8 @@ use crate::op::{Link, clip};
 use anyhow::{Result, bail, ensure};
 use std::collections::HashMap;
 
-// YouTube's tags come after 750 KB of scripts; reading stops at </head>.
+// YouTube's tags come after 750 KB of scripts, a channel's in its body:
+// reading stops a chunk past `og:title` and </head>, else at `PAGE`.
 const PAGE: usize = 2 << 20;
 const IMAGE: usize = 2 << 20;
 
@@ -239,12 +240,17 @@ async fn get(
     if !ct.starts_with(kind) {
         bail!("not {kind}: {ct}");
     }
-    let mut b = vec![];
+    let (mut b, mut og, mut head) = (vec![], false, false);
     let html = kind == "text/html";
     while let Some(c) = r.chunk().await? {
         b.extend_from_slice(&c);
-        let tail = &b[b.len().saturating_sub(c.len() + 6)..];
-        if html && tail.windows(7).any(|w| w.eq_ignore_ascii_case(b"</head>")) {
+        let tail = &b[b.len().saturating_sub(c.len() + 8)..];
+        let has =
+            |n: &[u8]| tail.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
+        // A chunk past `og:title`: its image's tag, just after, is in too.
+        let had = og;
+        (og, head) = (og || has(b"og:title"), head || has(b"</head>"));
+        if html && had && head {
             break;
         }
         if b.len() > max {

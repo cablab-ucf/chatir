@@ -76,6 +76,8 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
 - *Connect* (the sidebar's +): every code there is, each shared from here
   or added here: you on another device (link code), a person (contact
   code), a space (invite), a device for files (its key), a storage node.
+- Channels dragged into order (admins); Ctrl+B hides the sidebar; images
+  pasted straight in; QR codes scanned with the camera you pick.
 - Search, Ctrl+K, vim keys; profiles, linked devices, themes; *Network
   use* (a table and the day's traffic an hour a bar, relay keys and their
   state) and *Devices* (who is up and since when, direct or relayed, bytes

@@ -637,6 +637,7 @@ const badge = (n) =>
   n ? h("span", { class: "badge" }, String(Math.min(n, 99))) : null;
 
 function renderSidebar() {
+  if (S.dragging) return; // its rows stay as they are under the pointer
   // At first, and after each update (Android's installer takes back
   // full-screen calls from apps it installs from a file): ask together.
   // Welcomed first: a fresh device asks once it has a name.
@@ -648,6 +649,8 @@ function renderSidebar() {
   }
   put($("server-header"), h("button", { class: "brand", title: "Settings",
     onclick: () => settings() }, "chatir"),
+    !mobile() && h("button", { class: "fold", title: "Hide the sidebar " +
+      "(Ctrl+B)", onclick: () => hideSidebar(true) }, icon("chevron")),
     h("button", { title: "Connect: spaces, people, devices", onclick: connectHub },
       icon("plus")));
   const d = dms();
@@ -755,7 +758,7 @@ function channelList(s) {
           renderSidebar();
         },
       }, icon("chevron"), h("small", {}, String(n)));
-      return h("div", {
+      return drag(h("div", {
         class: `channel${active ? " active" : ""}` +
           (unread && !active ? " unread" : ""),
         onclick: () => select(s.id, ch.id), role: "button", tabindex: 0,
@@ -763,13 +766,7 @@ function channelList(s) {
           e.preventDefault();
           menu(e.currentTarget, chanMenu(s, ch));
         },
-        draggable: s.admin,
-        ondragstart: (e) => e.dataTransfer.setData("ch", ch.id),
-        ondragover: (e) => s.admin && e.preventDefault(),
-        ondrop: (e) => {
-          e.preventDefault();
-          reorder(s, e.dataTransfer.getData("ch"), ch.id);
-        },
+        "data-ch": ch.id,
       }, icon("hash"), h("span", { class: "name" }, ch.name),
       !active && badge(marks), fold,
       h("button", {
@@ -782,7 +779,7 @@ function channelList(s) {
           e.stopPropagation();
           menu(e.currentTarget, chanMenu(s, ch));
         },
-      }, icon("gear")), ch.call.length > 0 && icon("speaker"));
+      }, icon("gear")), ch.call.length > 0 && icon("speaker")), s, ch);
     }).flatMap((row, i) => {
       const ch = s.channels[i];
       // Folded, only the thread being read stays in view.
@@ -1426,7 +1423,11 @@ function render(tokens, root) {
       add(el);
       stack.push(el);
     } else if (t.nesting === -1) stack.pop();
-    else if (t.type === "text") add(...tagged(t.content));
+    // A link's own text (youtube.com/@name) is no mention.
+    else if (t.type === "text") {
+      add(...(stack.some((e) => e.classList?.contains("link"))
+        ? [unbent(t.content)] : tagged(t.content)));
+    }
     else if (t.type === "code_inline") add(h("code", {}, t.content));
     else if (t.type === "fence" || t.type === "code_block") {
       add(code(t.content.replace(/\n$/, ""), t.info.trim().split(/\s/)[0]));
@@ -2002,6 +2003,12 @@ function renderMembers() {
 }
 
 // ---------- devices ----------
+
+/** The sidebar out of the way, or back (a desktop's; kept). */
+function hideSidebar(on = !document.body.classList.contains("folded")) {
+  document.body.classList.toggle("folded", on);
+  store.set("folded", on ? "1" : "0");
+}
 
 /** Devices files go to and come from, as scp's hosts: our others, and
  * others' we allowed (by key, as ssh's). */
@@ -3762,6 +3769,65 @@ async function editChannel(ch) {
 
 const slug = (s) => s.trim().toLowerCase().replace(/\s+/g, "-");
 
+/** An admin's channel, dragged with the mouse to its new place (a line
+ * shows where it lands); a click is still a click. The page's own drag
+ * and drop is not used: a desktop app takes drops for files. */
+function drag(row, s, ch) {
+  if (!s.admin) return row;
+  row.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0 ||
+      e.target.closest("button")) return;
+    const list = () => [...row.parentNode.querySelectorAll(".channel[data-ch]")];
+    const mark = (r, k) => list().forEach((x) =>
+      x.classList.toggle("drop-" + k, x === r));
+    let on = false;
+    let at = null;
+    const move = (m) => {
+      if (!on && Math.abs(m.clientY - e.clientY) < 6) return;
+      on = S.dragging = true;
+      row.classList.add("dragging");
+      m.preventDefault();
+      const r = list().find((x) => {
+        const b = x.getBoundingClientRect();
+        return m.clientY >= b.top && m.clientY < b.bottom;
+      });
+      if (!r) return;
+      const b = r.getBoundingClientRect();
+      at = { id: r.dataset.ch, below: m.clientY > b.top + b.height / 2 };
+      mark(at.below ? null : r, "above");
+      mark(at.below ? r : null, "below");
+    };
+    const up = () => {
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      list().forEach((x) => x.classList.remove("drop-above", "drop-below",
+        "dragging"));
+      S.dragging = false;
+      if (!on) return;
+      // The click that ends a drag (if one comes, at once) opens nothing.
+      const eat = (c) => c.stopPropagation();
+      addEventListener("click", eat, { capture: true, once: true });
+      setTimeout(() => removeEventListener("click", eat, { capture: true }));
+      if (at) place(s, ch.id, at.id, at.below);
+      renderSidebar();
+    };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", up);
+  });
+  return row;
+}
+
+/** `id` put just before (or after) channel `to`. */
+function place(s, id, to, after) {
+  const ids = s.channels.map((c) => c.id).filter((x) => x !== id);
+  const i = ids.indexOf(to);
+  if (i < 0 || to === id) return;
+  ids.splice(i + (after ? 1 : 0), 0, id);
+  if (ids.join() !== s.channels.map((c) => c.id).join()) {
+    publish({ Order: { channels: ids } });
+  }
+}
+
 function reorder(s, id, to) {
   const ids = s.channels.map((c) => c.id);
   const from = ids.indexOf(id);
@@ -3952,7 +4018,8 @@ const KEYS = [
   ["n", "add to notes"], ["x", "close this DM"], ["/", "search"],
   [":", "a /command"], ["i, a, o", "back to typing"],
   ["Ctrl+K", "jump to a channel or DM; @ for anyone to message"],
-  ["Ctrl+F", "search"], ["Alt+↑/↓", "previous / next channel"],
+  ["Ctrl+F", "search"], ["Ctrl+B", "hide or show the sidebar"],
+  ["Alt+↑/↓", "previous / next channel"],
   ["/command", "in the composer: /nick, /join, /dm, /me, /shrug, /thread, " +
     "/invite, /close, /leave, /notes"],
 ];
@@ -4081,7 +4148,10 @@ function wire() {
     b.setAttribute("aria-label", b.title);
   }
   $("menu-btn").append(icon("menu"));
-  $("menu-btn").onclick = () => document.body.classList.toggle("drawer");
+  // A phone's drawer; a desktop's sidebar, hidden, back.
+  $("menu-btn").onclick = () => mobile()
+    ? document.body.classList.toggle("drawer") : hideSidebar(false);
+  document.body.classList.toggle("folded", store.get("folded") === "1");
   $("members-btn").append(icon("users"));
   $("search-btn").append(icon("search"));
   $("search-btn").onclick = () => searchFlow();
@@ -4152,9 +4222,23 @@ function wire() {
     e.preventDefault();
     if (!native && chan() && !cur()?.locked) addFiles([...e.dataTransfer.files]);
   });
+  // A copied image (a screenshot) is an item, not a file, in WebKitGTK:
+  // named by its type if it came with no name.
   addEventListener("paste", (e) => {
-    const files = [...(e.clipboardData?.files ?? [])];
-    if (files.length && chan()) addFiles(files);
+    const items = [...(e.clipboardData?.items ?? [])]
+      .filter((i) => i.kind === "file").map((i) => i.getAsFile());
+    const got = items.filter(Boolean).length ? items.filter(Boolean)
+      : [...(e.clipboardData?.files ?? [])];
+    const files = got.map((f) => f.name ? f : new File([f],
+      `pasted-${Date.now()}.${(f.type.split("/")[1] ?? "bin").split("+")[0]}`,
+      { type: f.type }));
+    if (!files.length) return;
+    e.preventDefault();
+    if (S.dev) {
+      for (const f of files) {
+        upload(f).then((path) => sendFiles([{ path, name: f.name }]), () => {});
+      }
+    } else if (chan() && !cur()?.locked) addFiles(files);
   });
   $("emoji-btn").append(icon("smile"));
   $("emoji-btn").onclick = (e) =>
@@ -4221,6 +4305,10 @@ function wire() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       quickSwitch();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" &&
+      !mobile()) {
+      e.preventDefault();
+      hideSidebar();
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();
       searchFlow();

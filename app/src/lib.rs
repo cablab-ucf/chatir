@@ -1030,7 +1030,20 @@ pub fn run() {
         #[cfg(target_os = "linux")]
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.with_webview(|w| {
-                use webkit2gtk::{SettingsExt, WebViewExt};
+                use webkit2gtk::glib::prelude::ObjectExt;
+                use webkit2gtk::{
+                    PermissionRequestExt, SettingsExt, WebViewExt,
+                };
+                // Cameras by name and id, so a scan can use the one picked:
+                // wry leaves WebKit's ask unanswered, which lists them blank.
+                w.inner().connect_permission_request(|_, r| {
+                    let named =
+                        r.is::<webkit2gtk::DeviceInfoPermissionRequest>();
+                    if named {
+                        r.allow();
+                    }
+                    named
+                });
                 if let Some(s) = w.inner().settings() {
                     s.set_enable_media_stream(true);
                     if cfg!(debug_assertions)
