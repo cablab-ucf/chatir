@@ -108,8 +108,8 @@ async fn node(dir: &Path, name: &str, phone: bool) -> Arc<Node> {
         chatir_core::push::ours(dir, &net, false).await.unwrap();
     }
     let (dir, name) = (dir.into(), name.into());
-    let (link, serve, notes, big) = (None, false, None, None);
-    Node::start(Config { dir, name, net, link, serve, notes, big })
+    let (link, serve, notes, big, inbox) = (None, false, None, None, None);
+    Node::start(Config { dir, name, net, link, serve, notes, big, inbox })
         .await
         .unwrap()
 }

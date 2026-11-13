@@ -222,6 +222,18 @@ pub enum Call {
         id: Id,
     },
     Transfers,
+    /// Others' devices ours send to and take from (`allowed`, as ssh's
+    /// `authorized_keys`).
+    Allowed,
+    /// `device` allowed, as `name`; `disallow`, no longer.
+    Allow {
+        device: iroh::EndpointId,
+        #[serde(default)]
+        name: String,
+    },
+    Disallow {
+        device: iroh::EndpointId,
+    },
     /// Someone's devices, from the spaces we share.
     DevicesOf {
         user: Id,
@@ -487,6 +499,12 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
         }
         Call::Cancel { id } => json!(n.cancel(&id).await?),
         Call::Transfers => json!(n.transfers()),
+        Call::Allowed => {
+            let row = |(id, name)| json!({ "id": id, "name": name });
+            json!(n.allowed().into_iter().map(row).collect::<Vec<_>>())
+        }
+        Call::Allow { device, name } => json!(n.allow(device, Some(&name))?),
+        Call::Disallow { device } => json!(n.allow(device, None)?),
         Call::DevicesOf { user } => {
             let row = |(id, name, seen)| json!({ "id": id, "name": name, "seen": seen });
             json!(n.devices_of(&user).into_iter().map(row).collect::<Vec<_>>())

@@ -1,4 +1,5 @@
-//! Files sent device to device: whole, to whom they may go, resumed.
+//! Files sent device to device: whole, only between devices allowed (as
+//! ssh's keys), resumed.
 
 use chatir_core::{Config, Event, Id, Net, Node, Op};
 use serde_json::Value;
@@ -14,13 +15,13 @@ fn dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("chatir-send-{t}-{n}-{name}"))
 }
 
+/// Files sent it land in DIR/inbox.
 async fn start(dir: &Path, name: &str) -> Arc<Node> {
     let (net, link, notes, big) = (Net::Direct, None, None, None);
-    let (dir, name) = (dir.into(), name.into());
+    let (inbox, dir, name) = (Some(dir.join("inbox")), dir.into(), name.into());
     let serve = false;
-    Node::start(Config { dir, name, net, link, serve, notes, big })
-        .await
-        .unwrap()
+    let cfg = Config { dir, name, net, link, serve, notes, big, inbox };
+    Node::start(cfg).await.unwrap()
 }
 
 async fn until(what: &str, f: impl Fn() -> bool) {
@@ -58,7 +59,7 @@ fn hash(p: &Path) -> blake3::Hash {
     h.finalize()
 }
 
-/// `a` and `b` in a space, each knowing the other's device.
+/// `a` and `b` in a space, each knowing and allowing the other's device.
 async fn pair() -> (Arc<Node>, Arc<Node>, Id, PathBuf) {
     let bdir = dir("b");
     let (a, b) = (start(&dir("a"), "a").await, start(&bdir, "b").await);
@@ -68,7 +69,14 @@ async fn pair() -> (Arc<Node>, Arc<Node>, Id, PathBuf) {
         x.view(&id, |s| s.owner_of(&y.device()).is_some()) == Some(true)
     };
     until("each knows the other", || knows(&a, &b) && knows(&b, &a)).await;
+    a.allow(b.device(), Some("b")).unwrap();
+    b.allow(a.device(), Some("a")).unwrap();
     (a, b, id, bdir)
+}
+
+/// Where `id` is coming in, at `n`.
+fn path(n: &Node, id: &Id) -> PathBuf {
+    row(n, id)["path"].as_str().unwrap().into()
 }
 
 async fn offered(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> Id {
@@ -81,51 +89,62 @@ async fn offered(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> Id {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_sent_to_a_device_arrives_whole() {
-    let (a, b, _, _) = pair().await;
+    let (a, b, _, bdir) = pair().await;
     let src = sparse((40 << 20) + 12_345);
     let mut rx = b.subscribe();
     let id = a.send_to(b.device(), &src, None).await.unwrap();
+    // Taken at once, as scp's: nobody asked.
     assert_eq!(offered(&mut rx).await, id);
-    assert_eq!(row(&b, &id)["state"], "offered");
     assert_eq!(row(&b, &id)["user"], serde_json::json!(a.id()));
-    let out = dir("out");
-    let p = b.accept(&id, &out).await.unwrap();
     until("b has it", || row(&b, &id)["state"] == "done").await;
+    let p = path(&b, &id);
+    assert_eq!(p.parent(), Some(&*bdir.join("inbox")));
     assert_eq!(hash(&p), hash(&src), "whole");
-    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1, "no .part left");
+    let left = std::fs::read_dir(bdir.join("inbox")).unwrap().count();
+    assert_eq!(left, 1, "no .part left");
     until("a hears it is done", || row(&a, &id)["state"] == "done").await;
     assert!(a.sharing().is_empty(), "no longer served");
 
-    // Declined: a's side says so, and it is served no more.
-    let id = a.send_to(b.device(), &src, None).await.unwrap();
-    assert_eq!(offered(&mut rx).await, id);
-    b.decline_file(&id).await.unwrap();
-    until("a hears it declined", || row(&a, &id)["state"] == "declined").await;
-    assert!(b.accept(&id, &out).await.is_err());
-
-    // Cancelled by its sender before it was taken.
-    let id = a.send_to(b.device(), &src, None).await.unwrap();
+    // Cancelled by its sender on the way: b's side stops too.
+    let big = sparse(512 << 20);
+    let id = a.send_to(b.device(), &big, None).await.unwrap();
     assert_eq!(offered(&mut rx).await, id);
     a.cancel(&id).await.unwrap();
     until("b hears it", || row(&b, &id)["state"] == "cancelled").await;
     std::fs::remove_file(src).unwrap();
-    std::fs::remove_dir_all(out).unwrap();
+    std::fs::remove_file(big).unwrap();
 }
 
-/// Only the device a file was sent to, or a space's members, get it; a
-/// stranger cannot even offer one.
+/// Device to device, only between devices allowed: a space in common is
+/// not enough, nor one side's word. A chat offer goes to members alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_not_allowed_is_refused() {
     let (a, b, id, _) = pair().await;
     let x = start(&dir("x"), "x").await;
     let src = sparse(1 << 20);
     let e = a.send_to(x.device(), &src, None).await.unwrap_err();
-    assert!(e.to_string().contains("share a space"), "{e}");
+    assert!(e.to_string().contains("allowed"), "{e}");
     assert!(x.send_to(b.device(), &src, None).await.is_err(), "x knows nobody");
     // x joins, is shown an offer, and is banned: a refuses it, b saves it.
     x.join(&a.invite(&id).await.unwrap()).await.unwrap();
     let knows = || a.view(&id, |s| s.owner_of(&x.device()).is_some());
     until("a knows x", || knows() == Some(true)).await;
+    // x allows b; b has not allowed x: refused, so x's waits, untaken.
+    let e = x.send_to(b.device(), &src, None).await.unwrap_err();
+    assert!(e.to_string().contains("allowed"), "a space is not enough: {e}");
+    // As ssh's file: comments kept, any blank between key and name, and
+    // a name on one line.
+    let f = x.dir().join("allowed");
+    std::fs::write(&f, format!("# lab\n{}\tb's laptop\n", b.device())).unwrap();
+    assert_eq!(x.allowed()[&b.device()], "b's laptop");
+    x.allow(b.device(), Some("b\nevil")).unwrap();
+    assert_eq!(x.allowed()[&b.device()], "b evil");
+    let text = std::fs::read_to_string(&f).unwrap();
+    assert!(text.starts_with("# lab\n") && text.lines().count() == 2, "{text}");
+    let sent = x.send_to(b.device(), &src, None).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(row(&x, &sent)["state"], "waiting");
+    assert!(row(&b, &sent).is_null(), "b never took it");
     let big = sparse((1 << 30) + 1);
     let f = a.offer(&id, &big, None).await.unwrap();
     assert!(f.direct() && f.size == (1 << 30) + 1);
@@ -159,8 +178,7 @@ async fn an_interrupted_transfer_resumes() {
     let mut rx = b.subscribe();
     let id = a.send_to(b.device(), &src, None).await.unwrap();
     assert_eq!(offered(&mut rx).await, id);
-    let out = dir("out");
-    let p = b.accept(&id, &out).await.unwrap();
+    let p = path(&b, &id);
     let done = |n: &Node| row(n, &id)["done"].as_u64().unwrap_or(0);
     until("some of it", || done(&b) >= 192 << 20).await;
     b.shutdown().await;
@@ -175,10 +193,9 @@ async fn an_interrupted_transfer_resumes() {
     assert_eq!(hash(&p), hash(&src), "whole");
     assert!(!map.exists());
     std::fs::remove_file(src).unwrap();
-    std::fs::remove_dir_all(out).unwrap();
 }
 
-/// A chat offer past 1 GiB is served device to device, nothing hashed
+/// A chat offer from 64 MiB is served device to device, nothing hashed
 /// first: another member saves it, and it shows as a transfer.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_big_chat_offer_is_saved_device_to_device() {

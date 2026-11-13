@@ -45,6 +45,7 @@ async fn on(
         serve,
         notes: None,
         big: None,
+        inbox: None,
     };
     Node::start(cfg).await.unwrap()
 }

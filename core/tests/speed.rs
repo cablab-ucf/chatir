@@ -11,8 +11,8 @@ async fn start(name: &str) -> Arc<Node> {
     let t = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("chatir-speed-{t}-{name}"));
     let (net, link, notes, big, serve) = (Net::Direct, None, None, None, false);
-    let name = name.into();
-    let cfg = Config { dir, name, net, link, serve, notes, big };
+    let (inbox, name) = (Some(dir.join("inbox")), name.into());
+    let cfg = Config { dir, name, net, link, serve, notes, big, inbox };
     Node::start(cfg).await.unwrap()
 }
 
@@ -30,10 +30,11 @@ async fn speed() {
     while knows() != Some(true) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    a.allow(b.device(), Some("b")).unwrap();
+    b.allow(a.device(), Some("a")).unwrap();
     // Sparse: read from memory, so the receiving side is what is timed.
     let src = std::env::temp_dir().join("chatir-speed-src");
     std::fs::File::create(&src).unwrap().set_len(size).unwrap();
-    let out = std::env::temp_dir().join("chatir-speed-out");
     let mut rx = b.subscribe();
     for shape in shapes.split_whitespace() {
         unsafe { std::env::set_var("CHATIR_SEND", shape) };
@@ -41,21 +42,20 @@ async fn speed() {
         while !matches!(rx.recv().await, Ok(Event::Incoming { id, .. }) if id == t)
         {
         }
+        // Taken as it is offered: timed from there.
         let at = Instant::now();
-        let p = b.accept(&t, &out).await.unwrap();
         let id = serde_json::json!(t);
         loop {
             let r = b.transfers().into_iter().find(|r| r["id"] == id).unwrap();
             assert!(r["state"] != "failed", "{r}");
             if r["state"] == "done" {
+                std::fs::remove_file(r["path"].as_str().unwrap()).unwrap();
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let rate = size as f64 * 8e-9 / at.elapsed().as_secs_f64();
         println!("{shape:>5}: {rate:.2} Gbit/s");
-        std::fs::remove_file(p).unwrap();
     }
     std::fs::remove_file(src).unwrap();
-    let _ = std::fs::remove_dir_all(out);
 }

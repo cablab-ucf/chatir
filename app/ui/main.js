@@ -474,6 +474,7 @@ async function flush() {
 async function loadSidebar() {
   S.spaces = await rpc("spaces");
   S.mine = await rpc("devices").catch(() => S.mine ?? []);
+  S.allowed = await rpc("allowed").catch(() => S.allowed ?? []);
   if (!cur()) {
     const saved = store.get("sid");
     const s = S.spaces.find((x) => x.id === saved && !x.dm) ??
@@ -670,7 +671,7 @@ function renderSidebar() {
     devices().map((d) => h("div", {
       class: "channel dm" + (S.dev?.id === d.id ? " active" : ""),
       title: d.own ? "Yours: text and files, device to device" :
-        `${d.uname ?? "Theirs"}: files, device to device`,
+        "Allowed: files, device to device",
       onclick: () => openDevice(d), role: "button", tabindex: 0,
     }, icon("phone"), h("span", { class: "name" }, devLabel(d)),
     badge(S.busy?.get(d.id) ?? 0)))]);
@@ -1974,33 +1975,28 @@ function renderMembers() {
 
 // ---------- devices ----------
 
-/** Devices we talk to directly: our others, and others' we sent to or
- * heard from (kept here, the latest 20). */
+/** Devices files go to and come from, as scp's hosts: our others, and
+ * others' we allowed (by key, as ssh's). */
 function devices() {
   const ours = (S.mine ?? []).filter((d) => !d.this)
     .map((d) => ({ id: d.id, name: d.name, own: true }));
-  let theirs = [];
-  try {
-    theirs = JSON.parse(store.get("peers") ?? "[]");
-  } catch {}
-  return [...ours, ...theirs.filter((d) => !ours.some((o) => o.id === d.id))];
+  const theirs = (S.allowed ?? []).filter((d) => !ours.some((o) => o.id === d.id))
+    .map((d) => ({ id: d.id, name: d.name || null }));
+  return [...ours, ...theirs];
 }
 
-function remember(d) {
-  if (d.own) return;
-  const rest = devices().filter((x) => !x.own && x.id !== d.id);
-  const { id, name, user, uname } = d;
-  store.set("peers", JSON.stringify([{ id, name, user, uname }, ...rest]
-    .slice(0, 20)));
-}
+const devLabel = (d) => d.name || short(d.id);
 
-const devLabel = (d) => d.own ? d.name ?? short(d.id)
-  : `${d.uname ?? short(d.user ?? d.id)} · ${d.name ?? short(d.id)}`;
+/** `d` allowed, as `name`: its files come here, ours may go there. */
+async function allow(d, name) {
+  await call("allow", { device: d, name });
+  S.allowed = await rpc("allowed").catch(() => S.allowed);
+  renderSidebar();
+}
 
 /** One device, as a DM is one person: its transfers and texts. */
 function openDevice(d) {
   S.dev = d;
-  remember(d);
   document.body.classList.remove("drawer");
   const input = h("textarea", { rows: 1, maxLength: MAX_HAND,
     placeholder: d.own ? `Text to ${d.name ?? "it"}` : "Files only",
@@ -2119,7 +2115,8 @@ async function renderDevice() {
   put(log, mine.length + texts.length ? [...texts, ...mine].map(row)
     : h("p", { class: "note" }, d.own
       ? "Text and files, straight to this device: nothing kept anywhere else."
-      : "Files, straight to this device, at full speed. It says yes first."));
+      : "Files, straight to this device, at full speed, once it allows " +
+        "this one too."));
 }
 
 /** An offered file, saved: where downloads go, or (a desktop) a folder
@@ -2131,31 +2128,16 @@ async function take(t, pick) {
   schedule("dev");
 }
 
-/** A device offers a file: whose, what, how big; save, or not. */
-async function incomingFile(e) {
-  const own = (S.mine ?? []).find((d) => d.id === e.device);
-  const d = own ? { id: e.device, name: own.name, own: true }
-    : { id: e.device, user: e.user, uname: e.user && nameOf(e.user) };
-  if (!own) {
-    const ds = await call("devices_of", { user: e.user }).catch(() => []);
-    d.name = ds.find((x) => x.id === e.device)?.name ?? null;
-  }
-  remember(d);
-  renderSidebar();
-  const go = await modal((finish) => h("div", {},
-    h("div", { class: "m-body" }, h("h2", {}, e.name),
-      h("p", { class: "sub" }, `${size(e.size)} from ${devLabel(d)}`)),
-    foot(h("button", { class: "btn link", onclick: () => finish("no") },
-      "Decline"),
-    native && h("button", { class: "btn grey", onclick: () => finish("pick") },
-      "Save to…"),
-    h("button", { class: "btn", onclick: () => finish("save") }, "Save"))));
-  if (go === "no") quiet(call("decline", { id: e.id }));
-  else if (go) await take(e, go === "pick");
-  openDevice(d);
+/** A file from one of ours, or one allowed: taken at once, as scp's. */
+function incomingFile(e) {
+  const d = devices().find((x) => x.id === e.device) ?? { id: e.device };
+  const t = toast(`${e.name} (${size(e.size)}) from ${devLabel(d)}`);
+  t.onclick = () => openDevice(d);
+  schedule("dev");
 }
 
-/** A member's devices, to send to one. */
+/** A member's devices, to send to one: allowed first (their key, as a
+ * space of ours says), and they allow ours. */
 async function theirDevices(m) {
   const ds = await call("devices_of", { user: m.id }).catch(() => null);
   if (!ds?.length) return toast(`No device of ${m.name} known yet`, true);
@@ -2164,8 +2146,42 @@ async function theirDevices(m) {
       ds.map((x) => h("button", { class: "choice", onclick: () => finish(x) },
         icon("phone"), x.name ?? short(x.id),
         h("small", {}, ` · wrote ${ago(x.seen)}`)))));
-  if (pick) openDevice({ id: pick.id, name: pick.name, user: m.id,
-    uname: m.name });
+  if (!pick) return;
+  const name = `${m.name} · ${pick.name ?? short(pick.id)}`;
+  if (!(S.allowed ?? []).some((x) => x.id === pick.id)) {
+    const ok = await modal((finish) => h("div", {},
+      h("div", { class: "m-body" }, h("h2", {}, `Allow ${name}?`),
+        h("p", { class: "sub" }, "Files then go between it and this " +
+          "device, straight, as with ssh keys: it allows this one too.")),
+      foot(cancel(finish), h("button", { class: "btn",
+        onclick: () => finish(true) }, "Allow"))));
+    if (!ok) return;
+    await allow(pick.id, name);
+  }
+  openDevice({ id: pick.id, name });
+}
+
+/** Settings' allowed devices: each removable, and one more by its key. */
+function allowedList(go) {
+  const rows = (S.allowed ?? []).map((d) => h("div", { class: "row shared" },
+    h("span", {}, icon("phone"), " ", h("b", {}, d.name || short(d.id)),
+      h("small", {}, ` · ${short(d.id)}`)),
+    h("button", { class: "gear", title: "Remove", onclick: go(async () => {
+      await call("disallow", { device: d.id });
+      S.allowed = await rpc("allowed").catch(() => S.allowed);
+      renderSidebar();
+      settings("devices");
+    }) }, icon("trash"))));
+  return h("div", {}, rows, choice("plus", "Allow a device", "By its key: " +
+    "Settings › Devices on it shows it", go(async () => {
+    const key = await ask({ title: "Allow a device", label: "Its key",
+      placeholder: "64 hex characters", maxLength: 64, ok: "Next" });
+    if (!key) return settings("devices");
+    const name = await ask({ title: "Allow a device", label: "Name",
+      placeholder: "Whose, and which", ok: "Allow" });
+    if (name !== null && name !== undefined) await quiet(allow(key, name));
+    settings("devices");
+  })));
 }
 
 // ---------- popovers ----------
@@ -2845,6 +2861,17 @@ const TAB = {
         "device: this one becomes you", go(linkFlow)),
       choice("users", "Profiles", "Other identities on this device, and " +
         "signing out", go(profilesFlow)),
+      h("label", {}, "Allowed devices ", info("Others' devices files go to " +
+        "and come from, straight, as ssh keys: each side allows the other. " +
+        "Kept in the data folder's `allowed` file, a key and name a line.")),
+      allowedList(go),
+      h("label", {}, "This device's key ", info("Give it to whoever " +
+        "allows this device.")),
+      h("div", { class: "row" },
+        h("input", { class: "field mono", type: "text", value: S.me.endpoint,
+          readOnly: true }),
+        h("button", { class: "btn grey", title: "Copy",
+          onclick: () => copy(S.me.endpoint, "Key copied") }, icon("copy"))),
       choice("trash", "Lost device", "Retire this identity everywhere: " +
         "whoever has the lost device holds your key", go(retireFlow),
       "danger"),
@@ -3272,18 +3299,8 @@ function quickSwitch(start = "") {
       : m ? `@${m.name}` : s.dm ? `@${s.name}` : ch.name;
     const draw = () => {
       const q = input.value.toLowerCase();
-      // @@: devices, ours and those of everyone we share a space with.
-      if (q.startsWith("@@") && !devs) {
-        devs = devices().map((d) => ({ d }));
-        Promise.all(people.map(({ m }) => call("devices_of", { user: m.id })
-          .then((ds) => ds.map((x) => ({ d: { id: x.id, name: x.name,
-            user: m.id, uname: m.name } })), () => [])))
-          .then((v) => {
-            const seen = new Set(devs.map((x) => x.d.id));
-            devs.push(...v.flat().filter((x) => !seen.has(x.d.id)));
-            draw();
-          });
-      }
+      // @@: devices, ours and those allowed.
+      if (q.startsWith("@@") && !devs) devs = devices().map((d) => ({ d }));
       const hit = (x) => `${label(x)} ${x.s?.name ?? ""}`.toLowerCase()
         .includes(q.replace(/^@@/, "")) || (x.d && q === "@@");
       const them = q.startsWith("@@") ? devs ?? []

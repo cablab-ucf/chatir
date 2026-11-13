@@ -124,6 +124,9 @@ pub struct Config {
     pub notes: Option<PathBuf>,
     /// A storage node's password, which keeps files past `MAX_FILE`.
     pub big: Option<String>,
+    /// Where files our devices send go (`send.rs`); else the system's
+    /// downloads, else DIR/received.
+    pub inbox: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -805,6 +808,7 @@ pub struct Node {
     typing: Mutex<Option<(Id, Ch, Instant)>>,
     serve: Option<[u8; 16]>,
     big: Option<String>,
+    pub(crate) inbox: Option<PathBuf>,
     files: FsStore,
     held: Mutex<Option<std::fs::File>>,
     // Per space, of ops and (true) of files apart, the day and what it took
@@ -1072,6 +1076,16 @@ impl Node {
         let budget = store::load(&cfg.dir.join("budget"));
         let shared = store::load(&cfg.dir.join("shared"));
         let send = crate::send::Sends::load(&cfg.dir);
+        // Where our devices' files go: kept for a start that names none
+        // (a phone woken without its app).
+        let at = cfg.dir.join("downloads");
+        let inbox = match cfg.inbox {
+            Some(i) => {
+                let _ = store::write(&at, i.to_string_lossy().as_bytes());
+                Some(i)
+            }
+            None => std::fs::read_to_string(&at).ok().map(PathBuf::from),
+        };
         // Owners' devices are served across restarts: they pair, register.
         let users = hosts.values().flat_map(|h| h.users.values().flatten());
         let served: crate::push::Served =
@@ -1121,6 +1135,7 @@ impl Node {
             clock: AtomicU64::new(0),
             serve,
             big: cfg.big,
+            inbox,
             files,
             held: Mutex::new(Some(held)),
             budget: Mutex::new(budget),
@@ -5324,6 +5339,7 @@ mod tests {
             serve: false,
             notes: None,
             big: None,
+            inbox: None,
         };
         Node::start(cfg).await.unwrap()
     }

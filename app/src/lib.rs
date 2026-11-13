@@ -181,7 +181,8 @@ fn config(
             _ => Net::Default,
         };
     let (name, serve) = ("anon".into(), false);
-    Ok(Config { dir, name, net, link, serve, notes, big: None })
+    let (big, inbox) = (None, None);
+    Ok(Config { dir, name, net, link, serve, notes, big, inbox })
 }
 
 struct App(watch::Sender<Started>);
@@ -1150,7 +1151,8 @@ async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
                 let home = app.path().home_dir().ok();
                 home.filter(|_| cfg!(desktop)).map(|h| h.join("notes"))
             });
-        boot(config(dir, link, notes)?).await
+        let inbox = app.path().download_dir().ok();
+        boot(Config { inbox, ..config(dir, link, notes)? }).await
     };
     let r = r.await.map_err(err);
     if let Ok(n) = &r {

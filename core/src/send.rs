@@ -727,6 +727,47 @@ impl Node {
         }
     }
 
+    /// Others' devices ours send to and take from: `allowed` in the data
+    /// folder, a key and a name a line, as ssh's `authorized_keys`.
+    pub fn allowed(&self) -> BTreeMap<EndpointId, String> {
+        let f = std::fs::read_to_string(self.dir().join("allowed"));
+        let line = |l: &str| {
+            let mut w = l.split_whitespace();
+            let k = w.next()?.parse().ok()?;
+            Some((k, w.collect::<Vec<_>>().join(" ")))
+        };
+        f.unwrap_or_default().lines().filter_map(line).collect()
+    }
+
+    /// `device` allowed, as `name`; or, with none, no longer. Other lines
+    /// (comments) are kept.
+    pub fn allow(&self, device: EndpointId, name: Option<&str>) -> Result<()> {
+        let p = self.dir().join("allowed");
+        let (f, key) = (std::fs::read_to_string(&p), device.to_string());
+        let f = f.unwrap_or_default();
+        let others =
+            f.lines().filter(|l| l.split_whitespace().next() != Some(&key));
+        let mut text: String = others.map(|l| format!("{l}\n")).collect();
+        if let Some(n) = name {
+            let n = n.split_whitespace().collect::<Vec<_>>().join(" ");
+            text += &format!("{key} {}\n", short(&n));
+        }
+        store::write(&p, text.as_bytes())
+    }
+
+    /// Ours, or allowed: the devices files go to and come from.
+    fn trusted(&self, d: &EndpointId) -> bool {
+        self.devices().iter().any(|x| x.0 == *d)
+            || self.allowed().contains_key(d)
+    }
+
+    /// Where files sent here go: the app's downloads, else the system's,
+    /// else DIR/received (a storage node).
+    fn inbox(&self) -> PathBuf {
+        let dl = self.inbox.clone().or_else(dirs::download_dir);
+        dl.unwrap_or_else(|| self.dir().join("received"))
+    }
+
     /// Whose device `d` is: ours, or a member's in a space we share.
     fn whose(&self, d: &EndpointId) -> Option<Id> {
         if self.devices().iter().any(|x| x.0 == *d) {
@@ -815,8 +856,8 @@ impl Node {
         was
     }
 
-    /// `path` to `device` alone (ours, or a member's we know): served from
-    /// here, offered there now or once it is reachable (`deliver`). Its id.
+    /// `path` to `device` alone (ours, or one allowed): served from here,
+    /// offered there now or once it is reachable (`deliver`). Its id.
     pub async fn send_to(
         self: &Arc<Self>,
         device: EndpointId,
@@ -824,8 +865,9 @@ impl Node {
         name: Option<&str>,
     ) -> Result<Id> {
         ensure!(device != self.device(), "that is this device");
-        let none = "not a device of yours or of anyone you share a space with";
-        let user = self.whose(&device).context(none)?;
+        let none = "not a device of yours, nor one you allowed";
+        ensure!(self.trusted(&device), none);
+        let user = self.whose(&device).unwrap_or_default();
         let (id, s) = self.register(path, name, To::Device(device))?;
         let (out, path, stage) = (true, Some(s.path), Stage::Waiting);
         let r = Row::new(device, user, &s.name, s.size);
@@ -845,19 +887,22 @@ impl Node {
             || lock(&self.send.book).rows.values().any(out)
     }
 
-    /// Files offered us, waiting on an answer: a notice each, once a run.
+    /// Files coming in: a notice each, once a run.
     pub(crate) fn offer_notices(&self) -> Vec<crate::Notice> {
         let new: Vec<(Id, Row)> = {
             let b = lock(&self.send.book);
             let mut shown = lock(&self.send.shown);
             let new = b.rows.iter().filter(|(id, r)| {
-                !r.out && r.stage == Stage::Offered && shown.insert(**id)
+                !r.out && !r.stage.over() && shown.insert(**id)
             });
             new.map(|(id, r)| (*id, r.clone())).collect()
         };
+        let allowed = self.allowed();
         let notice = |(id, r): (Id, Row)| {
-            let who = self.name_of(&r.user, None);
-            let who = who.unwrap_or_else(|| r.user.to_string()[..8].into());
+            let who = allowed.get(&r.device).filter(|n| !n.is_empty()).cloned();
+            let who = who.or_else(|| self.label(&r.device));
+            let who = who.or_else(|| self.name_of(&r.user, None));
+            let who = who.unwrap_or_else(|| r.device.fmt_short().to_string());
             let mb = r.size as f64 / 1e6;
             let size = match mb < 1e3 {
                 true => format!("{mb:.0} MB"),
@@ -1291,7 +1336,8 @@ impl Node {
         // Sent to one device, which has begun.
         let r = self.row(&id);
         if r.is_some_and(|r| {
-            r.out && r.device == from && r.stage == Stage::Offered
+            let on = matches!(r.stage, Stage::Waiting | Stage::Offered);
+            r.out && r.device == from && on
         }) {
             self.stage(&id, Stage::Running);
         }
@@ -1310,14 +1356,14 @@ impl Node {
         id: Id,
         name: &str,
         size: u64,
-        user: Id,
+        _claimed: Id,
     ) -> bool {
-        let of = |s: &Id| self.view(s, |st| st.owner_of(&from) == Some(user));
-        let ours =
-            user == self.id() && self.devices().iter().any(|d| d.0 == from);
-        if !ours && !self.spaces().iter().any(|s| of(s) == Some(true)) {
+        // Ours, or one allowed: as ssh, a key, never a claim. Whose it is,
+        // as our spaces say (none, for a key alone).
+        if !self.trusted(&from) {
             return false;
         }
+        let user = self.whose(&from).unwrap_or_default();
         let f = File { name: short(name), size, hash: id, key: DIRECT };
         let name = f.safe().name;
         {
@@ -1329,7 +1375,7 @@ impl Node {
             let waiting = b
                 .rows
                 .values()
-                .filter(|r| r.device == from && r.stage == Stage::Offered);
+                .filter(|r| r.device == from && !r.out && !r.stage.over());
             if b.rows.len() >= ROWS
                 || waiting.count() >= WAITING
                 || b.rows.contains_key(&id)
@@ -1340,8 +1386,11 @@ impl Node {
             b.rows.insert(id, Row::new(from, user, &name, size));
         }
         self.save_book();
+        // Taken at once, as scp's: where downloads go here.
+        if let Err(e) = self.begin(&id, &name, &self.inbox()) {
+            self.fail(&id, &format!("{e:#}"));
+        }
         self.emit(Event::Incoming { id, device: from, user, name, size });
-        self.touch(&id);
         true
     }
 
@@ -1364,13 +1413,16 @@ impl Node {
             };
             return self.stage(&id, s);
         }
+        // Failed too: its pull, under way, may hear the cancel first as
+        // the file no longer served.
+        let on = |s: Stage| !s.over() || s == Stage::Failed;
         let r = b.rows.get(&id);
         let theirs =
-            r.is_some_and(|r| !r.out && r.device == from && !r.stage.over());
+            r.is_some_and(|r| !r.out && r.device == from && on(r.stage));
         drop(b);
         if theirs && e == End::Cancelled {
             self.stop(&id);
-            self.stage(&id, Stage::Cancelled);
+            self.set(&id, |r| (r.stage, r.error) = (Stage::Cancelled, None));
         }
     }
 }

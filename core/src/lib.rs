@@ -141,7 +141,7 @@ pub fn adopt(
 }
 
 /// What signing out takes away.
-pub const MINE: [&str; 20] = [
+pub const MINE: [&str; 21] = [
     "seed",
     "device",
     "local",
@@ -161,6 +161,7 @@ pub const MINE: [&str; 20] = [
     "sealed",
     "shared",
     "sends",
+    "allowed",
     "phonebook",
     "shown",
     "rung",
