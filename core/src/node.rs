@@ -166,6 +166,19 @@ pub enum Event {
     },
     /// A short code of ours was used up by someone who did not prove it.
     Spent,
+    /// A device of ours, or of someone we share a space with, offers us a
+    /// file (`accept`, `decline_file`).
+    Incoming {
+        id: Id,
+        device: EndpointId,
+        user: Id,
+        name: String,
+        size: u64,
+    },
+    /// A transfer (`transfers`) moved on: at most about four times a second.
+    Transfer {
+        id: Id,
+    },
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -329,7 +342,7 @@ enum Src {
 }
 
 /// A file's name as `op::fits` takes it: 255 bytes, cut at a character.
-fn short(n: &str) -> String {
+pub(crate) fn short(n: &str) -> String {
     n[..n.floor_char_boundary(255)].into()
 }
 
@@ -804,6 +817,8 @@ pub struct Node {
     pub(crate) talks:
         (tokio::sync::Semaphore, Mutex<HashSet<(EndpointId, Id)>>),
     shared: Mutex<BTreeMap<Id, Shared>>,
+    // Files sent device to device, either way (`send.rs`).
+    pub(crate) send: crate::send::Sends,
     // When each peer last synced with us, either way.
     synced: Mutex<HashMap<EndpointId, u64>>,
     call: Mutex<Option<Call>>,
@@ -919,6 +934,10 @@ impl ProtocolHandler for Proto {
             }
             HAND => n.handed(&c).await,
             DIRECT => n.told(&c).await,
+            crate::send::ALPN => {
+                n.lend(c).await;
+                Ok(())
+            }
             _ => n.give(&c).await,
         };
         r.map_err(|e| {
@@ -1050,6 +1069,7 @@ impl Node {
         let hosts: BTreeMap<Id, Host> = store::load(&cfg.dir.join("hosts"));
         let budget = store::load(&cfg.dir.join("budget"));
         let shared = store::load(&cfg.dir.join("shared"));
+        let send = crate::send::Sends::load(&cfg.dir);
         // Owners' devices are served across restarts: they pair, register.
         let users = hosts.values().flat_map(|h| h.users.values().flatten());
         let served: crate::push::Served =
@@ -1107,6 +1127,7 @@ impl Node {
             asked: Mutex::default(),
             talks: (tokio::sync::Semaphore::new(32), Mutex::default()),
             shared: Mutex::new(shared),
+            send,
             synced: Mutex::default(),
             call: Mutex::new(None),
             media: broadcast::channel(128).0,
@@ -1150,6 +1171,7 @@ impl Node {
         }
         tokio::spawn(lane_up(Arc::downgrade(&n)));
         tokio::spawn(heartbeat(Arc::downgrade(&n)));
+        n.resume_sends();
         crate::usage::note(&n.dir, "up", serde_json::json!({}));
         Ok(n)
     }
@@ -1172,7 +1194,7 @@ impl Node {
 
     /// iroh, up: bound again if it slept (same key, same port), its
     /// router serving all we serve.
-    async fn up(&self) -> Result<Endpoint> {
+    pub(crate) async fn up(&self) -> Result<Endpoint> {
         *lock(&self.used) = Instant::now();
         if let Some(ep) = self.ep() {
             return Ok(ep);
@@ -1251,6 +1273,7 @@ impl Node {
             .accept(BLOB, Proto(n.clone()))
             .accept(HAND, Proto(n.clone()))
             .accept(DIRECT, Proto(n.clone()))
+            .accept(crate::send::ALPN, Proto(n.clone()))
             .accept(call::ALPN, Proto(n));
         // A storage node tells its devices the relay their lanes go on.
         if let Some(p) = &self.server {
@@ -1266,7 +1289,7 @@ impl Node {
 
     /// A connection to `to`, iroh up for it; `to` knocked first, so its
     /// own iroh wakes if it slept.
-    async fn connect(
+    pub(crate) async fn connect(
         &self,
         to: impl Into<EndpointAddr>,
         alpn: &[u8],
@@ -1358,7 +1381,7 @@ impl Node {
         self.events.subscribe()
     }
 
-    fn emit(&self, e: Event) {
+    pub(crate) fn emit(&self, e: Event) {
         let _ = self.events.send(e);
     }
 
@@ -1377,8 +1400,13 @@ impl Node {
         op::seal(&sp.id, key, me, dev, ts, op)
     }
 
+    /// Ourselves, while we run.
+    pub(crate) fn this(&self) -> Option<Arc<Node>> {
+        self.this.get()?.upgrade()
+    }
+
     /// `name` in our folder, as `v` is now; a failure only logged.
-    fn stash<T: Serialize>(&self, name: &str, v: &T) {
+    pub(crate) fn stash<T: Serialize>(&self, name: &str, v: &T) {
         let r = store::save(&self.dir.join(name), v);
         let _ = r.inspect_err(|e| warn!("saving {name}: {e}"));
     }
@@ -3681,6 +3709,10 @@ impl Node {
         let files = &self.files;
         let path = std::path::absolute(path)?;
         let size = std::fs::metadata(&path)?.len();
+        // Too big to hash first: device to device, as it is.
+        if size >= crate::send::BIG {
+            return self.offer_direct(space, &path, name);
+        }
         let (format, mode) = (Default::default(), ImportMode::TryReference);
         let opts = AddPathOptions { path: path.clone(), format, mode };
         let tag = files.add_path_with_opts(opts).with_tag().await?;
@@ -3714,11 +3746,16 @@ impl Node {
     pub fn sharing(&self) -> Vec<(Id, Id, String, u64)> {
         let s = lock(&self.shared);
         let on = s.iter().filter_map(|(h, f)| Some((*h, f.space?, f)));
-        on.map(|(h, sp, f)| (h, sp, f.name.clone(), f.size)).collect()
+        let on = on.map(|(h, sp, f)| (h, sp, f.name.clone(), f.size));
+        on.chain(self.offered_direct()).collect()
     }
 
-    /// Stop serving an offered file; its members can no longer fetch it.
-    pub async fn unshare(&self, h: &Id) -> Result<()> {
+    /// Stop serving an offered file (or one sent device to device); its
+    /// members can no longer fetch it.
+    pub async fn unshare(self: &Arc<Self>, h: &Id) -> Result<()> {
+        if self.unserve(h) {
+            return Ok(());
+        }
         let tag = {
             let mut s = lock(&self.shared);
             let f = s.get_mut(h).context("not shared from here")?;
@@ -3779,12 +3816,7 @@ impl Node {
             peers.extend(self.bootstrap(&sp));
             let mut seen = HashSet::new();
             peers.retain(|p| seen.insert(*p));
-            // Who we are, proven to them at once: files go to members only.
-            let proofs = peers.iter().take(8).map(|p| {
-                let s = self.clone().sync_with(sp.clone(), (*p).into());
-                tokio::time::timeout(Duration::from_secs(5), s)
-            });
-            n0_future::join_all(proofs).await;
+            self.prove(space, &peers).await;
             // Real size first: a post may claim 1 byte.
             let gone = "nobody who has it is reachable now: it saves once \
                 its sender, or a storage node keeping it, is online";
@@ -3804,6 +3836,21 @@ impl Node {
             pull.download(hash, peers.repeat(3)).await.ok().context(gone)?;
         }
         Ok(&self.files)
+    }
+
+    /// Who we are, proven to `peers` at once (a sync with each, 5 s at
+    /// most): files go to members only.
+    pub(crate) async fn prove(
+        self: &Arc<Self>,
+        space: &Id,
+        peers: &[EndpointId],
+    ) {
+        let Ok(sp) = self.get(space) else { return };
+        let proofs = peers.iter().take(8).map(|p| {
+            let s = self.clone().sync_with(sp.clone(), (*p).into());
+            tokio::time::timeout(Duration::from_secs(5), s)
+        });
+        n0_future::join_all(proofs).await;
     }
 
     /// Proven a member's device here (it signed for them) or one of the
@@ -3850,12 +3897,32 @@ impl Node {
         self.spaces().iter().any(|id| has(id) == Some(true))
     }
 
+    /// `d` is ours, or a device of a member of `sp`: named in their ops,
+    /// or proven theirs (`may_get`). Just started, a space opens after we
+    /// serve: a moment for it.
+    pub(crate) async fn member_of(&self, sp: &Id, d: &EndpointId) -> bool {
+        for _ in 0..50 {
+            if self.get(sp).is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let u = lock(&self.verified).get(d).map(|v| v.0);
+        let member = |s: &State| {
+            s.owner_of(d).is_some()
+                || u.is_some_and(|u| s.profile(&u).is_some() && !s.out(&u))
+        };
+        self.devices().iter().any(|x| x.0 == *d)
+            || self.view(sp, member) == Some(true)
+    }
+
     /// An attachment's plaintext, in memory (a preview).
     pub async fn file(
         self: &Arc<Self>,
         space: &Id,
         f: &File,
     ) -> Result<Vec<u8>> {
+        ensure!(!f.direct(), "sent device to device: save it");
         ensure!(f.size <= PREVIEW as u64, "too big to open here: save it");
         let hash = iroh_blobs::Hash::from_bytes(f.hash.0);
         if f.offered() {
@@ -3906,18 +3973,13 @@ impl Node {
         dir: &Path,
     ) -> Result<PathBuf> {
         use std::io::{ErrorKind::AlreadyExists, Write};
+        if f.direct() {
+            return self.save_direct(space, f, dir).await;
+        }
         let small = !f.offered() && f.size <= PREVIEW as u64;
         let data = if small { self.file(space, f).await? } else { vec![] };
-        let name = &f.clone().safe().name;
-        let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
-        let dot = if ext.is_empty() { "" } else { "." };
         std::fs::create_dir_all(dir)?;
-        for i in 0.. {
-            let n = match i {
-                0 => name.to_string(),
-                i => format!("{stem} ({i}){dot}{ext}"),
-            };
-            let p = dir.join(n);
+        for p in names(dir, &f.clone().safe().name) {
             match std::fs::File::create_new(&p) {
                 Ok(mut out) => {
                     out.write_all(&data)?;
@@ -3929,18 +3991,7 @@ impl Node {
                         };
                         got.inspect_err(|_| drop(std::fs::remove_file(&p)))?;
                     }
-                    // From the internet, like a browser download: Windows
-                    // and macOS check it before it runs.
-                    #[cfg(windows)]
-                    let _ = std::fs::write(
-                        format!("{}:Zone.Identifier", p.display()),
-                        "[ZoneTransfer]\r\nZoneId=3\r\n",
-                    );
-                    #[cfg(target_os = "macos")]
-                    let _ = std::process::Command::new("/usr/bin/xattr")
-                        .args(["-w", "com.apple.quarantine", "0081;0;chatir;"])
-                        .arg(&p)
-                        .status();
+                    mark(&p);
                     return Ok(p);
                 }
                 Err(e) if e.kind() == AlreadyExists => continue,
@@ -4611,6 +4662,7 @@ impl Node {
 
     /// Woken, in front, or on a new network: re-probe, re-dial, catch up now.
     pub async fn resume(self: &Arc<Self>) {
+        self.send.kick.notify_waiters();
         crate::push::reset().await;
         if let Some(ep) = self.ep() {
             ep.network_change().await;
@@ -4776,6 +4828,7 @@ impl Node {
         }
         // Gossip sends after `broadcast` returns: a moment for `Gone` to go.
         tokio::time::sleep(Duration::from_millis(200)).await;
+        self.stop_sends().await;
         self.down.store(true, Relaxed);
         let moved = self.usage();
         let _one = self.binding.lock().await;
@@ -4802,6 +4855,36 @@ impl Node {
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+}
+
+/// `name` in `dir`, else `stem (1).ext`, `stem (2).ext`… as browsers save.
+pub(crate) fn names(dir: &Path, name: &str) -> impl Iterator<Item = PathBuf> {
+    let (dir, name) = (dir.to_path_buf(), name.to_string());
+    (0..).map(move |i| {
+        let (stem, ext) = name.rsplit_once('.').unwrap_or((&name, ""));
+        let dot = if ext.is_empty() { "" } else { "." };
+        dir.join(match i {
+            0 => name.clone(),
+            i => format!("{stem} ({i}){dot}{ext}"),
+        })
+    })
+}
+
+/// From the internet, like a browser download: Windows and macOS check it
+/// before it runs.
+pub(crate) fn mark(p: &Path) {
+    #[cfg(windows)]
+    let _ = std::fs::write(
+        format!("{}:Zone.Identifier", p.display()),
+        "[ZoneTransfer]\r\nZoneId=3\r\n",
+    );
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("/usr/bin/xattr")
+        .args(["-w", "com.apple.quarantine", "0081;0;chatir;"])
+        .arg(p)
+        .status();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = p;
 }
 
 /// A direct link, closed `QUIET_LINK` after its last use (an open one is

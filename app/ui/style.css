@@ -1587,3 +1587,46 @@ dialog:has(.settings) { width: min(560px, calc(100vw - 32px)); }
 .settings .tabs .chip.on { background: var(--hover); }
 .settings > .m-body { height: min(440px, 60vh); overflow-y: auto; }
 .settings .switch { margin-top: 12px; }
+
+/* A device, as a DM: what went to it and came from it, and a box to send. */
+#device { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#device .log {
+  flex: 1; overflow-y: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+#device .xfer, #device .said {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius);
+}
+#device .said { align-self: flex-start; max-width: 80%; white-space: pre-wrap; }
+#device .said.me { align-self: flex-end; background: var(--hover); }
+#device .said small { color: var(--muted); }
+#device .what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+#device .what b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#device .what small { color: var(--muted); }
+#device progress { width: 100%; height: 6px; accent-color: var(--pink); }
+#device .xfer.done progress, #device .xfer:not(.running):not(.waiting) progress { opacity: 0.4; }
+#device .box {
+  display: flex; align-items: flex-end; gap: 4px; margin: 0 16px 16px;
+  background: var(--bg-4); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 4px;
+}
+#device .box:focus-within { border-color: var(--pink); box-shadow: var(--glow); }
+#device .box textarea {
+  flex: 1; background: none; border: 0; outline: 0; resize: none;
+  color: var(--text); font: inherit; padding: 10px 4px; min-height: 40px;
+}
+#device .box button { width: 40px; height: 40px; display: grid; place-items: center; color: var(--muted); }
+#device .box button:hover:not(:disabled) { color: var(--text-strong); }
+#device .box button:disabled { opacity: 0.4; }
+
+/* (i): what a control does, on hover, or on a tap beneath it. */
+button.info {
+  display: inline-grid; place-items: center; width: 18px; height: 18px;
+  margin-left: 2px; color: var(--muted); vertical-align: middle;
+}
+button.info .icon { width: 14px; height: 14px; }
+button.info:hover { color: var(--text-strong); }
+.note.why { margin: 4px 0 0; font-weight: normal; text-transform: none; letter-spacing: 0; }
+.row.shared .gear { color: var(--muted); padding: 4px; }
+.row.shared .gear:hover { color: var(--text-strong); }

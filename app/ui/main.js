@@ -21,6 +21,8 @@ av.call.trouble = (why) => {
 };
 
 const T = window.__TAURI__;
+// A desktop app: files by path (its picker, its drops), never copied.
+const native = !T?.web && !/Android|iPhone|iPad/.test(navigator.userAgent);
 const invoke = T?.core?.invoke;
 const clip = T?.clipboardManager;
 const rpc = (cmd, args) => invoke("chatir", { call: { cmd, ...args } });
@@ -49,6 +51,19 @@ function h(tag, props, ...kids) {
   // Icon buttons say what they do to screen readers too.
   if (props?.title && tag === "button") e.setAttribute("aria-label", props.title);
   return e;
+}
+
+/** What a control does, behind an (i): its tooltip, and on a tap (a
+ * phone has no hover) shown beneath it. */
+function info(text) {
+  const note = h("p", { class: "note why hidden" }, text);
+  const b = h("button", { class: "info", title: text, "aria-label": "About",
+    onclick: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      note.classList.toggle("hidden");
+    } }, icon("info"));
+  return [b, note];
 }
 
 const put = (el, ...kids) =>
@@ -119,6 +134,7 @@ const ICONS = {
   note: "M6 3h12v18l-6-4-6 4zM9 8h6M9 11h4",
   pin: "M12 16v5M9 3h6l-1 6 4 4v2H6v-2l4-4z",
   up: "m6 15 6-6 6 6",
+  info: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 8h.01M11 12h1v4h1",
 };
 
 function icon(name) {
@@ -447,6 +463,7 @@ async function flush() {
     if (w.has("msgs") && S.spaces.length) await loadMessages();
     if (w.has("side")) await loadSidebar();
     if (w.has("members")) await loadMembers();
+    if (w.has("dev")) await renderDevice();
   } catch (e) {
     console.error(e);
   }
@@ -456,6 +473,7 @@ async function flush() {
 
 async function loadSidebar() {
   S.spaces = await rpc("spaces");
+  S.mine = await rpc("devices").catch(() => S.mine ?? []);
   if (!cur()) {
     const saved = store.get("sid");
     const s = S.spaces.find((x) => x.id === saved && !x.dm) ??
@@ -562,6 +580,7 @@ function nearBottom() {
 // ---------- selection ----------
 
 function select(sid, ch) {
+  S.dev = null;
   S.sid = sid;
   const s = cur();
   if (s?.closed) quiet(call("hide", { space: sid, on: false }));
@@ -644,7 +663,17 @@ function renderSidebar() {
         store.set("fold.closed", fold ? "0" : "1");
         renderSidebar();
       } }, icon("chevron"), h("span", { class: "name" },
-      `Closed (${shut.length})`)), !fold && dmList(shut)]);
+      `Closed (${shut.length})`)), !fold && dmList(shut),
+    h("div", { class: "space dms" }, h("span", { class: "name" }, "Devices"),
+      h("button", { class: "gear", title: "Add device", onclick: linkDevice },
+        icon("plus"))),
+    devices().map((d) => h("div", {
+      class: "channel dm" + (S.dev?.id === d.id ? " active" : ""),
+      title: d.own ? "Yours: text and files, device to device" :
+        `${d.uname ?? "Theirs"}: files, device to device`,
+      onclick: () => openDevice(d), role: "button", tabindex: 0,
+    }, icon("phone"), h("span", { class: "name" }, devLabel(d)),
+    badge(S.busy?.get(d.id) ?? 0)))]);
   renderUserPanel();
 }
 
@@ -894,6 +923,8 @@ function renderUserPanel() {
 }
 
 function renderHeader() {
+  $("device").classList.toggle("hidden", !S.dev);
+  if (S.dev) return deviceHeader();
   const s = cur();
   const ch = chan();
   const parent = inThread() &&
@@ -1712,7 +1743,6 @@ function lightbox(src, f) {
       } }, android ? "Share" : "Save"))));
 }
 
-const SEALED = 5 * 2 ** 30; // what storage nodes keep without their password
 const PART = 4 << 20;
 const b64 = (blob) => new Promise((ok) => {
   const r = new FileReader();
@@ -1720,35 +1750,34 @@ const b64 = (blob) => new Promise((ok) => {
   r.readAsDataURL(blob);
 });
 
-async function addFiles(list, keep) {
+/** From here a file goes directly, device to device: no storage node
+ * keeps it, its members fetch it from this device at full speed. */
+const DIRECT = 2 ** 30;
+
+async function addFiles(list) {
   for (const file of list) {
-    let here = keep, password = null;
-    if (!keep && file.size > SEALED) {
-      const pw = await bigFile(file);
-      if (pw == null) continue;
-      if (pw === SHARE) here = true;
-      else password = pw;
-    }
-    const f = await (here ? offerFile(file) : sealFile(file, password))
+    const big = file.size >= DIRECT;
+    if (big) toast(`${file.name}: sent directly from this device`);
+    const f = await (big ? offerFile(file) : sealFile(file, null))
       .catch(() => null);
     if (f) S.files.push(f);
     renderFilesBar();
   }
 }
 
-const SHARE = Symbol("share");
-// Past 5 GB: the storage node's password, or served from here instead.
-const bigFile = (file) => modal((finish) => {
-  const pw = h("input", { type: "password", placeholder: "Its password" });
-  return h("div", {}, h("div", { class: "m-body" },
-    h("h2", {}, `${file.name} is over 5 GB`),
-    h("p", { class: "sub" }, "Storage nodes keep files this big only with " +
-      "their password. Or share it from this device: members get it while " +
-      "you are online."), pw),
-  foot(cancel(finish), h("button", { class: "btn grey",
-    onclick: () => finish(SHARE) }, "Share from here"),
-  h("button", { class: "btn", onclick: () => finish(pw.value) }, "Upload")));
-});
+/** Picked or dropped on a desktop: by path, never copied. */
+async function addPaths(list) {
+  for (const { path, size } of list) {
+    const name = path.split(/[\\/]/).pop();
+    const big = size >= DIRECT;
+    if (big) toast(`${name}: sent directly from this device`);
+    const f = await (big ? call("offer", { space: S.sid, path, name })
+      : call("seal", { space: S.sid, path, name, password: null }))
+      .catch(() => null);
+    if (f) S.files.push(f);
+    renderFilesBar();
+  }
+}
 
 const sealFile = async (file, password) => call("seal", { space: S.sid,
   path: await upload(file), name: file.name, password });
@@ -1778,16 +1807,6 @@ async function upload(file) {
 }
 
 /** Desktops: files offered in place (any size, no copy). */
-async function offerPaths() {
-  const paths = await invoke("pick").catch(() => []);
-  for (const path of paths) {
-    toast(`Sharing ${path.split(/[\\/]/).pop()} from this device…`);
-    const f = await call("offer", { space: S.sid, path }).catch(() => null);
-    if (f) S.files.push(f);
-    renderFilesBar();
-  }
-}
-
 function renderFilesBar() {
   const bar = $("files-bar");
   bar.classList.toggle("hidden", !S.files.length);
@@ -1953,6 +1972,196 @@ function renderMembers() {
   if (S.msgs.length) renderMessages(true);
 }
 
+// ---------- devices ----------
+
+/** Devices we talk to directly: our others, and others' we sent to or
+ * heard from (kept here, the latest 20). */
+function devices() {
+  const ours = (S.mine ?? []).filter((d) => !d.this)
+    .map((d) => ({ id: d.id, name: d.name, own: true }));
+  let theirs = [];
+  try {
+    theirs = JSON.parse(store.get("peers") ?? "[]");
+  } catch {}
+  return [...ours, ...theirs.filter((d) => !ours.some((o) => o.id === d.id))];
+}
+
+function remember(d) {
+  if (d.own) return;
+  const rest = devices().filter((x) => !x.own && x.id !== d.id);
+  const { id, name, user, uname } = d;
+  store.set("peers", JSON.stringify([{ id, name, user, uname }, ...rest]
+    .slice(0, 20)));
+}
+
+const devLabel = (d) => d.own ? d.name ?? short(d.id)
+  : `${d.uname ?? short(d.user ?? d.id)} · ${d.name ?? short(d.id)}`;
+
+/** One device, as a DM is one person: its transfers and texts. */
+function openDevice(d) {
+  S.dev = d;
+  remember(d);
+  document.body.classList.remove("drawer");
+  const input = h("textarea", { rows: 1, maxLength: MAX_HAND,
+    placeholder: d.own ? `Text to ${d.name ?? "it"}` : "Files only",
+    disabled: !d.own });
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    try {
+      await call("hand", { device: d.id, text });
+    } catch {
+      return;
+    }
+    said(d.id, text, true);
+    input.value = "";
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+  // A phone or a browser knows no paths: its files are copied in first.
+  const files = h("input", { type: "file", multiple: true, hidden: true,
+    onchange: async (e) => {
+      const list = [...e.target.files];
+      e.target.value = "";
+      for (const f of list) {
+        const path = await upload(f).catch(() => null);
+        if (path) sendFiles([{ path, name: f.name }]);
+      }
+    } });
+  const attach = h("button", { title: "Send files (any size)",
+    onclick: () => native ? invoke("pick").then(sendFiles, () => {})
+      : files.click() }, icon("clip"));
+  put($("device"), h("div", { class: "log" }),
+    h("div", { class: "box" }, files, attach, input,
+      h("button", { title: "Send", onclick: send, disabled: !d.own },
+        icon("up"))));
+  renderSidebar();
+  renderHeader();
+  renderDevice();
+}
+
+const MAX_HAND = 4000;
+
+function deviceHeader() {
+  const d = S.dev;
+  put($("chat-header").querySelector(".title"), icon("phone"),
+    h("span", {}, devLabel(d)));
+  for (const id of ["scroller", "composer", "members", "empty", "call",
+    "members-btn", "pins-btn", "call-btn", "search-btn", "latest"]) {
+    $(id).classList.add("hidden");
+  }
+  put($("net"));
+}
+
+/** Files to the open device, each by path; it says yes on its side. */
+async function sendFiles(list) {
+  const d = S.dev;
+  for (const { path, name } of list) {
+    await call("send_to", { device: d.id, path, name }).catch(() => null);
+  }
+  schedule("dev");
+}
+
+/** Text a device of ours handed this one, or this one handed it. */
+function said(dev, text, me) {
+  S.texts ??= new Map();
+  const v = S.texts.get(dev) ?? [];
+  v.push({ text, me, ts: Date.now() });
+  S.texts.set(dev, v.slice(-100));
+  if (S.dev?.id === dev) schedule("dev");
+}
+
+const rate = (b) => `${amount(b)}/s`;
+const STATE = { offered: "Offered", waiting: "Waiting", running: "",
+  done: "Done", failed: "Failed", declined: "Declined",
+  cancelled: "Cancelled" };
+
+async function renderDevice() {
+  const d = S.dev;
+  const all = await rpc("transfers").catch(() => []);
+  // The sidebar's count of what moves now, per device.
+  S.busy = new Map();
+  for (const t of all) {
+    if (t.state === "running") S.busy.set(t.device, (S.busy.get(t.device) ?? 0) + 1);
+  }
+  const log = d && $("device").querySelector(".log");
+  if (!log || S.dev !== d) return;
+  const mine = all.filter((t) => t.device === d.id).map((t) => ({ t }));
+  const texts = (S.texts?.get(d.id) ?? []).map((x) => ({ x }));
+  const row = ({ t, x }) => x ? h("div", { class: "said" + (x.me ? " me" : "") },
+    h("small", {}, new Date(x.ts).toLocaleTimeString()), x.text,
+    h("button", { class: "gear", title: "Copy", onclick: () => copy(x.text) },
+      icon("copy")))
+    : h("div", { class: "xfer " + t.state, title: t.path ?? t.error ?? "" },
+      icon(t.out ? "up" : "down"),
+      h("div", { class: "what" }, h("b", {}, t.name),
+        h("small", {}, [STATE[t.state], `${size(t.done)} / ${size(t.size)}`,
+          t.state === "running" && rate(t.rate), t.error].filter(Boolean)
+          .join(" · ")),
+        h("progress", { max: t.size || 1, value: t.done })),
+      !t.out && t.state === "offered" && h("button", { class: "btn",
+        onclick: () => take(t) }, "Save"),
+      ["offered", "waiting", "running"].includes(t.state) &&
+        h("button", { class: "btn grey", title: "Stop it",
+          onclick: () => quiet(call(!t.out && t.state === "offered"
+            ? "decline" : "cancel", { id: t.id }).then(() => schedule("dev"))) },
+        icon("x")));
+  put(log, mine.length + texts.length ? [...texts, ...mine].map(row)
+    : h("p", { class: "note" }, d.own
+      ? "Text and files, straight to this device: nothing kept anywhere else."
+      : "Files, straight to this device, at full speed. It says yes first."));
+}
+
+/** An offered file, saved: where downloads go, or (a desktop) a folder
+ * picked. */
+async function take(t, pick) {
+  const dir = await invoke(pick ? "pick_dir" : "downloads").catch(() => null);
+  if (!dir) return;
+  await quiet(call("accept", { id: t.id, dir }));
+  schedule("dev");
+}
+
+/** A device offers a file: whose, what, how big; save, or not. */
+async function incomingFile(e) {
+  const own = (S.mine ?? []).find((d) => d.id === e.device);
+  const d = own ? { id: e.device, name: own.name, own: true }
+    : { id: e.device, user: e.user, uname: e.user && nameOf(e.user) };
+  if (!own) {
+    const ds = await call("devices_of", { user: e.user }).catch(() => []);
+    d.name = ds.find((x) => x.id === e.device)?.name ?? null;
+  }
+  remember(d);
+  renderSidebar();
+  const go = await modal((finish) => h("div", {},
+    h("div", { class: "m-body" }, h("h2", {}, e.name),
+      h("p", { class: "sub" }, `${size(e.size)} from ${devLabel(d)}`)),
+    foot(h("button", { class: "btn link", onclick: () => finish("no") },
+      "Decline"),
+    native && h("button", { class: "btn grey", onclick: () => finish("pick") },
+      "Save to…"),
+    h("button", { class: "btn", onclick: () => finish("save") }, "Save"))));
+  if (go === "no") quiet(call("decline", { id: e.id }));
+  else if (go) await take(e, go === "pick");
+  openDevice(d);
+}
+
+/** A member's devices, to send to one. */
+async function theirDevices(m) {
+  const ds = await call("devices_of", { user: m.id }).catch(() => null);
+  if (!ds?.length) return toast(`No device of ${m.name} known yet`, true);
+  const pick = ds.length === 1 ? ds[0] : await modal((finish) =>
+    h("div", { class: "m-body" }, h("h2", {}, `${m.name}'s devices`),
+      ds.map((x) => h("button", { class: "choice", onclick: () => finish(x) },
+        icon("phone"), x.name ?? short(x.id),
+        h("small", {}, ` · wrote ${ago(x.seen)}`)))));
+  if (pick) openDevice({ id: pick.id, name: pick.name, user: m.id,
+    uname: m.name });
+}
+
 // ---------- popovers ----------
 
 let closePop = null;
@@ -2013,8 +2222,8 @@ function closeDm(d) {
   schedule("side");
 }
 
-const levels = (s) => [["All", "All messages"], ["Mentions", "Only @mentions"],
-  ["Off", "Nothing"]].map(([level, text]) => [
+const levels = (s) => [["All", "all"], ["Mentions", "@mentions"],
+  ["Off", "off"]].map(([level, text]) => [
   (s.level === level ? "● " : "○ ") + "Notify: " + text, "chat",
   () => quiet(call("set_level", { space: s.id, level })
     .then(() => schedule("side")))]);
@@ -2141,6 +2350,7 @@ function memberCard(id, anchor, align) {
   if (!isMe(id)) {
     actions.push(act("Message", () => startDm(id)));
     actions.push(act("Call", () => startDm(id, true), "green"));
+    actions.push(act("Send file", () => theirDevices(m), "grey"));
     const mention = () => insert($("input"), `@${m.name} `);
     if (!s?.dm) actions.push(act("Mention", mention, "grey"));
     if (s?.admin && id !== s.owner && (ownerMe || m.role !== "Admin")) {
@@ -2355,12 +2565,10 @@ async function showCode({ title, label, code, note, secret, space }) {
 async function addSpace() {
   const v = await modal((finish) => h("div", { class: "m-body" },
     h("h2", {}, "Add a space"),
-    h("p", { class: "sub" }, "Spaces live only on their members' devices. " +
-      "There is nothing to sign up for."),
-    h("button", { class: "choice", onclick: () => finish("create") },
-      icon("plus"), "Create my own"),
-    h("button", { class: "choice", onclick: () => finish("join") },
-      icon("link"), "Join with an invite")));
+    choice("plus", "Create", "A space of your own: it lives on its " +
+      "members' devices", () => finish("create")),
+    choice("link", "Join", "With an invite or a short code",
+      () => finish("join"))));
   if (v === "create") createFlow();
   if (v === "join") joinFlow();
 }
@@ -2484,14 +2692,15 @@ async function welcome() {
   if (S.me.name !== "anon" || S.spaces.some((x) => !x.self)) return;
   const pick = await modal((finish) => h("div", { class: "m-body" },
     h("h2", {}, "Welcome to chatir"),
-    h("p", { class: "sub" }, "Private, peer-to-peer chat: no servers, no " +
-      "accounts, no phone number. Everything is end-to-end encrypted."),
-    h("button", { class: "choice", onclick: () => finish("new") },
-      icon("plus"), "I'm new to chatir"),
-    h("button", { class: "choice", onclick: () => finish("link") },
-      icon("link"), "I use chatir on another device"),
-    h("button", { class: "choice", onclick: () => finish("join") },
-      icon("userPlus"), "I have an invite")));
+    h("p", { class: "sub" }, "Private chat, device to device. ",
+      info("No servers, no accounts, no phone number: end-to-end " +
+        "encrypted, kept on your devices and your spaces' members'.")),
+    Object.assign(choice("plus", "Start", "A new identity, kept on this " +
+      "device", () => finish("new")), { autofocus: true }),
+    choice("link", "Link to my other device", "Become you, as you are on " +
+      "a device where you already use chatir", () => finish("link")),
+    choice("userPlus", "Join with an invite", "A code someone sent you",
+      () => finish("join"))));
   if (pick === "new") await named();
   if (pick === "link") await linkFlow();
   if (pick === "join") await joinFlow();
@@ -2543,10 +2752,16 @@ async function banFlow(m, on) {
 const TABS = { account: "Account", devices: "Devices", privacy: "Privacy",
   look: "Appearance", network: "Network", about: "About" };
 
-const toggle = (title, small, checked, change) => h("label",
-  { class: "switch" }, h("span", {}, title, h("small", {}, small)),
-  h("input", { type: "checkbox", checked,
-    onchange: (e) => change(e.target.checked) }), h("i"));
+const toggle = (title, small, checked, change) => {
+  const [b, why] = info(small);
+  return h("label", { class: "switch" }, h("span", {}, title, b, why),
+    h("input", { type: "checkbox", checked,
+      onchange: (e) => change(e.target.checked) }), h("i"));
+};
+
+/** A button to a flow of its own: an icon, a word or two, a tooltip. */
+const choice = (ic, label, title, fn, cls = "") => h("button",
+  { class: "choice " + cls, title, onclick: fn }, icon(ic), label);
 
 /** Every setting of yours and this device's, by tab, from one door: the
  * logo, your name, Note to self. A flow of its own (a code, a list)
@@ -2587,52 +2802,54 @@ const TAB = {
     });
     name.addEventListener("keydown", (e) => e.key === "Enter" && name.blur());
     return [
-      h("label", {}, "Display name"), name,
-      h("p", { class: "note" }, "What the members of your spaces see."),
-      h("label", {}, "User ID (your public key)"),
+      h("label", {}, "Name ", info("What the members of your spaces see.")),
+      name,
+      h("label", {}, "ID ", info("Your public key. You are a key kept on " +
+        "your devices: no server, no account, no phone number.")),
       h("div", { class: "row" },
         h("input", { class: "field mono", type: "text", value: S.me.id,
           readOnly: true }),
-        h("button", { class: "btn grey",
-          onclick: () => copy(S.me.id, "ID copied") }, "Copy")),
-      h("button", { class: "choice", onclick: go(myCard) }, icon("userPlus"),
-        "Your contact code"),
-      h("p", { class: "note" }, "You are a key kept on your devices: no " +
-        "server, no account, no phone number. Messages are end-to-end " +
-        "encrypted; read positions stay on each device."),
+        h("button", { class: "btn grey", title: "Copy",
+          onclick: () => copy(S.me.id, "ID copied") }, icon("copy"))),
+      choice("userPlus", "Contact code", "A code anyone can add you by, " +
+        "with no space in common", go(myCard)),
     ];
   },
   devices: (go) => {
-    const list = h("div", {}, h("p", { class: "note" }, "Listing…"));
+    const list = h("div", {}, h("p", { class: "note" }, "…"));
     rpc("devices").then((ds) => put(list, ds.map((d) => h("div",
       { class: "row shared" },
-      h("span", {}, h("b", {}, d.name ?? "Unnamed"),
-        h("small", {}, ` · ${d.device} · ` +
-          (d.this ? "this device" : `wrote ${ago(d.seen)}`))),
-      !d.this && h("button", { class: "btn grey",
-        onclick: go(() => sendTo(d)) }, "Send"),
-      h("button", { class: "btn grey", onclick: go(() =>
-        rename(d.id, d.name, () => settings("devices"))) }, "Rename")))),
+      h("span", {}, icon("phone"), " ", h("b", {}, d.name ?? "Unnamed"),
+        h("small", {}, d.this ? " · this one" : ` · ${ago(d.seen)}`)),
+      h("span", {},
+        !d.this && h("button", { class: "gear", title: "Open",
+          onclick: go(() => openDevice({ id: d.id, name: d.name, own: true })) },
+        icon("chat")),
+        h("button", { class: "gear", title: "Rename", onclick: go(() =>
+          rename(d.id, d.name, () => settings("devices"))) },
+        icon("pencil")))))),
     () => put(list));
     return [
-      h("p", { class: "sub" }, "Each device of yours is you: same spaces, " +
-        "same messages. One you do not know means your link code leaked."),
+      h("label", {}, "Your devices ", info("Each is you: same spaces, same " +
+        "messages. One you do not know means your link code leaked.")),
       list,
-      h("button", { class: "choice", onclick: go(linkDevice) },
-        icon("userPlus"), "Add another device"),
-      h("button", { class: "choice", onclick: go(linkFlow) }, icon("link"),
-        "Link this device to your other device"),
-      h("button", { class: "choice", onclick: go(profilesFlow) },
-        icon("users"), "Profiles and signing out"),
-      h("button", { class: "choice danger", onclick: go(retireFlow) },
-        icon("trash"), "A device was lost or stolen"),
+      choice("userPlus", "Add device", "Show a code another device of yours " +
+        "takes to become you", go(linkDevice)),
+      choice("link", "Link this device", "Take a code from your other " +
+        "device: this one becomes you", go(linkFlow)),
+      choice("users", "Profiles", "Other identities on this device, and " +
+        "signing out", go(profilesFlow)),
+      choice("trash", "Lost device", "Retire this identity everywhere: " +
+        "whoever has the lost device holds your key", go(retireFlow),
+      "danger"),
     ];
   },
   privacy: () => [
     toggle("Invisible", "Others see you offline; typing stays private. " +
       "Calls you join still show.", S.me.invisible, (on) => setInvisible(on)),
     toggle("Private notifications", "Banners say only that something " +
-      "came, not who sent it or what it says.", S.private,
+      "came, not who sent it or what it says; screenshots and the lock " +
+      "screen show nothing of chatir.", S.private,
     (on) => invoke("private", { on }).then((v) => S.private = v)),
     toggle("Silent", "On this device only: calls and messages still show, " +
       "with no ring or sound.", S.silent,
@@ -2641,8 +2858,6 @@ const TAB = {
       "the site (for a paper, arXiv, PubMed or Crossref) sees your address " +
       "then. Nobody else asks it.", previews(),
     (on) => store.set("previews", on ? "1" : "0")),
-    h("p", { class: "note" }, "How loud each space is (all messages, " +
-      "@mentions, nothing): its own menu, under Notify."),
     android && notifyCheck(),
   ],
   look: (go) => [
@@ -2660,28 +2875,27 @@ const TAB = {
       }, swatch(k), v))),
     toggle("Vim keys", "Esc in the composer picks messages: j/k, r, e, dd; " +
       "? lists them.", vimKeys(), (on) => store.set("vim", on ? "1" : "0")),
-    !mobile() && h("button", { class: "choice", onclick: go(keysHelp) },
-      icon("key"), "Keyboard shortcuts"),
+    !mobile() && choice("key", "Shortcuts", "Every keyboard shortcut",
+      go(keysHelp)),
   ],
   network: (go) => [
-    h("p", { class: "sub" }, "No server holds your messages: members' " +
-      "devices do, and storage nodes you run keep them while everyone is " +
-      "away."),
-    h("button", { class: "choice", onclick: go(() => storageFlow()) },
-      icon("disk"), "Storage nodes"),
-    h("button", { class: "choice", onclick: go(sharedFlow) }, icon("file"),
-      "Files shared from this device"),
-    h("button", { class: "choice", onclick: go(usageFlow) }, icon("cloud"),
-      "Network use, relays and connections"),
+    h("label", {}, "Where messages wait ", info("No server holds them: " +
+      "members' devices do, and storage nodes you run keep them while " +
+      "everyone is away.")),
+    choice("disk", "Storage nodes", "Always-on devices that keep your " +
+      "spaces' sealed messages and files", go(() => storageFlow())),
+    choice("file", "Shared files", "Files this device serves, each to one " +
+      "space's members", go(sharedFlow)),
+    choice("cloud", "Network", "What chatir sent and received, relays, " +
+      "and a check of your connections", go(usageFlow)),
   ],
   about: (go) => [
-    h("p", { class: "sub" }, `chatir ${S.me.version} on ` +
+    h("p", { class: "sub" }, `chatir ${S.me.version} · ` +
       `${S.me.device_name || S.me.device}`),
-    h("button", { class: "choice", onclick: go(() => updates(false)) },
-      icon("down"), "Check for updates"),
-    h("button", { class: "choice", onclick: go(() =>
-      openLink("https://github.com/cablab-ucf/chatir")) }, icon("link"),
-    "Source code (GPL-3.0-or-later)"),
+    choice("down", "Updates", "Check for a newer chatir",
+      go(() => updates(false))),
+    choice("link", "Source", "GPL-3.0-or-later, on GitHub",
+      go(() => openLink("https://github.com/cablab-ucf/chatir"))),
   ],
 };
 
@@ -3036,9 +3250,10 @@ async function linkDevice() {
 function quickSwitch(start = "") {
   const all = S.spaces.flatMap((s) => s.channels.map((ch) => ({ s, ch })));
   const dmWith = new Set(S.spaces.filter((s) => s.dm).map((s) => s.with));
-  let people = [], redraw = () => {};
+  let people = [], devs = null, redraw = () => {};
   everyone().then((v) => {
     people = v.filter(({ m }) => !dmWith.has(m.id));
+    devs = null; // their devices, asked again with everyone known
     redraw();
   });
   modal((finish) => {
@@ -3047,19 +3262,35 @@ function quickSwitch(start = "") {
     const list = h("div", { class: "qs-list" });
     let sel = 0;
     let hits = [];
-    const label = ({ s, ch, m }) =>
-      m ? `@${m.name}` : s.dm ? `@${s.name}` : ch.name;
+    const label = ({ s, ch, m, d }) => d ? `@@${devLabel(d)}`
+      : m ? `@${m.name}` : s.dm ? `@${s.name}` : ch.name;
     const draw = () => {
       const q = input.value.toLowerCase();
-      const hit = (x) => `${label(x)} ${x.s.name}`.toLowerCase().includes(q);
-      const them = q.startsWith("@") ? people : [];
-      hits = [...all, ...them].filter(hit).slice(0, 50);
+      // @@: devices, ours and those of everyone we share a space with.
+      if (q.startsWith("@@") && !devs) {
+        devs = devices().map((d) => ({ d }));
+        Promise.all(people.map(({ m }) => call("devices_of", { user: m.id })
+          .then((ds) => ds.map((x) => ({ d: { id: x.id, name: x.name,
+            user: m.id, uname: m.name } })), () => [])))
+          .then((v) => {
+            const seen = new Set(devs.map((x) => x.d.id));
+            devs.push(...v.flat().filter((x) => !seen.has(x.d.id)));
+            draw();
+          });
+      }
+      const hit = (x) => `${label(x)} ${x.s?.name ?? ""}`.toLowerCase()
+        .includes(q.replace(/^@@/, "")) || (x.d && q === "@@");
+      const them = q.startsWith("@@") ? devs ?? []
+        : q.startsWith("@") ? people : [];
+      hits = [...(q.startsWith("@@") ? [] : all), ...them].filter(hit)
+        .slice(0, 50);
       sel = Math.min(sel, Math.max(0, hits.length - 1));
       list.replaceChildren(...hits.map((x, i) => h("button", {
         class: i === sel ? "sel" : "", onclick: () => finish(x),
-      }, x.m ? avatar(x.m.id, x.m.name, "xs", x.m.online)
+      }, x.d ? icon("phone") : x.m ? avatar(x.m.id, x.m.name, "xs", x.m.online)
         : icon(x.s.dm ? "chat" : "hash"), h("span", {}, label(x)),
-      h("small", {}, x.m ? "message" : x.s.dm ? "" : x.s.name))));
+      h("small", {}, x.d ? "device" : x.m ? "message"
+        : x.s.dm ? "" : x.s.name))));
     };
     input.addEventListener("input", () => { sel = 0; draw(); });
     input.addEventListener("keydown", (e) => {
@@ -3074,9 +3305,10 @@ function quickSwitch(start = "") {
     return h("div", { class: "m-body" },
       h("h2", {}, start ? "Message someone" : "Quick Switcher"),
       h("p", { class: "sub" }, start ? "Type a name: everyone you share a " +
-        "space with." : "Channels and DMs; @ for anyone to message."),
+        "space with." : "Channels and DMs; @ a person, @@ a device."),
       input, list);
   }).then(async (x) => {
+    if (x?.d) return openDevice(x.d);
     if (!x?.m) return x && select(x.s.id, x.ch.id);
     const id = await call("dm", { space: x.s.id, user: x.m.id })
       .catch(() => null);
@@ -3673,20 +3905,18 @@ function wire() {
   $("snap-btn").append(icon("cam"));
   $("snap-btn").onclick = snap;
   $("snap-btn").classList.toggle("hidden", !navigator.mediaDevices);
-  const choose = (keep) => ((S.keep = keep), $("picker").click());
-  $("attach-btn").onclick = (e) => menu(e.currentTarget, [
-    ["Upload: storage nodes keep it (to 5 GB)", "clip", () => choose(false)],
-    ["Share from this device (any size)", "disk",
-      () => (android || ios ? choose(true) : offerPaths())],
-  ]);
+  $("attach-btn").title = "Attach (from 1 GB: directly, device to device)";
+  $("attach-btn").onclick = () => native
+    ? invoke("pick").then(addPaths, () => {}) : $("picker").click();
   $("picker").onchange = (e) => {
-    addFiles([...e.target.files], S.keep);
+    addFiles([...e.target.files]);
     e.target.value = "";
   };
   addEventListener("dragover", (e) => e.preventDefault());
+  // A desktop's drops come by path ("dropped"); elsewhere, as files.
   addEventListener("drop", (e) => {
     e.preventDefault();
-    if (chan() && !cur()?.locked) addFiles([...e.dataTransfer.files]);
+    if (!native && chan() && !cur()?.locked) addFiles([...e.dataTransfer.files]);
   });
   addEventListener("paste", (e) => {
     const files = [...(e.clipboardData?.files ?? [])];
@@ -3836,9 +4066,15 @@ async function start() {
     } else if (e.t === "call") {
       schedule("side");
     } else if (e.t === "handed") {
-      showCode({ title: `From ${e.name ?? short(e.from)}`, label: "Sent to " +
-        "this device alone", code: e.text, note: "Nothing of it is kept " +
-        "anywhere else." });
+      said(e.from, e.text, false);
+      if (S.dev?.id !== e.from) {
+        toast(`${e.name ?? short(e.from)}: ${e.text.slice(0, 80)}`, false, 8e3)
+          .onclick = () => openDevice({ id: e.from, name: e.name, own: true });
+      }
+    } else if (e.t === "incoming") {
+      incomingFile(e);
+    } else if (e.t === "transfer") {
+      schedule("dev");
     } else if (e.t === "declined") {
       if (isMe(e.user)) {
         if (calling) $("ring").close(); // declined on another of ours
@@ -3866,6 +4102,11 @@ async function start() {
     }
   });
   await T.event.listen("open-url", ({ payload }) => openUrl(payload));
+  // A desktop's drops, by path: to the open device, else the channel.
+  await T.event.listen("dropped", ({ payload }) => {
+    if (S.dev) sendFiles(payload);
+    else if (chan() && !cur()?.locked) addPaths(payload);
+  }).catch(() => {});
   // Up while it fetches, however long: gone once saved or failed.
   await T.event.listen("saving", ({ payload }) => {
     S.saving?.remove();

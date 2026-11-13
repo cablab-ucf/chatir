@@ -29,10 +29,10 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] Android and iOS code edited since v0.4.0 built them ("private"
-      keeps chatir out of screenshots and the lock screen, Alerts checks
-      pushir's owner, iOS backups exclude the data folder): built only by
-      a release run, which the next one is
+- [ ] Run v0.4.1 on an Android phone and an iPhone: "private" keeps
+      chatir out of screenshots and the lock screen, Alerts checks
+      pushir's owner, iOS backups leave the data folder out (built by its
+      release run, never run)
 - [ ] Run the app (each OS) with its narrowed CSP and capabilities
       (`ipc:` only in connect-src; event listen/unlisten and clipboard
       write alone): built and validated, never run
@@ -48,6 +48,16 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       0.4.0 drops, and a pass before the walk (as `forfeit`): not yet
       worth it. A demoted admin backdating admin ops: the same list on
       the demoting `Role`, the same cost
+
+## Files device to device (`send.rs`)
+- [ ] The app and `--web` let `send_to` read only a picked file, and
+      `accept` write only where the user chose, as they gate offers
+- [ ] Each stream waits a round trip between blocks: ask the next before
+      the last ends, for links far away (100 ms: about 7 Gbit/s at 8×8)
+- [ ] Fewer streams on a slow link: 64 blocks in flight finish late, so
+      little is kept if it drops early
+- [ ] A chat offer's sender sees no transfers (who fetched, how far)
+- [ ] Measure between two machines, and on a phone's battery
 
 ## Delivery
 - [ ] One DM per person: one row, histories merged; `dm` and calls use the

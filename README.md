@@ -50,6 +50,10 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
   `--big-password`), any size shared from your device. Media to 25 MB is
   kept by the space's storage nodes, so it shows inline with the sender
   away.
+- Files straight to a device (yours, or someone's you share a space with),
+  and offers past 1 GiB in a chat: nothing hashed first, many streams over
+  eight connections, each 4 MiB block checked, resumed after a drop or a
+  restart (4 Gbit/s over loopback, both ends on one 4-core machine).
 - Voice and video calls with screen sharing; a call rings all of someone's
   devices, answered or declined on one, the others stop.
 - Delivery marks: here only, left here, kept by a storage node, on their
@@ -118,6 +122,9 @@ rate limit for relayed traffic.
 
 - Ops are sealed end to end; relays and storage nodes see tags, times,
   sizes and endpoint ids. Peers see each other's addresses.
+- A file sent device to device is checked block by block as its
+  sender's device read it, not against a hash in a post: that device
+  vouches for it (one rewritten since it was offered is not sent).
 - Every QUIC handshake is post-quantum (X25519MLKEM768, aws-lc-rs) or
   refused, as is the hop to the push relay; signatures are Ed25519.
 - No forward secrecy within an epoch; keys rotate on bans and on request.

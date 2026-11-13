@@ -130,6 +130,9 @@
     },
     open_link: ({ url }) => void open(url, "_blank", "noopener,noreferrer"),
     pick: () => [],
+    pick_dir: () => null,
+    // The node's own folder: a browser chooses none there.
+    downloads: () => post("downloads", ""),
     private: () => false,
     opened: () => null,
     update: () => null,
@@ -141,6 +144,7 @@
     link: no("link the node itself: chatir --link"),
   };
   window.__TAURI__ = {
+    web: true, // no paths here: files go as files
     core: {
       invoke: async (cmd, args, o) => {
         if (!calls[cmd]) throw `not in a browser (${cmd})`;

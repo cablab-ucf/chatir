@@ -190,10 +190,17 @@ pub struct File {
 
 /// An unsealed file's key: its sender's devices serve it.
 pub const OFFERED: Id = Id([0; 32]);
+/// Sent device to device (`send.rs`): `hash` is a random id its sender's
+/// device serves it under, unhashed.
+pub const DIRECT: Id = Id([0xff; 32]);
 
 impl File {
     pub fn offered(&self) -> bool {
         self.key == OFFERED
+    }
+
+    pub fn direct(&self) -> bool {
+        self.key == DIRECT
     }
 
     /// Safe to show and save: nothing hidden, nothing Windows reserves.
