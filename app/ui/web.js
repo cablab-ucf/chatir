@@ -117,15 +117,15 @@
     upload: (b, o) => post("upload", bytes(b), o?.headers),
     media,
     tune: ({ to }) => stream("api/tune", (f) => to.onmessage(f.buffer)),
-    // Fetched whole, then the browser's own download.
+    // Saved by the node, then the browser's own download of it by a
+    // one-time link: any size, never whole in this page.
     save: async ({ space, file }) => {
-      const b = bytes({ data: await calls.chatir({ call: { cmd: "file",
-        space, file } }) });
+      for (const cb of heard.get("saving") ?? []) cb({ payload: file.name });
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([b]));
+      a.href = await post("save", JSON.stringify({ cmd: "file", space,
+        file }));
       a.download = file.name;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 6e4);
       return file.name;
     },
     open_link: ({ url }) => void open(url, "_blank", "noopener,noreferrer"),

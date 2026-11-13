@@ -12,7 +12,8 @@ use chatir_core::{Node, api, crypto};
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use iroh::{RelayUrl, SecretKey};
 use serde_json::{Value, json};
-use std::{net::SocketAddr, path::Path, path::PathBuf, sync::Arc};
+use std::collections::HashMap;
+use std::{net::SocketAddr, path::Path, path::PathBuf, sync::Arc, sync::Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Semaphore, broadcast, broadcast::error::RecvError};
 use tokio::time::{Duration, timeout};
@@ -30,6 +31,9 @@ struct Web {
     n: Arc<Node>,
     token: String,
     up: PathBuf,
+    /// Files saved for the page, each behind a one-time link (`save`).
+    out: PathBuf,
+    saved: Mutex<HashMap<String, PathBuf>>,
     news: broadcast::Sender<Arc<str>>,
     cap: Semaphore,
 }
@@ -47,8 +51,11 @@ pub async fn run(
     // ties one run to the next.
     let token = HEXLOWER.encode(&crypto::rand::<32>());
     let (news, _) = broadcast::channel(256);
-    let up = dir.join("offered");
-    let w = Arc::new(Web { n, token, up, news, cap: Semaphore::new(256) });
+    let (up, out) = (dir.join("offered"), dir.join("saving"));
+    let _ = std::fs::remove_dir_all(&out); // the last run's, unfetched
+    let saved = Mutex::default();
+    let cap = Semaphore::new(256);
+    let w = Arc::new(Web { n, token, up, out, saved, news, cap });
     tokio::spawn(forward(w.clone()));
     if !addr.ip().is_loopback() {
         eprintln!(
@@ -213,7 +220,18 @@ async fn answer(
     kind: &str,
     body: Option<&[u8]>,
 ) -> std::io::Result<()> {
-    let len = body.map(|b| format!("content-length: {}\r\n", b.len()));
+    head(o, status, kind, body.map(|b| b.len() as u64)).await?;
+    o.write_all(body.unwrap_or_default()).await
+}
+
+/// A response's head; its body, of `len` if known, follows.
+async fn head(
+    o: &mut (impl AsyncWrite + Unpin),
+    status: &str,
+    kind: &str,
+    len: Option<u64>,
+) -> std::io::Result<()> {
+    let len = len.map(|n| format!("content-length: {n}\r\n"));
     let head = format!(
         "HTTP/1.0 {status}\r\ncontent-type: {kind}\r\n{}cache-control: \
         no-cache\r\nx-content-type-options: nosniff\r\nreferrer-policy: \
@@ -221,8 +239,7 @@ async fn answer(
         content-security-policy: {CSP}\r\n\r\n",
         len.unwrap_or_default()
     );
-    o.write_all(head.as_bytes()).await?;
-    o.write_all(body.unwrap_or_default()).await
+    o.write_all(head.as_bytes()).await
 }
 
 async fn exchange(
@@ -254,8 +271,10 @@ async fn request(
     tcp: bool,
 ) -> Result<Option<Req>> {
     let mut q = timeout(Duration::from_secs(5), read(r)).await??;
-    if q.api().is_none() {
-        return Ok(Some(q)); // the page: no body
+    // The page, and a saved file's one-time link (a browser's own
+    // download, which sends no token): no body.
+    if q.api().is_none_or(|c| q.method == "GET" && c.starts_with("save/")) {
+        return Ok(Some(q));
     }
     if !q.allowed(token, tcp) {
         return Ok(None);
@@ -265,7 +284,7 @@ async fn request(
 }
 
 async fn route(
-    w: &Web,
+    w: &Arc<Web>,
     q: Req,
     o: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
@@ -292,6 +311,7 @@ async fn route(
             };
             down(o, w.n.media(), bytes, None).await
         }
+        ("GET", c) if c.starts_with("save/") => give(w, &c[5..], o).await,
         ("POST", cmd) => match post(w, cmd, &q).await {
             Ok(v) => {
                 let b = v.to_string();
@@ -338,7 +358,7 @@ async fn down<T: Clone>(
     bytes: impl Fn(T) -> Vec<u8>,
     lag: Option<T>,
 ) -> Result<()> {
-    answer(o, "200 OK", "application/octet-stream", None).await?;
+    head(o, "200 OK", "application/octet-stream", None).await?;
     let mut next = lag.clone();
     loop {
         let x = match next.take() {
@@ -359,11 +379,35 @@ async fn down<T: Clone>(
     }
 }
 
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn hex32(s: &str) -> bool {
     s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-async fn post(w: &Web, cmd: &str, q: &Req) -> Result<Value> {
+/// A saved file, once, by its link: unknown or taken, 404.
+async fn give(
+    w: &Web,
+    link: &str,
+    o: &mut (impl AsyncWrite + Unpin),
+) -> Result<()> {
+    let p = lock(&w.saved).remove(link);
+    let f = match p {
+        Some(p) => tokio::fs::File::open(p).await.ok(),
+        None => None,
+    };
+    let Some(mut f) = f else {
+        return Ok(answer(o, "404 Not Found", "text/plain", Some(b"")).await?);
+    };
+    let len = f.metadata().await?.len();
+    head(o, "200 OK", "application/octet-stream", Some(len)).await?;
+    tokio::io::copy(&mut f, o).await?;
+    Ok(())
+}
+
+async fn post(w: &Arc<Web>, cmd: &str, q: &Req) -> Result<Value> {
     match cmd {
         "chatir" => {
             let c: api::Call = serde_json::from_slice(&q.body)?;
@@ -383,6 +427,23 @@ async fn post(w: &Web, cmd: &str, q: &Req) -> Result<Value> {
             // Sealed, an upload's plain copy goes.
             sealed.map(std::fs::remove_file);
             r
+        }
+        // Saved here (any size: `file` stops at 25 MB, in memory), then
+        // fetched by a one-time link the browser downloads itself.
+        "save" => {
+            let c = serde_json::from_slice(&q.body)?;
+            let api::Call::File { space, file } = c else { bail!("no file") };
+            let t = HEXLOWER.encode(&crypto::rand::<16>());
+            let p = w.n.save(&space, &file, &w.out.join(&t)).await?;
+            lock(&w.saved).insert(t.clone(), p);
+            // A minute to start it; then the link and its file are gone.
+            let (w, link) = (w.clone(), format!("api/save/{t}"));
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                lock(&w.saved).remove(&t);
+                let _ = std::fs::remove_dir_all(w.out.join(&t));
+            });
+            Ok(json!(link))
         }
         // A picked file in parts, as a page knows no paths.
         "upload" => {
@@ -431,4 +492,9 @@ async fn a_strangers_body_is_never_read() {
     assert!(request(&mut &r[..], "right", true).await.is_err());
     let page = b"GET / HTTP/1.1\r\n\r\n";
     assert!(request(&mut &page[..], "right", true).await.unwrap().is_some());
+    // A saved file's one-time link is its own secret; the rest want ours.
+    let save = b"GET /api/save/x HTTP/1.1\r\n\r\n";
+    assert!(request(&mut &save[..], "right", true).await.unwrap().is_some());
+    let events = b"GET /api/events HTTP/1.1\r\n\r\n";
+    assert!(request(&mut &events[..], "right", true).await.unwrap().is_none());
 }
