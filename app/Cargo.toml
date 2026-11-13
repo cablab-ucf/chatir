@@ -60,7 +60,7 @@ jni = "0.22"
 ndk-context = "0.1"
 # The phone's one pushir device, shared by every pushir app (pushir's
 # Android library, android/pushir): its JNI lives in our native library.
-pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "89a177ab8a67959f385637e6bb2627b78c387aae", features = ["jni"] }
+pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "04c89d01832e73df15c16977272ca0aaf1d3ef23", features = ["jni"] }
 
 [features]
 # Built without `cargo tauri` (package.nix): the page from the binary.
