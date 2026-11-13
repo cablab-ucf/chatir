@@ -18,7 +18,7 @@ curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install
   or track this repo in [Obtainium](https://obtainium.imranr.dev).
 - **iPhone**: [chatir.ipa](https://github.com/cablab-ucf/chatir/releases/latest/download/chatir.ipa)
   in [AltStore](https://altstore.io) or [SideStore](https://sidestore.io).
-- **Storage node** (always on): a space's *Storage Nodes → Run one on this
+- **Storage node** (always on): a space's *Storage nodes → Run one on this
   computer*, or `install.sh … | sh -s -- --server`, optionally with
   `--push-relay https://pushir.you.example`.
 - **NixOS**: `inputs.chatir.url = "github:cablab-ucf/chatir";` and
@@ -32,9 +32,10 @@ curl -fsSL https://github.com/cablab-ucf/chatir/releases/latest/download/install
   and, for calls, gstreamer plugins base, good, bad and libav.
 
 Other modes of `chatir`: `--web [ADDR]` (the app's page from your own node,
-default 127.0.0.1:4724, and a link through
-[irp](https://github.com/cablab-ucf/irp)'s page; the browser holds only a
-token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
+default 127.0.0.1:4724; the browser holds only a token, new each run; with
+`--web-link`, also a link from anywhere through
+[irp](https://github.com/cablab-ucf/irp)'s page, which then holds it),
+`--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
 `--doctor [WHO]` (times each route to someone; rings nothing).
 
 ## Features
@@ -60,7 +61,7 @@ token), `--api` (JSON on stdin/stdout, for bots and bridges), `--headless`,
   links; optional password. They are met at a relay: not on LAN only.
 - Search, Ctrl+K, vim keys; profiles, linked devices, themes, *Network
   use* and *Check connections*.
-- *Add to notes* ([loroh](https://github.com/cablab-ucf/siroh)) and *Copy Link*
+- *Add to notes* ([loroh](https://github.com/cablab-ucf/siroh)) and *Copy link*
   ([tydig](https://github.com/cablab-ucf/tydig)).
 
 ## How it works
@@ -122,15 +123,17 @@ rate limit for relayed traffic.
 - No forward secrecy within an epoch; keys rotate on bans and on request.
 - Authors date their own ops (at most ten minutes ahead), so a demoted
   admin's backdated ops stand until undone.
-- A linked device is you: lost, it is retired with the whole identity.
+- A linked device is you: lost, it is retired with the whole identity,
+  and whoever holds it can still add ops dated before the retirement.
 - pushir's relay learns when a device is sent to and its address, not by
   whom, for which space, or how much. A space's labels die with a rekey.
 - Presence is said, not polled: a device that dies without `Gone` looks
   present for about an hour.
 - An iPhone in the background is not told of messages (no APNs host).
 - Calls are for a handful of people; Macs and iPhones need WebKit 26.
-- First installs trust GitHub's TLS (and chatir's key where `minisign`
-  exists); updates are always checked. Unaudited.
+- First installs check chatir's key where `minisign` exists; without it,
+  they ask before trusting GitHub's TLS alone. Updates are always checked.
+  Unaudited.
 
 ## Layout
 

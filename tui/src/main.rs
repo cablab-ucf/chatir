@@ -42,10 +42,14 @@ struct Cli {
     #[arg(long)]
     api: bool,
     /// No interface: the app's page for your browser, here (default
-    /// 127.0.0.1:4724) and through a link from anywhere
+    /// 127.0.0.1:4724), with a token fresh each run
     #[arg(long, value_name = "ADDR", num_args = 0..=1,
         default_missing_value = "127.0.0.1:4724")]
     web: Option<std::net::SocketAddr>,
+    /// With --web: also a link from anywhere, through irp's page (which
+    /// then holds the token)
+    #[arg(long, requires = "web", conflicts_with = "lan")]
+    web_link: bool,
     /// Keep a storage node running here, from now on (as you)
     #[arg(long)]
     install: bool,
@@ -166,8 +170,9 @@ async fn main() -> Result<()> {
     let (api, web) = (c.api, c.web);
     let ui = !(c.serve || c.headless || c.api || web.is_some())
         && c.doctor.is_none();
-    // The web link rides irp's relays, or the first of ours; none on a LAN.
+    // The web link, if asked, rides irp's relays, or the first of ours.
     let relays = match &net {
+        _ if !c.web_link => None,
         Net::Default => Some(vec![]),
         Net::Relay(r) => Some(r.clone()),
         _ => None,

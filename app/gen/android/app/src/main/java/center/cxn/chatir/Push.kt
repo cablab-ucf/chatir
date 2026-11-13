@@ -26,6 +26,9 @@ object Wake {
   /** Hand Android's context back before the activity's runtime takes it. */
   @JvmStatic external fun release()
 
+  /** "Private notifications" is on, in this profile. */
+  @JvmStatic external fun veiled(dir: String): Boolean
+
   /** chatir's lane secret on the phone's mailbox (32 random bytes, kept);
    *  empty if it could not be kept. */
   @JvmStatic external fun lane(dir: String): ByteArray

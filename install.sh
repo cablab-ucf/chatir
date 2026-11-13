@@ -1,26 +1,47 @@
 #!/bin/sh
-# Self-updating chatir: curl -fsSL $R/install.sh | sh [-s -- --server]
+# Self-updating chatir: curl -fsSL $R/latest/download/install.sh | sh
+# [-s -- --server]
 # --server: an always-on storage node instead (a service); then
 # --push-relay URL#TOKEN, the pushir relay its devices' lanes go on.
 # Fetched by curl, nothing is quarantined: no Gatekeeper, no xattr.
 set -eu
-R=https://github.com/cablab-ucf/chatir/releases/latest/download
+R=https://github.com/cablab-ucf/chatir/releases
 case $(uname -m) in arm64 | aarch64) cpu=aarch64 ;; *) cpu=x86_64 ;; esac
 [ "$(uname -s)-$cpu" = Darwin-x86_64 ] &&
   { echo "chatir: Apple silicon only, for now; no Intel Mac build" >&2; exit 1; }
-# chatir's key: with minisign here, every file is checked as updates are;
-# without, said aloud.
+# The latest release, its files fetched by its tag: one release, whole.
+j=$(curl -fsSL "$R/latest/download/latest.json" | tr -d ' \n')
+v=$(printf %s "$j" | sed 's/.*"version":"\([^"]*\)".*/\1/')
+case $v in "" | *[!0-9.]*) echo "chatir: no version: $v" >&2; exit 1 ;; esac
+R=$R/download/v$v
+# chatir's key: with minisign here, each file is checked as updates are:
+# signed as itself, of this version. Without it, nothing stock checks
+# Ed25519 (not macOS's LibreSSL, Windows' .NET, Python), and a checker
+# fetched here would be vouched for by GitHub's TLS alone, as the files
+# are: so installing unchecked is asked for, never silent.
 KEY=RWQW5LH1agYG+mSdtDVXPOZJl9ANp4NS/IQ9lTqASnxSmJ4N33gv7Msy
-command -v minisign >/dev/null || echo "No minisign: nothing here is" \
-  "checked but GitHub's TLS (chatir checks its own updates)." >&2
+tab=$(printf '\t')
 check() {
   command -v minisign >/dev/null || return 0
   curl -fsSL "$1.sig" | base64 -d >"$2.minisig"
-  minisign -Vm "$2" -x "$2.minisig" -P "$KEY" | grep -q "file:${1##*/}" ||
-    { echo "$1: not signed by chatir" && exit 1; }
+  said=$(minisign -Vm "$2" -x "$2.minisig" -P "$KEY" |
+    sed -n 's/^Trusted comment: //p')
   rm -f "$2.minisig"
+  case $said in
+    *"${tab}file:${1##*/}${tab}version:$v") ;;
+    *) rm -f "$2"; echo "$1: not signed by chatir as v$v" >&2; exit 1 ;;
+  esac
 }
 get() {
+  command -v minisign >/dev/null || [ "${CHATIR_UNCHECKED:-}" = 1 ] || {
+    echo "chatir: no minisign here to check chatir's signature: only" \
+      "GitHub's TLS would vouch for it. Install minisign (brew, apt, dnf," \
+      "pacman) and run this again, or answer y (CHATIR_UNCHECKED=1 says so" \
+      "ahead)." >&2
+    printf 'Install unchecked? [y/N] ' >&2
+    read -r a 2>/dev/null </dev/tty && [ "$a" = y ] || exit 1
+    CHATIR_UNCHECKED=1 # asked once, for every file
+  }
   curl -fL --progress-bar "$1" -o "$2"
   check "$1" "$2"
 }
@@ -54,7 +75,7 @@ if [ -e /etc/NIXOS ]; then
 fi
 
 # The AppImage: one file, yours to replace, so updates need no password.
-url=$(curl -fsSL "$R/latest.json" | tr -d ' \n' |
+url=$(printf %s "$j" |
   sed "s/.*\"linux-$cpu-appimage\":{[^}]*\"url\":\"\([^\"]*\)\".*/\1/")
 app=$bin/chatir.AppImage
 mkdir -p "$bin" "$HOME/.local/share/applications" \

@@ -17,6 +17,7 @@ use iroh::{
     TransportAddr,
 };
 use iroh_blobs::BlobsProtocol;
+use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
 use iroh_gossip::api::{Event as Gossiped, GossipSender};
 use iroh_gossip::{Gossip, TopicId};
@@ -310,8 +311,8 @@ struct Book {
     offered: Vec<Offered>,
     st: State,
     knocks: Vec<Invite>,
-    // A member said our key is one a later epoch left us out of.
-    out: bool,
+    // Each rekey's envelope, by its op's id: shown to whoever it left out.
+    rekeys: HashMap<Id, Id>,
     // Refused, oldest first: indexed as had, never served.
     rejected: VecDeque<(Id, u32)>,
     rejects: u64,
@@ -381,7 +382,7 @@ impl Book {
             offered: vec![],
             st,
             knocks,
-            out: false,
+            rekeys: HashMap::new(),
             rejected: VecDeque::new(),
             rejects: 0,
         }
@@ -540,6 +541,9 @@ impl Book {
                     o.push((s.author, at, e.epoch, k, back));
                 }
                 roles |= net && matches!(s.op, Op::Role { .. });
+                if matches!(s.op, Op::Rekey { .. }) {
+                    self.rekeys.insert(s.id, i);
+                }
                 ops.push(s);
             }
             if !ops.is_empty() {
@@ -647,6 +651,21 @@ impl Book {
         let out =
             self.st.out(&s.author) || self.st.stale(&s.epoch, &end, &s.author);
         (!out).then_some(s)
+    }
+
+    /// The rekeys from epoch `t` on, oldest first, to 16 MB: whoever holds
+    /// `t` opens them and sees for itself what left it out (or, a few at a
+    /// time, the keys it missed).
+    fn proof(&self, t: &[u8; 8]) -> Vec<Id> {
+        let e = self.st.epochs();
+        let from = e.iter().position(|e| e.tag == *t).unwrap_or(0);
+        let mut size = 0;
+        let ids = e[from..].iter().filter_map(|e| self.rekeys.get(&e.at.1));
+        let fit = |i: &&Id| {
+            size += self.at.get(i).map_or(0, |a| a.1 as usize);
+            size <= 16 << 20
+        };
+        ids.take_while(fit).copied().collect()
     }
 
     /// Valid epochs' keys `Back` misses: lost rekey races, demoted admins'.
@@ -773,8 +792,9 @@ pub struct Node {
     big: Option<String>,
     files: FsStore,
     held: Mutex<Option<std::fs::File>>,
-    // Per space, the day and what it took then (storage nodes).
-    budget: Mutex<BTreeMap<Id, (u64, u64)>>,
+    // Per space, of ops and (true) of files apart, the day and what it took
+    // then (storage nodes).
+    budget: Mutex<BTreeMap<(Id, bool), (u64, u64)>>,
     hosts: Mutex<BTreeMap<Id, Host>>,
     // Devices whose users proved them theirs (sync, calls).
     verified: Mutex<HashMap<EndpointId, (Id, Instant)>>,
@@ -1832,7 +1852,7 @@ impl Node {
         // A DM with someone who retired their identity: a thief may read.
         let me = self.me.id();
         let gone = b.st.peer(&me).is_some_and(|p| b.st.out(&p));
-        b.out || gone || b.key(inv).1
+        gone || b.key(inv).1
     }
 
     pub fn peers(&self, id: &Id) -> usize {
@@ -2107,8 +2127,9 @@ impl Node {
                     let tags = tags.unwrap_or_default();
                     let ok =
                         |e: &Env| tags.is_empty() || tags.contains(&e.epoch);
-                    let fits =
-                        |r: &[u8]| self.budget(&sp.id, r.len() as u64).is_ok();
+                    let fits = |r: &[u8]| {
+                        self.budget(&sp.id, r.len() as u64, false).is_ok()
+                    };
                     let keep =
                         fresh.into_iter().filter(|(_, e, r)| ok(e) && fits(r));
                     keep.filter(|(i, e, r)| b.store(*i, e.ts, r, 0, false))
@@ -3492,12 +3513,6 @@ impl Node {
         v.unwrap_or_default()
     }
 
-    /// Whether `d` is one of `sp`'s storage nodes.
-    pub(crate) fn hosted(&self, sp: &Space, d: &EndpointId) -> bool {
-        lock(&sp.book).st.hosts().iter().any(|a| a.id == *d)
-            || self.stores(&sp.id).iter().any(|s| s.0.id == *d)
-    }
-
     fn stores(&self, space: &Id) -> Vec<(EndpointAddr, [u8; 16])> {
         let all = *space == self.own;
         let v = self.view(&self.own, |s| {
@@ -3784,11 +3799,34 @@ impl Node {
             peers.insert(0, from);
             peers.iter().for_each(|p| self.knock(*p));
             let ep = self.up().await?;
-            let got =
-                self.files.downloader(&ep).download(hash, peers.repeat(3));
-            got.await.ok().context(gone)?;
+            let known = peers.iter().filter(|p| self.known(&sp, p));
+            let pull = self.downloader(&ep, known.copied().collect());
+            pull.download(hash, peers.repeat(3)).await.ok().context(gone)?;
         }
         Ok(&self.files)
+    }
+
+    /// Proven a member's device here (it signed for them) or one of the
+    /// space's storage nodes.
+    fn known(&self, sp: &Space, d: &EndpointId) -> bool {
+        let u = lock(&self.verified).get(d).map(|v| v.0);
+        let ours = self.stores(&sp.id).iter().any(|s| s.0.id == *d);
+        let st = &lock(&sp.book).st;
+        ours || st.hosts().iter().any(|a| a.id == *d)
+            || u.is_some_and(|u| st.profile(&u).is_some() && !st.out(&u))
+    }
+
+    /// iroh-blobs' downloader: its links to `known` (proven) peers may fill
+    /// irnet's wide window; to anyone else, a stranger's 8 MiB.
+    fn downloader(&self, ep: &Endpoint, known: Vec<EndpointId>) -> Downloader {
+        use iroh_blobs::util::connection_pool::Options;
+        let wide = Options::default().with_on_connected(move |_, c| {
+            if known.contains(&c.remote_id()) {
+                irnet::wide(&c);
+            }
+            std::future::ready(Ok(()))
+        });
+        Downloader::builder(&self.files, ep).pool_options(wide).build()
     }
 
     /// A copy (a reflink where it can): referenced instead, what the user
@@ -3922,17 +3960,30 @@ impl Node {
         Ok(b)
     }
 
-    /// Blob `h`, fetched from `from` in the background, kept.
-    fn fetch(&self, h: &Id, from: EndpointId) {
+    /// Blob `h`, fetched from `from` in the background, kept. Charged to
+    /// a space's files when asked (`charged`), so two asks at once never
+    /// both fit; none of it come, its share is given back.
+    fn fetch(&self, h: &Id, from: EndpointId, charged: Option<(Id, u64)>) {
         let (files, n) = (self.files.clone(), self.this.get().cloned());
         let hash = iroh_blobs::Hash::from_bytes(h.0);
         tokio::spawn(async move {
             let Some(n) = n.and_then(|n| n.upgrade()) else { return };
             n.knock(from);
-            let Ok(ep) = n.up().await else { return };
-            let got = files.downloader(&ep).download(hash, vec![from; 3]);
+            // From an owner (its token) or a device they vouched for.
+            let got = match n.up().await {
+                Ok(ep) => n.downloader(&ep, vec![from]),
+                Err(e) => return warn!("keeping a file: {e:#}"),
+            };
+            let got = got.download(hash, vec![from; 3]);
             if let Err(e) = got.await {
                 warn!("keeping a file: {e:#}");
+                let none = files.observe(hash).await;
+                if let Some((sp, size)) = charged
+                    && none.is_ok_and(|b| b.ranges.is_empty())
+                {
+                    let mut b = lock(&n.budget);
+                    b.entry((sp, true)).and_modify(|u| u.1 -= size.min(u.1));
+                }
             }
         });
     }
@@ -3949,14 +4000,20 @@ impl Node {
         false
     }
 
-    /// Members' small files a storage node takes for a space: 25 MB each,
-    /// 4 GB a day, so no member fills its disk.
-    fn budget(&self, sp: &Id, size: u64) -> Result<(), &'static str> {
+    /// What a storage node takes for a space each day: 4 GB of ops, and
+    /// apart 4 GB of members' small files (25 MB each), so no member fills
+    /// its disk, nor crowds out the ops with files that never come.
+    fn budget(
+        &self,
+        sp: &Id,
+        size: u64,
+        file: bool,
+    ) -> Result<(), &'static str> {
         if Some(size) > crate::crypto::sealed_len(PREVIEW as u64) {
             return Err("over 25 MB: the sender's own storage node keeps it");
         }
         let (mut b, day) = (lock(&self.budget), now() / DAY);
-        let used = b.entry(*sp).or_insert((day, 0));
+        let used = b.entry((*sp, file)).or_insert((day, 0));
         if used.0 != day {
             *used = (day, 0);
         }
@@ -3994,7 +4051,7 @@ impl Node {
                     let no = "over 5 GB: storage nodes keep it only with their password";
                     tx.write_all(no.as_bytes()).await?;
                 } else {
-                    self.fetch(&h, from);
+                    self.fetch(&h, from, None);
                 }
             }
             Ask::Hold(sp, t, h)
@@ -4007,8 +4064,8 @@ impl Node {
                 if !self.files.has(hash).await? {
                     let size = self.verified(&[from], &h).await;
                     let size = size.context("not reachable, or not there")?.0;
-                    match self.budget(&sp, size) {
-                        Ok(()) => self.fetch(&h, from),
+                    match self.budget(&sp, size, true) {
+                        Ok(()) => self.fetch(&h, from, Some((sp, size))),
                         Err(no) => tx.write_all(no.as_bytes()).await?,
                     }
                 }
@@ -4111,17 +4168,11 @@ impl Node {
         let k =
             b.keys.iter().find(|(_, k)| same(&sync::room(&sp.id, k), &h.room));
         match k {
-            Some((t, _)) if b.st.stale(t, &crate::state::END, &u) => Admit::Out,
+            Some((t, _)) if b.st.stale(t, &crate::state::END, &u) => {
+                Admit::Out(b.proof(t))
+            }
             Some(_) => Admit::Yes,
             None => Admit::No,
-        }
-    }
-
-    /// A member told us our key was replaced without us (or no longer).
-    pub(crate) fn cut(&self, sp: &Space, out: bool) {
-        let was = std::mem::replace(&mut lock(&sp.book).out, out);
-        if was != out {
-            self.emit(Event::Changed { space: sp.id });
         }
     }
 
@@ -5258,6 +5309,21 @@ mod tests {
         assert!(matches!(a.find(&h, x).1, Admit::No));
         assert!(!lock(&a.verified).contains_key(&x));
         stop(a).await;
+    }
+
+    /// A storage node charges a member's file to the space's files, never
+    /// its ops, when asked; and gives it back if none of it came.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_that_never_comes_is_given_back() {
+        let s = start(&Net::Direct, "keeper").await;
+        let (sp, size) = (Id(rand()), 25 << 20);
+        let spent = |file| lock(&s.budget).get(&(sp, file)).map_or(0, |u| u.1);
+        s.budget(&sp, size, true).unwrap();
+        assert_eq!((spent(true), spent(false)), (size, 0));
+        let nobody = SecretKey::from_bytes(&rand()).public();
+        s.fetch(&Id(rand()), nobody, Some((sp, size)));
+        assert!(until(|| spent(true) == 0).await, "none came");
+        stop(s).await;
     }
 
     /// Events name no space; a relay can neither ack them nor (with a

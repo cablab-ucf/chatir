@@ -339,18 +339,38 @@ fn show(app: &AppHandle) {
     }
 }
 
-/// Fresh installs only: this device's identity is thrown away.
+/// This device becomes you elsewhere. Its own identity goes, unless it
+/// has spaces: then the link opens in a new `profile` beside it, taken
+/// away again if the code fails.
 #[tauri::command]
 async fn link(
     app: AppHandle,
     s: State<'_, App>,
     code: String,
+    profile: Option<String>,
 ) -> Result<(), String> {
-    let n = node(&s).await?;
-    if !n.spaces().is_empty() {
-        return Err(
-            "leave your spaces first: this device becomes someone else".into(),
-        );
+    let top = root(&app).map_err(err)?;
+    let was_on =
+        std::fs::read_to_string(top.join("profile")).unwrap_or_default();
+    let mut made = None;
+    if !node(&s).await?.spaces().is_empty() {
+        let p =
+            profile.ok_or("this device is someone already: name a profile")?;
+        let p = profile_name(&p)?;
+        let new = top.join("profiles").join(p);
+        if p.is_empty() || new.exists() {
+            return Err(format!("\"{p}\" is taken: name a new profile"));
+        }
+        stop(&s).await;
+        let on = async {
+            set_profile(&app, p)?;
+            start(&app, None).await
+        };
+        if let Err(e) = on.await {
+            unmake(&app, &s, &new, &was_on).await;
+            return Err(e);
+        }
+        made = Some(new);
     }
     // Aside till the code proves good: a typo leaves this device as it was.
     const WHO: [&str; 3] = ["seed", "local", "spaces"];
@@ -370,9 +390,25 @@ async fn link(
         forget(&dir, &WHO);
         mv(&was, &dir);
         let _ = start(&app, None).await;
+        if let Some(new) = &made {
+            unmake(&app, &s, new, &was_on).await;
+        }
     }
     let _ = std::fs::remove_dir_all(was);
     r
+}
+
+/// Back on profile `was` from `made`, which goes with what it holds.
+async fn unmake(
+    app: &AppHandle,
+    s: &State<'_, App>,
+    made: &std::path::Path,
+    was: &str,
+) {
+    stop(s).await;
+    let _ = std::fs::remove_dir_all(made);
+    let _ = set_profile(app, was);
+    let _ = start(app, None).await;
 }
 
 fn root(app: &AppHandle) -> anyhow::Result<std::path::PathBuf> {
@@ -416,21 +452,31 @@ async fn use_profile(
     s: State<'_, App>,
     name: String,
 ) -> Result<(), String> {
+    stop(&s).await;
+    set_profile(&app, &name)?;
+    start(&app, None).await
+}
+
+fn profile_name(name: &str) -> Result<&str, String> {
     let ok = |c: char| c.is_alphanumeric() || " _-".contains(c);
     let name = name.trim();
     if name.len() > 32 || !name.chars().all(ok) || name.starts_with(['-', ' '])
     {
         return Err("a profile's name: letters, digits, spaces, - and _".into());
     }
-    stop(&s).await;
-    let r = root(&app).map_err(err)?;
+    Ok(name)
+}
+
+/// Profile `name` (made if new) the one this device opens; "" the first.
+fn set_profile(app: &AppHandle, name: &str) -> Result<(), String> {
+    let name = profile_name(name)?;
+    let r = root(app).map_err(err)?;
     let set = match name {
         "" => std::fs::remove_file(r.join("profile")).or(Ok(())),
         n => std::fs::create_dir_all(r.join("profiles").join(n))
             .and_then(|()| std::fs::write(r.join("profile"), n)),
     };
-    set.map_err(|e| e.to_string())?;
-    start(&app, None).await
+    set.map_err(|e| e.to_string())
 }
 
 /// Only your other devices keep what this forgets.
@@ -765,7 +811,10 @@ async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
 /// Banners that say only that something came: on, off, or as it is.
 #[tauri::command]
 fn private(app: AppHandle, on: Option<bool>) -> Result<bool, String> {
-    flag(&app, "private", on)
+    let on = flag(&app, "private", on)?;
+    #[cfg(target_os = "android")]
+    android::veil(&app, on);
+    Ok(on)
 }
 
 /// This device on silent (calls and messages shown, no sound): on, off,
@@ -867,6 +916,20 @@ pub fn run() {
     let b = b.setup(|app| {
         app.manage(App(watch::channel(None).0));
         FG.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The seed and device key stay on this phone: out of iCloud and
+        // computer backups (Android's are, by no_backup.xml).
+        #[cfg(target_os = "ios")]
+        if let Ok(d) = root(app.handle()) {
+            use objc2_foundation::NSURLIsExcludedFromBackupKey as KEY;
+            use objc2_foundation::{NSNumber, NSURL};
+            let _ = std::fs::create_dir_all(&d);
+            let yes = NSNumber::new_bool(true);
+            if let Some(u) = NSURL::from_directory_path(&d) {
+                // Safety: this key's value is a boolean NSNumber.
+                let _ =
+                    unsafe { u.setResourceValue_forKey_error(Some(&yes), KEY) };
+            }
+        }
         #[cfg(desktop)]
         tray(app);
         // WebKitGTK keeps getUserMedia off unless asked.

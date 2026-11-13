@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 chatir-core.workspace = true
 anyhow.workspace = true
-tokio = { workspace = true, features = ["signal", "io-std", "io-util", "net", "sync"] }
+tokio = { workspace = true, features = ["signal", "io-std", "io-util", "net", "sync", "fs"] }
 tracing-subscriber.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }

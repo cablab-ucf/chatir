@@ -1064,6 +1064,7 @@ dialog .m-foot .spacer { flex: 1; }
   margin-top: 8px;
 }
 .choice:hover { background: var(--hover); }
+.choice { text-align: left; } /* a label that wraps reads as one */
 .switch {
   position: relative;
   display: flex;
@@ -1577,3 +1578,12 @@ mark { background: var(--mention-bg); color: var(--text-strong); }
 .channel .fold svg.icon { width: 14px; height: 14px; transform: rotate(-90deg); }
 .channel .fold.open svg.icon { transform: none; }
 .channel .fold small { font-size: 11px; }
+
+/* Settings: tabs over one scrolling body, the same size whichever is open. */
+dialog:has(.settings) { width: min(560px, calc(100vw - 32px)); }
+.settings .m-head { padding: 24px 16px 0; border-bottom: 1px solid var(--line); }
+.settings .tabs { justify-content: center; margin: 12px 0 14px; }
+.settings .tabs .chip { padding: 4px 12px; }
+.settings .tabs .chip.on { background: var(--hover); }
+.settings > .m-body { height: min(440px, 60vh); overflow-y: auto; }
+.settings .switch { margin-top: 12px; }

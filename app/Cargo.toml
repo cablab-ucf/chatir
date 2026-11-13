@@ -50,13 +50,17 @@ webkit2gtk = "2"
 # Whether the tray's library is there (without it, the tray panics).
 libloading = "0.9"
 
+# The data folder out of backups (setup); already in Tauri's tree.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSValue", "NSError"] }
+
 # A push wake with no activity running (android.rs, Push.kt).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
 ndk-context = "0.1"
 # The phone's one pushir device, shared by every pushir app (pushir's
 # Android library, android/pushir): its JNI lives in our native library.
-pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "344430c2539df744420bd0180364a2a3cf867bd2", features = ["jni"] }
+pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "89a177ab8a67959f385637e6bb2627b78c387aae", features = ["jni"] }
 
 [features]
 # Built without `cargo tauri` (package.nix): the page from the binary.

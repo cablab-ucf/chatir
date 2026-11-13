@@ -1,12 +1,15 @@
 //! An order-free fold of a space's ops. Control re-folds in `(ts, id)`
 //! order; authors pick their times, so only current admins' rekeys count,
-//! and none leaves the owner out.
+//! and none leaves the owner out. Only whom the walk made admins are
+//! walked: a member's profiles and burns are judged where dated, by the
+//! roles it recorded, and the rest of theirs counts for nothing. So no
+//! member's flood, however dated, costs a refold.
 
 use crate::op::{File, Invite, Link, Op, Role, Signed};
 use crate::{Ch, Id};
 use iroh::{EndpointAddr, EndpointId};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::take;
 
 /// Author clock, then id; also the paging cursor.
@@ -88,8 +91,12 @@ pub struct State {
     pub dm: Option<Id>,
     hint: String,
     control: BTreeMap<Pos, (Id, Op)>,
-    // Each author's profiles in `control`: the newest few alone.
-    profiles_at: HashMap<Id, BTreeSet<Pos>>,
+    // By one the walk never made an admin (nor named owner): nothing
+    // wherever dated, so walked only once it makes them one; a burn of
+    // theirs is judged apart (`burn`).
+    idle: HashMap<Id, BTreeMap<Pos, Op>>,
+    // Each author's profiles (each one a key), the newest few alone.
+    profiles_at: HashMap<Id, BTreeMap<Pos, (String, Vec<u8>)>>,
     posts: HashMap<Ch, BTreeMap<Pos, Post>>,
     index: HashMap<Id, (Ch, Pos)>,
     // Re-sealed by others, one op may come under several epochs.
@@ -110,6 +117,10 @@ pub struct State {
     authors: HashMap<Id, u64>,
     devices: HashMap<(EndpointId, Id), u64>,
     // Derived from `control` by `refold`:
+    // Whom the walk made an admin or named owner; each role it set, and
+    // from when (before any, the owner's: admin).
+    ever: HashSet<Id>,
+    history: HashMap<Id, Vec<(Pos, Role)>>,
     name: Option<String>,
     channels: BTreeMap<Ch, String>,
     order: Vec<Ch>,
@@ -234,22 +245,31 @@ impl State {
             | Op::Call { .. }
             | Op::Ringing { .. }
             | Op::Gone => (false, false),
-            op => {
-                // Every refold walks `control`: a member's flood of
-                // profiles (each one a key) keeps four, the newest, so it
-                // costs no walk over all of them.
-                if matches!(op, Op::Profile { .. }) {
-                    let mine = self.profiles_at.entry(s.author).or_default();
-                    mine.insert(at);
-                    if mine.len() > 4
-                        && let Some(old) = mine.pop_first()
-                    {
-                        if old == at {
-                            return (false, false);
-                        }
-                        self.control.remove(&old);
-                    }
+            // Judged alone, never walked: a flood of them costs no refold.
+            Op::Profile { name, kem } => {
+                let mine = self.profiles_at.entry(s.author).or_default();
+                let new = mine.insert(at, (name, kem)).is_none();
+                let kept = mine.len() <= 4
+                    || mine.pop_first().is_some_and(|o| o.0 != at);
+                if new && kept {
+                    self.judge(&s.author);
                 }
+                (new && kept, false)
+            }
+            _ if self.control.contains_key(&at) => (false, false),
+            op if !self.ever.contains(&s.author)
+                && self.dm != Some(s.author) =>
+            {
+                let burn = matches!(op, Op::Burn);
+                let mine = self.idle.entry(s.author).or_default();
+                let new = mine.insert(at, op).is_none();
+                if new && burn {
+                    self.burn(&s.author);
+                    self.judge(&s.author);
+                }
+                (new, false)
+            }
+            op => {
                 let new = self.control.insert(at, (s.author, op)).is_none();
                 (new, new)
             }
@@ -264,9 +284,22 @@ impl State {
     /// they do is leave it ownerless, never theirs. Peers fold one set of
     /// ops alike, whatever order it came in.
     fn refold(&mut self) {
-        self.forfeit = HashMap::new();
-        while let Some((a, at)) = self.fold() {
-            self.forfeit.insert(a, at);
+        loop {
+            self.forfeit = HashMap::new();
+            while let Some((a, at)) = self.fold() {
+                self.forfeit.insert(a, at);
+            }
+            // Made an admin (or named owner): theirs is walked, as dated.
+            let ever = |a: &&Id| self.ever.contains(*a);
+            let back: Vec<Id> =
+                self.idle.keys().filter(ever).copied().collect();
+            if back.is_empty() {
+                return;
+            }
+            for a in back {
+                let ops = self.idle.remove(&a).into_iter().flatten();
+                self.control.extend(ops.map(|(at, op)| (at, (a, op))));
+            }
         }
     }
 
@@ -284,6 +317,8 @@ impl State {
         self.labels = BTreeMap::new();
         self.levels = BTreeMap::new();
         (self.head, self.burned) = (self.owner, self.forfeit.clone());
+        (self.ever, self.history) =
+            (HashSet::from([self.owner]), HashMap::new());
         let (mut gave, mut twice) = (HashMap::new(), None);
         if self.dm.is_some() {
             self.channels.insert(DM, "dm".into());
@@ -295,6 +330,9 @@ impl State {
             // A DM's two people each name their storage nodes there.
             let keeper = admin || self.dm == Some(*a);
             let head = *a == self.head;
+            if let Op::Owner { user } = op {
+                self.ever.insert(*user);
+            }
             match op {
                 _ if role == Role::Banned || self.stale_at(at, a) => {}
                 Op::Burn => drop(self.burned.insert(*a, *at)),
@@ -307,16 +345,15 @@ impl State {
                     self.roles.insert(*a, Role::Admin);
                     self.roles.remove(user);
                     self.head = *user;
+                    self.history
+                        .entry(*user)
+                        .or_default()
+                        .push((*at, Role::Admin));
                     gave.insert(*a, *at);
                     gave.remove(user);
                 }
                 Op::Owner { .. } if gave.contains_key(a) => {
                     twice = twice.or(Some((*a, gave[a])))
-                }
-                Op::Profile { name, kem } => {
-                    let n = crate::op::name(name);
-                    self.profiles.insert(*a, (n, kem.clone()));
-                    self.profiled.insert(*a, *at);
                 }
                 Op::Rename { name } if admin => {
                     self.name = Some(crate::op::name(name))
@@ -338,6 +375,10 @@ impl State {
                         *r == Role::Admin || self.role(user) == Role::Admin;
                     if head || !admins {
                         self.roles.insert(*user, *r);
+                        self.history.entry(*user).or_default().push((*at, *r));
+                        if *r == Role::Admin {
+                            self.ever.insert(*user);
+                        }
                         if *r == Role::Banned {
                             self.bans.push((*at, *user));
                         }
@@ -389,16 +430,70 @@ impl State {
             }
         }
         self.control = control;
-        // Told under a key a later epoch left them out of: none, however dated.
-        let cut = self.profiled.iter().filter(|(a, at)| {
-            let tags = self.sealed.get(&at.1).map_or(&[][..], |t| t);
-            tags.iter().all(|t| self.stale(t, &END, a))
-        });
-        let cut: Vec<Id> = cut.map(|(a, _)| *a).collect();
-        for a in cut {
-            self.profiles.entry(a).and_modify(|p| p.1.clear());
-        }
+        let idle: Vec<Id> = self.idle.keys().copied().collect();
+        idle.iter().for_each(|a| self.burn(a));
+        let all: Vec<Id> = self.profiles_at.keys().copied().collect();
+        all.iter().for_each(|a| self.judge(a));
         twice
+    }
+
+    /// `a`'s newest profile that counted where dated, as the walk had
+    /// that moment: no walk over every member's.
+    fn judge(&mut self, a: &Id) {
+        let ok = |at: &Pos| {
+            self.role_at(a, at) != Role::Banned && !self.stale_then(at, a)
+        };
+        let mut mine = self.profiles_at.get(a).into_iter().flatten().rev();
+        let p = mine.find(|p| ok(p.0));
+        let p = p.map(|(at, (n, k))| (*at, crate::op::name(n), k.clone()));
+        let Some((at, n, mut k)) = p else {
+            self.profiled.remove(a);
+            return drop(self.profiles.remove(a));
+        };
+        // Told under a key a later epoch left them out of: none, however dated.
+        let tags = self.sealed.get(&at.1).map_or(&[][..], |t| t);
+        if tags.iter().all(|t| self.stale(t, &END, a)) {
+            k.clear();
+        }
+        self.profiles.insert(*a, (n, k));
+        self.profiled.insert(*a, at);
+    }
+
+    /// A member's first burn that counted where dated (as `judge`).
+    fn burn(&mut self, a: &Id) {
+        let mine = self.idle.get(a).into_iter().flatten();
+        let burns = mine.filter(|(_, op)| matches!(op, Op::Burn));
+        let ok = |at: &Pos| {
+            self.role_at(a, at) != Role::Banned && !self.stale_then(at, a)
+        };
+        if let Some(at) = burns.map(|b| *b.0).find(ok) {
+            self.burned.insert(*a, at);
+        }
+    }
+
+    /// `u`'s role just before `at`, as the walk had it then.
+    fn role_at(&self, u: &Id, at: &Pos) -> Role {
+        let h = self.history.get(u).map_or(&[][..], Vec::as_slice);
+        match h.partition_point(|x| x.0 < *at) {
+            0 if *u == self.owner => Role::Admin,
+            0 => Role::Member,
+            i => h[i - 1].1,
+        }
+    }
+
+    /// `stale_at` as the walk had it at `at`: the epochs set before it, by
+    /// whom it had as admins then.
+    fn stale_then(&self, at: &Pos, a: &Id) -> bool {
+        let e = &self.epochs[..self.epochs.partition_point(|e| e.at < *at)];
+        let stale = |t: &[u8; 8]| {
+            let from = e.iter().find(|e| e.tag == *t).map(|e| e.at);
+            let live = |e: &&Epoch| self.role_at(&e.by, at) == Role::Admin;
+            e.iter()
+                .filter(live)
+                .any(|e| Some(e.at) > from && !e.to.contains(a))
+        };
+        self.burned.get(a).is_some_and(|b| at > b)
+            || self.sealed.get(&at.1).is_some_and(|t| t.iter().all(stale))
     }
 
     /// Sealed after a newer epoch, set by an admin still, left `a` out: an
@@ -1519,6 +1614,128 @@ mod tests {
         assert!(st.thread(&t).unwrap().alone);
         st.extend([op(4, o, say(t, "theirs"))]);
         assert!(!st.thread(&t).unwrap().alone);
+    }
+
+    /// Whatever order ops come in, one at a time (walked, judged alone or
+    /// set apart) or all at once, the fold is one.
+    #[test]
+    fn one_by_one_in_any_order_folds_as_all_at_once() {
+        let [o, a, b] = people();
+        let (c, d) = (Id([4; 32]), Id([5; 32]));
+        let to = |u: &[Id]| u.iter().map(|u| (*u, vec![])).collect();
+        let role = |user, role| Op::Role { user, role };
+        let name = |n: &str| Op::Rename { name: n.into() };
+        let me = |n: &str| Op::Profile { name: n.into(), kem: vec![1] };
+        let mut ops = vec![
+            op(1, o, Op::Channel { id: CH, name: Some("general".into()) }),
+            op(2, o, name("home")),
+            op(3, a, me("alice")),
+            op(4, c, name("c's, a member's")),
+            op(5, b, me("bob")),
+            op(6, c, me("c")),
+            op(7, b, name("never an admin's")),
+            op(8, o, role(a, Role::Admin)),
+            op(9, o, role(c, Role::Admin)),
+            op(10, a, role(b, Role::Banned)),
+            op(11, c, Op::Order { channels: vec![CH] }),
+            op(12, c, name("by c")),
+            op(13, o, Op::Rekey { epoch: [7; 8], boxes: to(&[o, a, b, c, d]) }),
+            op(14, a, me("alice2")),
+            op(15, o, Op::Owner { user: a }),
+            op(16, o, name("o, an admin still")),
+            op(17, a, role(c, Role::Member)),
+            op(18, c, name("c, demoted")),
+        ];
+        // b's, banned then: the newest four push out the one that counted,
+        // and count for nothing once b is let back.
+        ops.extend((19..23).map(|n| op(n, b, me("b again"))));
+        ops.push(op(29, a, role(b, Role::Member)));
+        ops.extend([op(23, c, Op::Burn), op(24, c, me("a thief"))]);
+        // d's burn, judged apart, till a hand-over names d: then walked.
+        let at = |ts, id, s: Signed| Signed { ts, id: Id([id; 32]), ..s };
+        ops.push(at(12, 40, op(0, d, me("d"))));
+        // c's rekey, while an admin, left d out then; not since.
+        let rekey = Op::Rekey { epoch: [8; 8], boxes: to(&[o, a, b, c]) };
+        ops.push(at(15, 41, op(0, c, rekey)));
+        ops.extend([
+            at(16, 42, op(0, d, me("d, cut off"))),
+            op(26, d, Op::Burn),
+        ]);
+        ops.extend([
+            op(27, d, me("d's thief")),
+            op(28, a, Op::Owner { user: d }),
+        ]);
+        let seen = |st: &State| {
+            let roles =
+                [o, a, b, c, d].map(|u| (st.role(&u), st.kem(&u).is_some()));
+            let (n, ch, m) = (st.name(), st.channels(), st.members());
+            format!(
+                "{n} {ch:?} {m:?} {:?} {:?} {roles:?}",
+                st.epochs(),
+                st.head()
+            )
+        };
+        let inv = Invite::new(o, "", None);
+        let mut all = State::new(&inv);
+        all.extend(ops.clone());
+        let want = seen(&all);
+        assert!(want.starts_with("o, an admin still") && all.head() == a);
+        assert!(all.out(&d) && all.profile(&d) == Some("d"));
+        assert!(all.profile(&b).is_none(), "written while banned");
+        let mut x = 7u64;
+        for _ in 0..64 {
+            for i in (1..ops.len()).rev() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ops.swap(i, x as usize % (i + 1));
+            }
+            let mut st = State::new(&inv);
+            for i in 0..ops.len() {
+                st.extend([ops[i].clone()]);
+                let mut so_far = State::new(&inv);
+                so_far.extend(ops[..=i].to_vec());
+                assert_eq!(seen(&st), seen(&so_far));
+            }
+            assert_eq!(seen(&st), want);
+        }
+    }
+
+    /// A member's flood of what only an admin's counts, however dated, is
+    /// never walked; made an admin, what they wrote after counts.
+    #[test]
+    fn a_members_admin_ops_wait_apart() {
+        let [o, a, _] = people();
+        let mut st = State::new(&Invite::new(o, "", None));
+        let rename = |ts: u64| {
+            let mut id = Id([0; 32]);
+            id.0[..8].copy_from_slice(&ts.to_le_bytes());
+            let name = ts.to_string();
+            Signed { ts, id, ..op(1, a, Op::Rename { name }) }
+        };
+        st.extend([op(1, o, Op::Rename { name: "home".into() })]);
+        // Each dated before the last: a walk each, were they walked.
+        (10..20_010).rev().for_each(|t| _ = st.extend([rename(t)]));
+        assert_eq!((st.name(), st.control.len()), ("home", 1));
+        st.extend([op(5, o, Op::Role { user: a, role: Role::Admin })]);
+        assert_eq!(st.name(), "20009");
+        // New identities' profiles and burns, each dated before the last.
+        let walked = st.control.len();
+        let base = op(1, o, Op::Burn);
+        let new = |n: u64, k: u8, op| {
+            let (mut id, mut author) = (Id([k; 32]), Id([1; 32]));
+            id.0[..8].copy_from_slice(&n.to_le_bytes());
+            author.0[..8].copy_from_slice(&n.to_le_bytes());
+            let (ts, base) = (1_000_000 - n, base.clone());
+            Signed { ts, id, author, op, ..base }
+        };
+        let me = || Op::Profile { name: "x".into(), kem: vec![1] };
+        (0..20_000).for_each(|n| {
+            _ = st.extend([new(n, 2, me()), new(n, 3, Op::Burn)])
+        });
+        assert_eq!(st.control.len(), walked);
+        let x = new(7, 2, me()).author;
+        assert!(st.out(&x) && st.profile(&x) == Some("x"));
     }
 
     #[test]

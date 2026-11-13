@@ -2,8 +2,8 @@
 // node over HTTP (chatir --web; tui/src/web.rs). Calls are POSTs; events
 // and call frames stream down while the page is in sight or in a call,
 // and nothing is said otherwise: no polls, no pings. Opened at the node
-// (http://127.0.0.1:4724/#<token>), the token is the fragment; through
-// irweb's page, its worker adds it.
+// (http://127.0.0.1:4724/#<token>, a token per run), the token is the
+// fragment; through irweb's page (--web-link), its worker adds it.
 (() => {
   if (window.__TAURI__) return;
   // Out of the address bar at once (history, sync, extensions read it
@@ -117,15 +117,15 @@
     upload: (b, o) => post("upload", bytes(b), o?.headers),
     media,
     tune: ({ to }) => stream("api/tune", (f) => to.onmessage(f.buffer)),
-    // Fetched whole, then the browser's own download.
+    // Saved by the node, then the browser's own download of it by a
+    // one-time link: any size, never whole in this page.
     save: async ({ space, file }) => {
-      const b = bytes({ data: await calls.chatir({ call: { cmd: "file",
-        space, file } }) });
+      for (const cb of heard.get("saving") ?? []) cb({ payload: file.name });
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([b]));
+      a.href = await post("save", JSON.stringify({ cmd: "file", space,
+        file }));
       a.download = file.name;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 6e4);
       return file.name;
     },
     open_link: ({ url }) => void open(url, "_blank", "noopener,noreferrer"),
