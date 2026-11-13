@@ -310,8 +310,8 @@ struct Book {
     offered: Vec<Offered>,
     st: State,
     knocks: Vec<Invite>,
-    // A member said our key is one a later epoch left us out of.
-    out: bool,
+    // Each rekey's envelope, by its op's id: shown to whoever it left out.
+    rekeys: HashMap<Id, Id>,
     // Refused, oldest first: indexed as had, never served.
     rejected: VecDeque<(Id, u32)>,
     rejects: u64,
@@ -381,7 +381,7 @@ impl Book {
             offered: vec![],
             st,
             knocks,
-            out: false,
+            rekeys: HashMap::new(),
             rejected: VecDeque::new(),
             rejects: 0,
         }
@@ -540,6 +540,9 @@ impl Book {
                     o.push((s.author, at, e.epoch, k, back));
                 }
                 roles |= net && matches!(s.op, Op::Role { .. });
+                if matches!(s.op, Op::Rekey { .. }) {
+                    self.rekeys.insert(s.id, i);
+                }
                 ops.push(s);
             }
             if !ops.is_empty() {
@@ -647,6 +650,21 @@ impl Book {
         let out =
             self.st.out(&s.author) || self.st.stale(&s.epoch, &end, &s.author);
         (!out).then_some(s)
+    }
+
+    /// The rekeys from epoch `t` on, oldest first, to 16 MB: whoever holds
+    /// `t` opens them and sees for itself what left it out (or, a few at a
+    /// time, the keys it missed).
+    fn proof(&self, t: &[u8; 8]) -> Vec<Id> {
+        let e = self.st.epochs();
+        let from = e.iter().position(|e| e.tag == *t).unwrap_or(0);
+        let mut size = 0;
+        let ids = e[from..].iter().filter_map(|e| self.rekeys.get(&e.at.1));
+        let fit = |i: &&Id| {
+            size += self.at.get(i).map_or(0, |a| a.1 as usize);
+            size <= 16 << 20
+        };
+        ids.take_while(fit).copied().collect()
     }
 
     /// Valid epochs' keys `Back` misses: lost rekey races, demoted admins'.
@@ -1832,7 +1850,7 @@ impl Node {
         // A DM with someone who retired their identity: a thief may read.
         let me = self.me.id();
         let gone = b.st.peer(&me).is_some_and(|p| b.st.out(&p));
-        b.out || gone || b.key(inv).1
+        gone || b.key(inv).1
     }
 
     pub fn peers(&self, id: &Id) -> usize {
@@ -3492,12 +3510,6 @@ impl Node {
         v.unwrap_or_default()
     }
 
-    /// Whether `d` is one of `sp`'s storage nodes.
-    pub(crate) fn hosted(&self, sp: &Space, d: &EndpointId) -> bool {
-        lock(&sp.book).st.hosts().iter().any(|a| a.id == *d)
-            || self.stores(&sp.id).iter().any(|s| s.0.id == *d)
-    }
-
     fn stores(&self, space: &Id) -> Vec<(EndpointAddr, [u8; 16])> {
         let all = *space == self.own;
         let v = self.view(&self.own, |s| {
@@ -4111,17 +4123,11 @@ impl Node {
         let k =
             b.keys.iter().find(|(_, k)| same(&sync::room(&sp.id, k), &h.room));
         match k {
-            Some((t, _)) if b.st.stale(t, &crate::state::END, &u) => Admit::Out,
+            Some((t, _)) if b.st.stale(t, &crate::state::END, &u) => {
+                Admit::Out(b.proof(t))
+            }
             Some(_) => Admit::Yes,
             None => Admit::No,
-        }
-    }
-
-    /// A member told us our key was replaced without us (or no longer).
-    pub(crate) fn cut(&self, sp: &Space, out: bool) {
-        let was = std::mem::replace(&mut lock(&sp.book).out, out);
-        if was != out {
-            self.emit(Event::Changed { space: sp.id });
         }
     }
 

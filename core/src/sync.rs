@@ -2,8 +2,9 @@
 //! ```text
 //! A → B  Hello { space, root, room, who, token, devices, tags }
 //!        root: hash of day buckets; room: proof of a key; who: signed
-//! B → A  Same | Out (a key since replaced without A) | Days(B's buckets)
-//!        (unknown space, or not admitted: stream closed)
+//! B → A  Same | Days(B's buckets) | Out (a key since replaced without
+//!        A), then the rekeys since, then an empty frame: A folds them and
+//!        judges for itself (unknown space, or not admitted: closed)
 //! A → B  A's ids for every day that differs
 //! B → A  ids B wants, then the items A lacks, then an empty frame
 //! A → B  the items B wants, then an empty frame; B finishes, A closes
@@ -55,8 +56,8 @@ enum Reply {
 pub enum Admit {
     Yes,
     No,
-    /// They hold a key a later epoch left them out of: tell them.
-    Out,
+    /// They hold a key a later epoch left them out of: these rekeys say so.
+    Out(Vec<Id>),
 }
 
 /// Where a space's members meet under `key`: unknown to anyone without it.
@@ -100,18 +101,14 @@ pub async fn initiate(
     write(&mut tx, &hello).await?;
     // A bucket a day: a megabyte is a century.
     let theirs = match read(&mut rx, 1 << 20).await? {
-        Reply::Same => {
-            n.cut(sp, false);
-            return Ok(0);
-        }
+        Reply::Same => return Ok(0),
+        // Not a word to take: the rekeys, which `locked` judges once folded.
         Reply::Out => {
-            // A member's word: a storage node holds no key to tell by.
-            n.cut(sp, !n.hosted(sp, &c.remote_id()));
-            anyhow::bail!("our key was replaced without us");
+            take(n, sp, &mut rx).await?;
+            anyhow::bail!("told our key was replaced without us");
         }
         Reply::Days(d) => d,
     };
-    n.cut(sp, false);
     let mut days: BTreeMap<u32, (Option<Bucket>, Option<Bucket>)> =
         BTreeMap::new();
     mine.into_iter().for_each(|b| days.entry(b.0).or_default().0 = Some(b));
@@ -162,18 +159,20 @@ async fn session(
     mut rx: RecvStream,
     hello: Hello,
 ) -> Result<()> {
-    let sp = match n.find(&hello, c.remote_id()) {
-        (Some(sp), Admit::Yes) => sp,
-        (_, Admit::Out) => {
-            write(&mut tx, &Reply::Out).await?;
-            return Ok(tx.finish()?);
-        }
+    let (sp, out) = match n.find(&hello, c.remote_id()) {
+        (Some(sp), Admit::Yes) => (sp, None),
+        (Some(sp), Admit::Out(ids)) => (sp, Some(ids)),
         _ => anyhow::bail!("unknown space"),
     };
     let ((all, each), who) = (&n.talks, (c.remote_id(), sp.id));
     let _all = all.try_acquire().map_err(|_| anyhow!("busy"))?;
     anyhow::ensure!(lock(each).insert(who), "busy");
     let _each = Turn(each, who);
+    if let Some(ids) = out {
+        write(&mut tx, &Reply::Out).await?;
+        give(&sp, &mut tx, &ids).await?;
+        return Ok(tx.finish()?);
+    }
     let mine = sp.buckets();
     if root(&mine) == hello.root {
         write(&mut tx, &Reply::Same).await?;
