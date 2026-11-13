@@ -7,7 +7,7 @@ param([switch]$Server)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $R = 'https://github.com/cablab-ucf/chatir/releases/latest/download'
-$KEY = 'RWSPfztwzR/MhakRL6cA70pN03n/nMCdTvoY5UHC2IcZuhcR+41RQI95'
+$KEY = 'RWQW5LH1agYG+mSdtDVXPOZJl9ANp4NS/IQ9lTqASnxSmJ4N33gv7Msy'
 $minisign = Get-Command minisign -ErrorAction SilentlyContinue
 if (-not $minisign) {
   Write-Warning "No minisign: nothing here is checked but GitHub's TLS."

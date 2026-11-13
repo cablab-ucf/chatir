@@ -10,7 +10,7 @@ case $(uname -m) in arm64 | aarch64) cpu=aarch64 ;; *) cpu=x86_64 ;; esac
   { echo "chatir: Apple silicon only, for now; no Intel Mac build" >&2; exit 1; }
 # chatir's key: with minisign here, every file is checked as updates are;
 # without, said aloud.
-KEY=RWSPfztwzR/MhakRL6cA70pN03n/nMCdTvoY5UHC2IcZuhcR+41RQI95
+KEY=RWQW5LH1agYG+mSdtDVXPOZJl9ANp4NS/IQ9lTqASnxSmJ4N33gv7Msy
 command -v minisign >/dev/null || echo "No minisign: nothing here is" \
   "checked but GitHub's TLS (chatir checks its own updates)." >&2
 check() {
