@@ -34,8 +34,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [ ] A demoted admin backdates admin ops (authors date their own)
 - [ ] Build the Android project's Kotlin and Gradle (its Rust, `android.rs`
       and pushir's JNI, passes clippy for aarch64-linux-android)
-- [ ] iOS: the data folder (seed, device key) goes to iCloud and computer
-      backups: `NSURLIsExcludedFromBackupKey` on it, as Android's no_backup
 - [ ] A member's `Reply::Out` shows a device locked until a sync says
       otherwise: answer with the excluding `Rekey` itself, not a word
 - [ ] Every control op refolds all of them: a member's flood of ops only

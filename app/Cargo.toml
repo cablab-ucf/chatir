@@ -50,6 +50,10 @@ webkit2gtk = "2"
 # Whether the tray's library is there (without it, the tray panics).
 libloading = "0.9"
 
+# The data folder out of backups (setup); already in Tauri's tree.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSValue", "NSError"] }
+
 # A push wake with no activity running (android.rs, Push.kt).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
