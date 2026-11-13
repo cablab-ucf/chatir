@@ -85,22 +85,29 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
     live(activity)
   }
 
-  /** Optimized, Doze stops chatir staying connected or waking on push. */
+  /** Optimized, Doze stops chatir staying connected or waking on push.
+   *  Android's prompt first; some phones show none (or it was declined):
+   *  then chatir's own settings page, where Battery › Unrestricted is. */
+  private var prompted = false
   private fun unrestrict() = runCatching {
     val uri = android.net.Uri.parse("package:" + activity.packageName)
-    activity.startActivity(Intent(
-      android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, uri
-    ))
+    val act = if (prompted) android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+      else android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+    prompted = true
+    activity.startActivity(Intent(act, uri))
   }
 
   /** "background": chatir, and the app holding the phone's pushir
    *  connection (pasa, perhaps), both exempt: as `allowAlerts` asks. */
   @Command
   fun alerts(invoke: Invoke) {
+    val self = unrestricted(activity)
     invoke.resolve(JSObject()
       .put("notify", notificationsAllowed(activity))
-      .put("background", unrestricted(activity) &&
-        org.pushir.Pushir.exempt(activity))
+      .put("background", self && org.pushir.Pushir.exempt(activity))
+      // Which is stopped asleep: chatir, or the app holding the connection.
+      .put("self", self)
+      .put("holder", org.pushir.Pushir.holder(activity))
       .put("calls", fullScreen(activity)))
   }
 
@@ -129,7 +136,7 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun allowAlerts(invoke: Invoke) {
-    if (!notificationsAllowed(activity)) {
+    if (!notificationsAllowed(activity)) runCatching {
       val i = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,
           activity.packageName)
