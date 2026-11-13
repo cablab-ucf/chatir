@@ -17,6 +17,7 @@ use iroh::{
     TransportAddr,
 };
 use iroh_blobs::BlobsProtocol;
+use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::store::fs::FsStore;
 use iroh_gossip::api::{Event as Gossiped, GossipSender};
 use iroh_gossip::{Gossip, TopicId};
@@ -3798,11 +3799,34 @@ impl Node {
             peers.insert(0, from);
             peers.iter().for_each(|p| self.knock(*p));
             let ep = self.up().await?;
-            let got =
-                self.files.downloader(&ep).download(hash, peers.repeat(3));
-            got.await.ok().context(gone)?;
+            let known = peers.iter().filter(|p| self.known(&sp, p));
+            let pull = self.downloader(&ep, known.copied().collect());
+            pull.download(hash, peers.repeat(3)).await.ok().context(gone)?;
         }
         Ok(&self.files)
+    }
+
+    /// Proven a member's device here (it signed for them) or one of the
+    /// space's storage nodes.
+    fn known(&self, sp: &Space, d: &EndpointId) -> bool {
+        let u = lock(&self.verified).get(d).map(|v| v.0);
+        let ours = self.stores(&sp.id).iter().any(|s| s.0.id == *d);
+        let st = &lock(&sp.book).st;
+        ours || st.hosts().iter().any(|a| a.id == *d)
+            || u.is_some_and(|u| st.profile(&u).is_some() && !st.out(&u))
+    }
+
+    /// iroh-blobs' downloader: its links to `known` (proven) peers may fill
+    /// irnet's wide window; to anyone else, a stranger's 8 MiB.
+    fn downloader(&self, ep: &Endpoint, known: Vec<EndpointId>) -> Downloader {
+        use iroh_blobs::util::connection_pool::Options;
+        let wide = Options::default().with_on_connected(move |_, c| {
+            if known.contains(&c.remote_id()) {
+                irnet::wide(&c);
+            }
+            std::future::ready(Ok(()))
+        });
+        Downloader::builder(&self.files, ep).pool_options(wide).build()
     }
 
     /// A copy (a reflink where it can): referenced instead, what the user
@@ -3945,10 +3969,12 @@ impl Node {
         tokio::spawn(async move {
             let Some(n) = n.and_then(|n| n.upgrade()) else { return };
             n.knock(from);
+            // From an owner (its token) or a device they vouched for.
             let got = match n.up().await {
-                Ok(ep) => files.downloader(&ep).download(hash, vec![from; 3]),
+                Ok(ep) => n.downloader(&ep, vec![from]),
                 Err(e) => return warn!("keeping a file: {e:#}"),
             };
+            let got = got.download(hash, vec![from; 3]);
             if let Err(e) = got.await {
                 warn!("keeping a file: {e:#}");
                 let none = files.observe(hash).await;

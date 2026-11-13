@@ -51,8 +51,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [ ] Alerts shows chatir's battery exemption, not that of the app that
       holds pushir's connection (`Pushir.ask` asks for it; pushir exposes
       no owner to show)
-- [ ] File transfers run at a stranger's 8 MiB window: iroh-blobs' pooled
-      connections get no `irnet::wide`
 
 ## Delivery
 - [ ] One DM per person: one row, histories merged; `dm` and calls use the
