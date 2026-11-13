@@ -32,8 +32,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [ ] A storage node charges a file to the day's budget when asked, not
       when it has it; files and ops share one budget
 - [ ] A demoted admin backdates admin ops (authors date their own)
-- [ ] The installers check a signature's file, not its version, and
-      nothing where minisign is absent
 - [ ] Android: FLAG_SECURE under "private"; the caller's name shows on a
       locked screen
 - [ ] Build the Android project's Kotlin and Gradle (its Rust, `android.rs`

@@ -130,8 +130,9 @@ rate limit for relayed traffic.
   present for about an hour.
 - An iPhone in the background is not told of messages (no APNs host).
 - Calls are for a handful of people; Macs and iPhones need WebKit 26.
-- First installs trust GitHub's TLS (and chatir's key where `minisign`
-  exists); updates are always checked. Unaudited.
+- First installs check chatir's key where `minisign` exists; without it,
+  they ask before trusting GitHub's TLS alone. Updates are always checked.
+  Unaudited.
 
 ## Layout
 
