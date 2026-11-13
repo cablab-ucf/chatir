@@ -71,6 +71,17 @@ pub async fn notify_check(
     Ok(got.await?)
 }
 
+/// "Private notifications", as the page reads or sets it: the activity
+/// keeps out of screenshots, recents and the lock screen (`veil`).
+pub fn veil(app: &tauri::AppHandle, on: bool) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(b) = app.try_state::<Bridge>() {
+            b.call("veil", serde_json::json!({ "on": on })).await;
+        }
+    });
+}
+
 #[derive(Serialize)]
 struct Url<'a> {
     url: &'a str,
@@ -213,6 +224,19 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_live<'l>(
     dir: JString<'l>,
 ) -> JString<'l> {
     env.with_env(|e| reply(e, &ctx, live(profile(e, &dir)))).resolve::<Log>()
+}
+
+/// "Private notifications" is on, as the activity starts (`veil` after).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_center_cxn_chatir_Wake_veiled<'l>(
+    mut env: EnvUnowned<'l>,
+    _: JClass<'l>,
+    dir: JString<'l>,
+) -> bool {
+    env.with_env(|e| -> jni::errors::Result<bool> {
+        Ok(profile(e, &dir).join("private").exists())
+    })
+    .resolve::<Log>()
 }
 
 /// "" if null.

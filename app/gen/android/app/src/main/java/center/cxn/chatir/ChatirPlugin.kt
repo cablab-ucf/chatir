@@ -210,6 +210,14 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
   @PermissionCallback
   private fun allowed(invoke: Invoke) = invoke.resolve()
 
+  /** "Private notifications", as the page reads or switches it. */
+  @Command
+  fun veil(invoke: Invoke) {
+    val on = invoke.parseArgs(OnArgs::class.java).on
+    activity.runOnUiThread { (activity as? MainActivity)?.veil(on) }
+    invoke.resolve()
+  }
+
   @Command
   fun share(invoke: Invoke) {
     val text = invoke.parseArgs(ShareArgs::class.java).text

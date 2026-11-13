@@ -765,7 +765,10 @@ async fn open_link(app: AppHandle, url: String) -> Result<(), String> {
 /// Banners that say only that something came: on, off, or as it is.
 #[tauri::command]
 fn private(app: AppHandle, on: Option<bool>) -> Result<bool, String> {
-    flag(&app, "private", on)
+    let on = flag(&app, "private", on)?;
+    #[cfg(target_os = "android")]
+    android::veil(&app, on);
+    Ok(on)
 }
 
 /// This device on silent (calls and messages shown, no sound): on, off,
