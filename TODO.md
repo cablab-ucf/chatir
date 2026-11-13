@@ -51,9 +51,6 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
 - [ ] `--web` saves files up to 25 MB (`file` is in memory): a streaming GET
 - [ ] The page's CSP and Tauri capabilities, narrowed to what it uses
       (`ipc:` only in connect-src; event and clipboard alone): run it after
-- [ ] Alerts shows chatir's battery exemption, not that of the app that
-      holds pushir's connection (`Pushir.ask` asks for it; pushir exposes
-      no owner to show)
 - [ ] File transfers run at a stranger's 8 MiB window: iroh-blobs' pooled
       connections get no `irnet::wide`
 

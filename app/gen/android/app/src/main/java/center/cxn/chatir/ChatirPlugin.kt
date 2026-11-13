@@ -93,11 +93,14 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
     ))
   }
 
+  /** "background": chatir, and the app holding the phone's pushir
+   *  connection (pasa, perhaps), both exempt: as `allowAlerts` asks. */
   @Command
   fun alerts(invoke: Invoke) {
     invoke.resolve(JSObject()
       .put("notify", notificationsAllowed(activity))
-      .put("background", unrestricted(activity))
+      .put("background", unrestricted(activity) &&
+        org.pushir.Pushir.exempt(activity))
       .put("calls", fullScreen(activity)))
   }
 
