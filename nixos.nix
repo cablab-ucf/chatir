@@ -9,7 +9,7 @@ let
   cfg = config.services.chatir;
   pinned = pkgs.callPackage ./package.nix { };
   latest = "https://github.com/cablab-ucf/chatir/releases";
-  key = "RWSPfztwzR/MhakRL6cA70pN03n/nMCdTvoY5UHC2IcZuhcR+41RQI95";
+  key = "RWQW5LH1agYG+mSdtDVXPOZJl9ANp4NS/IQ9lTqASnxSmJ4N33gv7Msy";
   # The newer of the release built here and the flake's own (a branch, or
   # main ahead of a release): equal, the flake's.
   pick = bin: lib.hiPrio (pkgs.writeShellScriptBin bin ''

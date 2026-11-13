@@ -58,7 +58,7 @@
       ]
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg1Q0MxRkNENzAzQjdGOEYKUldTUGZ6dHd6Ui9NaGFrUkw2Y0E3MHBOMDNuL25NQ2RUdm9ZNVVIQzJJY1p1aGNSKzQxUlFJOTUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBMDYwNjZBRjVCMUU0MTYKUldRVzVMSDFhZ1lHK21TZHREVlhQT1pKbDlBTnA0TlMvSVE5bFRxQVNueFNtSjROMzNndjdNc3kK",
       "endpoints": [
         "https://github.com/cablab-ucf/chatir/releases/latest/download/latest.json"
       ],

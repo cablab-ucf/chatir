@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub const LATEST: &str = "https://github.com/cablab-ucf/chatir/releases/latest";
 
-const KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg1Q0MxRkNENzAzQjdGOEYKUldTUGZ6dHd6Ui9NaGFrUkw2Y0E3MHBOMDNuL25NQ2RUdm9ZNVVIQzJJY1p1aGNSKzQxUlFJOTUK";
+const KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBMDYwNjZBRjVCMUU0MTYKUldRVzVMSDFhZ1lHK21TZHREVlhQT1pKbDlBTnA0TlMvSVE5bFRxQVNueFNtSjROMzNndjdNc3kK";
 
 async fn get(name: &str) -> Result<Vec<u8>> {
     let url = format!("{LATEST}/download/{name}");
@@ -114,4 +114,7 @@ fn signed_as_this_file_of_this_release_only() {
     assert!(signed(key, b"hi\n", sig, "f.bin", "1.2.4").is_err());
     assert!(signed(key, b"ho\n", sig, "f.bin", "1.2.3").is_err());
     assert!(check(b"hi\n", sig, "f.bin", "1.2.3").is_err(), "not chatir's key");
+    // chatir's own key decodes: a bad paste fails here, not in an update.
+    let ours = String::from_utf8(BASE64.decode(KEY.as_bytes()).unwrap());
+    assert!(PublicKey::decode(&ours.unwrap()).is_ok());
 }
