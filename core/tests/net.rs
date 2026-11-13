@@ -292,6 +292,63 @@ async fn an_old_invite_stays_dead_after_a_reset() {
     assert!(e.locked(&id) && texts(&e, &id, &ch).is_empty());
 }
 
+/// A member's word that our key was replaced locks nothing: only an
+/// admin's rekey, folded here, does (as just above, through `Out`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_members_out_alone_locks_nothing() {
+    use iroh::TransportAddr;
+    let a = node("a").await;
+    let id = a.create("club").await.unwrap();
+    // m holds the key and answers b's sync: "Out", and a rekey of its own.
+    let ep = chatir_core::irnet::endpoint()
+        .relay_mode(iroh::RelayMode::Disabled)
+        .alpns(vec![b"chatir/sync/2".to_vec()])
+        .clear_ip_transports()
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let at = TransportAddr::Ip(ep.bound_sockets()[0]);
+    let mut inv = Invite::decode(&a.invite(&id).await.unwrap()).unwrap();
+    inv.peers.insert(0, iroh::EndpointAddr::from_parts(ep.id(), [at]));
+    let (go, ready) = tokio::sync::oneshot::channel();
+    let key = inv.key;
+    let m = tokio::spawn(async move {
+        let c = loop {
+            if let Ok(c) = ep.accept().await.unwrap().await {
+                break c;
+            }
+        };
+        let (mut tx, mut rx) = c.accept_bi().await.unwrap();
+        let mut len = [0; 4];
+        rx.read_exact(&mut len).await.unwrap();
+        let mut hello = vec![0; u32::from_be_bytes(len) as usize];
+        rx.read_exact(&mut hello).await.unwrap();
+        ready.await.unwrap();
+        let sk = iroh::SecretKey::generate();
+        let op = Op::Rekey { epoch: [9; 8], boxes: vec![] };
+        let now = chatir_core::now();
+        let (_, raw) =
+            chatir_core::op::seal(&id, &key, &sk, sk.public(), now, op);
+        // `Reply::Out`, its "proof", the end.
+        for f in [&[1u8][..], &raw, &[]] {
+            tx.write_all(&(f.len() as u32).to_be_bytes()).await.unwrap();
+            tx.write_all(f).await.unwrap();
+        }
+        tx.finish().unwrap();
+        c.closed().await;
+    });
+    let b = node("b").await;
+    b.join(&inv.encode()).await.unwrap();
+    let ch = || b.view(&id, |s| s.channels().len()) == Some(1);
+    until("b synced with a", ch).await;
+    go.send(()).unwrap();
+    m.await.unwrap();
+    assert!(!b.locked(&id), "a member's word");
+    say(&b, &id, general(&b, &id), "still here").await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_space_id_alone_gets_nothing_stored() {
     let s = start(&dir("s"), "s", None, true).await;

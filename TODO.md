@@ -29,22 +29,25 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] A storage node charges a file to the day's budget when asked, not
-      when it has it; files and ops share one budget
-- [ ] A demoted admin backdates admin ops (authors date their own)
-- [ ] Build the Android project's Kotlin and Gradle (its Rust, `android.rs`
-      and pushir's JNI, passes clippy for aarch64-linux-android)
-- [ ] A member's `Reply::Out` shows a device locked until a sync says
-      otherwise: answer with the excluding `Rekey` itself, not a word
-- [ ] Every control op refolds all of them: a member's flood of ops only
-      an admin's count (Rename, Channel) is quadratic; profiles keep four
-- [ ] A stolen seed's thief, retired by `Burn`, still posts ops dated
-      before it (authors date their own)
+- [ ] Android and iOS code edited since v0.4.0 built them ("private"
+      keeps chatir out of screenshots and the lock screen, Alerts checks
+      pushir's owner, iOS backups exclude the data folder): built only by
+      a release run, which the next one is
 - [ ] Run the app (each OS) with its narrowed CSP and capabilities
       (`ipc:` only in connect-src; event listen/unlisten and clipboard
       write alone): built and validated, never run
-- [ ] File transfers run at a stranger's 8 MiB window: iroh-blobs' pooled
-      connections get no `irnet::wide`
+- [ ] Whom the walk ever made an admin (or named owner) stays walked: a
+      demoted admin's flood of backdated ops refolds each (a member's
+      never: set apart, or judged where dated)
+- [ ] A stolen seed's thief, retired by `Burn`, still posts ops dated
+      before it (authors date their own). A burn could list its author's
+      ops as its device holds them and refuse the rest (a hash of them
+      tells no peer which: the ids, 32 bytes each), but the thief holds
+      the seed and burns too, dated earlier, listing its own: only what
+      every burn lists is sound (a thief erases, never adds). A new op
+      0.4.0 drops, and a pass before the walk (as `forfeit`): not yet
+      worth it. A demoted admin backdating admin ops: the same list on
+      the demoting `Role`, the same cost
 
 ## Delivery
 - [ ] One DM per person: one row, histories merged; `dm` and calls use the
