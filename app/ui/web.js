@@ -130,6 +130,9 @@
     },
     open_link: ({ url }) => void open(url, "_blank", "noopener,noreferrer"),
     pick: () => [],
+    pick_dir: () => null,
+    // The node's own folder: a browser chooses none there.
+    downloads: () => post("downloads", ""),
     private: () => false,
     opened: () => null,
     update: () => null,

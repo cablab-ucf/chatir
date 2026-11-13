@@ -29,10 +29,10 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       on a laptop's battery
 
 ## From the review, open
-- [ ] Android and iOS code edited since v0.4.0 built them ("private"
-      keeps chatir out of screenshots and the lock screen, Alerts checks
-      pushir's owner, iOS backups exclude the data folder): built only by
-      a release run, which the next one is
+- [ ] Run v0.4.1 on an Android phone and an iPhone: "private" keeps
+      chatir out of screenshots and the lock screen, Alerts checks
+      pushir's owner, iOS backups leave the data folder out (built by its
+      release run, never run)
 - [ ] Run the app (each OS) with its narrowed CSP and capabilities
       (`ipc:` only in connect-src; event listen/unlisten and clipboard
       write alone): built and validated, never run

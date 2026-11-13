@@ -37,7 +37,7 @@ async fn speed() {
     let mut rx = b.subscribe();
     for shape in shapes.split_whitespace() {
         unsafe { std::env::set_var("CHATIR_SEND", shape) };
-        let t = a.send_to(b.device(), &src).await.unwrap();
+        let t = a.send_to(b.device(), &src, None).await.unwrap();
         while !matches!(rx.recv().await, Ok(Event::Incoming { id, .. }) if id == t)
         {
         }

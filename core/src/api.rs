@@ -205,6 +205,9 @@ pub enum Call {
     SendTo {
         device: iroh::EndpointId,
         path: String,
+        /// Its name there, if not the path's (an upload's is random).
+        #[serde(default)]
+        name: Option<String>,
     },
     /// A file offered to us (`Event::Incoming`), pulled into `dir`.
     Accept {
@@ -465,8 +468,9 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
         Call::Decline(Declined::File { id }) => {
             json!(n.decline_file(&id).await?)
         }
-        Call::SendTo { device, path } => {
-            json!({ "id": n.send_to(device, std::path::Path::new(&path)).await? })
+        Call::SendTo { device, path, name } => {
+            let p = std::path::Path::new(&path);
+            json!({ "id": n.send_to(device, p, name.as_deref()).await? })
         }
         Call::Accept { id, dir } => {
             let p = n.accept(&id, std::path::Path::new(&dir)).await?;

@@ -35,6 +35,8 @@ struct Web {
     /// Files saved for the page, each behind a one-time link (`save`).
     out: PathBuf,
     saved: Mutex<HashMap<String, PathBuf>>,
+    /// Where files sent to this node come (`accept`).
+    got: PathBuf,
     news: broadcast::Sender<Arc<str>>,
     cap: Semaphore,
 }
@@ -56,7 +58,8 @@ pub async fn run(
     let _ = std::fs::remove_dir_all(&out); // the last run's, unfetched
     let saved = Mutex::default();
     let cap = Semaphore::new(256);
-    let w = Arc::new(Web { n, token, up, out, saved, news, cap });
+    let got = dir.join("received");
+    let w = Arc::new(Web { n, token, up, out, saved, got, news, cap });
     tokio::spawn(forward(w.clone()));
     if !addr.ip().is_loopback() {
         eprintln!(
@@ -414,8 +417,13 @@ async fn post(w: &Arc<Web>, cmd: &str, q: &Req) -> Result<Value> {
             let c: api::Call = serde_json::from_slice(&q.body)?;
             // Only what the page uploaded is shared: no other path here.
             let mut sealed = None;
+            // Files come only to this node's own `received` folder.
+            if let api::Call::Accept { dir, .. } = &c {
+                ensure!(Path::new(dir) == w.got, "files come to {:?}", w.got);
+            }
             if let api::Call::Offer { path, .. }
-            | api::Call::Seal { path, .. } = &c
+            | api::Call::Seal { path, .. }
+            | api::Call::SendTo { path, .. } = &c
             {
                 let p = Path::new(path);
                 let name = p.file_name().and_then(|f| f.to_str());
@@ -429,6 +437,8 @@ async fn post(w: &Arc<Web>, cmd: &str, q: &Req) -> Result<Value> {
             sealed.map(std::fs::remove_file);
             r
         }
+        // Where an accepted file comes to: this node's own folder.
+        "downloads" => Ok(json!(w.got)),
         // Saved here (any size: `file` stops at 25 MB, in memory), then
         // fetched by a one-time link the browser downloads itself.
         "save" => {

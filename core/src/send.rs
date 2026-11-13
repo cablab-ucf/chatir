@@ -780,11 +780,12 @@ impl Node {
         self: &Arc<Self>,
         device: EndpointId,
         path: &Path,
+        name: Option<&str>,
     ) -> Result<Id> {
         ensure!(device != self.device(), "that is this device");
         let none = "not a device of yours or of anyone you share a space with";
         let user = self.whose(&device).context(none)?;
-        let (id, s) = self.register(path, None, To::Device(device))?;
+        let (id, s) = self.register(path, name, To::Device(device))?;
         let (out, path) = (true, Some(s.path));
         let row = Row { out, path, ..Row::new(device, user, &s.name, s.size) };
         lock(&self.send.book).rows.insert(id, row);

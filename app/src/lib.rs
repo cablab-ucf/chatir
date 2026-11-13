@@ -193,8 +193,11 @@ fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-/// The page may offer only these (desktop) and its own uploads.
+/// The page may offer or send only these (desktop) and its own uploads.
 static PICKED: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(vec![]);
+/// Folders the person picked for files to come to (and downloads).
+static DIRS: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(vec![]);
 
 #[tauri::command]
@@ -204,7 +207,24 @@ async fn chatir(
     call: api::Call,
 ) -> Result<Value, String> {
     let mut upload = None;
-    if let api::Call::Offer { path, .. } | api::Call::Seal { path, .. } = &call
+    // A file comes only where the person said: downloads, or a folder
+    // picked; never a folder the page names.
+    if let api::Call::Accept { dir, .. } = &call {
+        let d = std::path::Path::new(dir);
+        let ok = downloads(app.clone())
+            .is_ok_and(|w| d == std::path::Path::new(&w))
+            || DIRS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|x| x == d);
+        if !ok {
+            return Err("only a folder you pick takes files".into());
+        }
+    }
+    if let api::Call::Offer { path, .. }
+    | api::Call::Seal { path, .. }
+    | api::Call::SendTo { path, .. } = &call
     {
         let p = std::path::Path::new(path);
         let mut picked = PICKED.lock().unwrap_or_else(|e| e.into_inner());
@@ -274,6 +294,7 @@ async fn pick_dir(app: AppHandle) -> Option<String> {
             app.dialog().file().blocking_pick_folder()
         });
         let p = got.await.ok().flatten()?.into_path().ok()?;
+        DIRS.lock().unwrap_or_else(|e| e.into_inner()).push(p.clone());
         Some(p.to_string_lossy().into())
     }
     #[cfg(mobile)]

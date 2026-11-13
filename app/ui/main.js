@@ -2022,12 +2022,21 @@ function openDevice(d) {
       send();
     }
   });
+  // A phone or a browser knows no paths: its files are copied in first.
+  const files = h("input", { type: "file", multiple: true, hidden: true,
+    onchange: async (e) => {
+      const list = [...e.target.files];
+      e.target.value = "";
+      for (const f of list) {
+        const path = await upload(f).catch(() => null);
+        if (path) sendFiles([{ path, name: f.name }]);
+      }
+    } });
   const attach = h("button", { title: "Send files (any size)",
     onclick: () => native ? invoke("pick").then(sendFiles, () => {})
-      : toast("Sending files to a device needs chatir on a computer", true) },
-  icon("clip"));
+      : files.click() }, icon("clip"));
   put($("device"), h("div", { class: "log" }),
-    h("div", { class: "box" }, attach, input,
+    h("div", { class: "box" }, files, attach, input,
       h("button", { title: "Send", onclick: send, disabled: !d.own },
         icon("up"))));
   renderSidebar();
@@ -2051,8 +2060,8 @@ function deviceHeader() {
 /** Files to the open device, each by path; it says yes on its side. */
 async function sendFiles(list) {
   const d = S.dev;
-  for (const { path } of list) {
-    await call("send_to", { device: d.id, path }).catch(() => null);
+  for (const { path, name } of list) {
+    await call("send_to", { device: d.id, path, name }).catch(() => null);
   }
   schedule("dev");
 }

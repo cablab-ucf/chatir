@@ -84,7 +84,7 @@ async fn a_file_sent_to_a_device_arrives_whole() {
     let (a, b, _, _) = pair().await;
     let src = sparse((40 << 20) + 12_345);
     let mut rx = b.subscribe();
-    let id = a.send_to(b.device(), &src).await.unwrap();
+    let id = a.send_to(b.device(), &src, None).await.unwrap();
     assert_eq!(offered(&mut rx).await, id);
     assert_eq!(row(&b, &id)["state"], "offered");
     assert_eq!(row(&b, &id)["user"], serde_json::json!(a.id()));
@@ -97,14 +97,14 @@ async fn a_file_sent_to_a_device_arrives_whole() {
     assert!(a.sharing().is_empty(), "no longer served");
 
     // Declined: a's side says so, and it is served no more.
-    let id = a.send_to(b.device(), &src).await.unwrap();
+    let id = a.send_to(b.device(), &src, None).await.unwrap();
     assert_eq!(offered(&mut rx).await, id);
     b.decline_file(&id).await.unwrap();
     until("a hears it declined", || row(&a, &id)["state"] == "declined").await;
     assert!(b.accept(&id, &out).await.is_err());
 
     // Cancelled by its sender before it was taken.
-    let id = a.send_to(b.device(), &src).await.unwrap();
+    let id = a.send_to(b.device(), &src, None).await.unwrap();
     assert_eq!(offered(&mut rx).await, id);
     a.cancel(&id).await.unwrap();
     until("b hears it", || row(&b, &id)["state"] == "cancelled").await;
@@ -119,9 +119,9 @@ async fn a_device_not_allowed_is_refused() {
     let (a, b, id, _) = pair().await;
     let x = start(&dir("x"), "x").await;
     let src = sparse(1 << 20);
-    let e = a.send_to(x.device(), &src).await.unwrap_err();
+    let e = a.send_to(x.device(), &src, None).await.unwrap_err();
     assert!(e.to_string().contains("share a space"), "{e}");
-    assert!(x.send_to(b.device(), &src).await.is_err(), "x knows nobody");
+    assert!(x.send_to(b.device(), &src, None).await.is_err(), "x knows nobody");
     // x joins, is shown an offer, and is banned: a refuses it, b saves it.
     x.join(&a.invite(&id).await.unwrap()).await.unwrap();
     let knows = || a.view(&id, |s| s.owner_of(&x.device()).is_some());
@@ -157,7 +157,7 @@ async fn an_interrupted_transfer_resumes() {
     let (a, b, _, bdir) = pair().await;
     let src = sparse(512 << 20);
     let mut rx = b.subscribe();
-    let id = a.send_to(b.device(), &src).await.unwrap();
+    let id = a.send_to(b.device(), &src, None).await.unwrap();
     assert_eq!(offered(&mut rx).await, id);
     let out = dir("out");
     let p = b.accept(&id, &out).await.unwrap();
