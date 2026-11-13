@@ -123,7 +123,8 @@ rate limit for relayed traffic.
 - No forward secrecy within an epoch; keys rotate on bans and on request.
 - Authors date their own ops (at most ten minutes ahead), so a demoted
   admin's backdated ops stand until undone.
-- A linked device is you: lost, it is retired with the whole identity.
+- A linked device is you: lost, it is retired with the whole identity,
+  and whoever holds it can still add ops dated before the retirement.
 - pushir's relay learns when a device is sent to and its address, not by
   whom, for which space, or how much. A space's labels die with a rekey.
 - Presence is said, not polled: a device that dies without `Gone` looks
