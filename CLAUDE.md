@@ -21,3 +21,10 @@
   or drop one (a wake, a retry, a lane, a nap, a permission) comes with a
   test that it still arrives, and nothing fails silently: what cannot be
   delivered is said.
+- Every communication goes one way. A push on the device's lane wakes it
+  and carries what is small: a message, a ring, a device text, a notice
+  that a file waits. It is shown with no node running and acked back.
+  What is larger, or a stream (sync, files, calls), follows on an irnet
+  connection, which falls back to standard iroh relays (`irnet::fallback`)
+  when the lab's do not answer. Nothing waits on the other side's app
+  being open.

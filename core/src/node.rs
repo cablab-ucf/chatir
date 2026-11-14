@@ -91,6 +91,9 @@ type Wait = (Id, u64, EndpointId, bool, Instant);
 const WAITED: Duration = Duration::from_secs(120);
 /// How long a text to one of our devices waits for it to wake.
 const WOKEN: Duration = Duration::from_secs(70);
+/// A text that came again within this long is a retry whose ack was lost
+/// (the wire carries no id): taken, not told twice.
+const AGAIN: Duration = Duration::from_secs(90);
 /// Our lane is proved every this many beats, and trusted this long after.
 const LANE_BEATS: u64 = 5;
 const PROVED: Duration = Duration::from_secs(7 * 60);
@@ -261,6 +264,9 @@ impl Notice {
 /// whether its calls ring here, who is in it and its rooms' names.
 #[derive(Serialize, Deserialize)]
 struct Page {
+    // Our own space: a text from one of our devices is under its key.
+    #[serde(default)]
+    own: bool,
     name: String,
     dm: bool,
     ring: bool,
@@ -802,6 +808,8 @@ pub struct Node {
     rang: Mutex<HashSet<(Id, Id, Ch)>>,
     // Texts from our devices not yet told: a notice each, as a message is.
     texts: Mutex<Vec<Notice>>,
+    // Texts of ours sent by lane, by the ack each awaits.
+    told: Mutex<HashMap<Key, tokio::sync::oneshot::Sender<()>>>,
     name: Mutex<String>,
     events: broadcast::Sender<Event>,
     clock: AtomicU64,
@@ -1137,6 +1145,7 @@ impl Node {
             closed: Mutex::new(closed),
             rang: Mutex::default(),
             texts: Mutex::default(),
+            told: Mutex::default(),
             name: Mutex::new(cfg.name),
             events: broadcast::channel(1024).0,
             clock: AtomicU64::new(0),
@@ -1628,6 +1637,7 @@ impl Node {
             let tag = format!("@{}", s.display_name(&me).to_lowercase());
             let ours = s.recent_by(&me, 200);
             let page = Page {
+                own: sp.id == self.own,
                 name: s.name().to_string(),
                 dm,
                 ring: ring && loud,
@@ -1660,6 +1670,33 @@ impl Node {
             (crate::push::DIAL, x, _) => label(&x).map(|_| None),
             _ => None,
         }
+    }
+
+    /// A text from one of our devices on our lane, with no node running:
+    /// its notice (once), read under our own space's key in the phonebook,
+    /// and its ack back to the device it came from.
+    pub async fn text(dir: &Path, b: &[u8]) -> Option<Notice> {
+        let (kind, l, rest) = crate::push::split(b)?;
+        if kind != crate::push::TEXT {
+            return None;
+        }
+        let pb: BTreeMap<Id, Page> = store::load(&dir.join("phonebook"));
+        let mine = |(i, p): &(&Id, &Page)| p.own && ev_label(i, &p.key) == l;
+        let k = pb.iter().find(mine)?.1.key;
+        let ((from, _, back, name, text), mac) = open_text(&k, rest)?;
+        if let Some(at) = crate::push::lane_of(&back) {
+            let ack = [&[crate::push::ACK][..], &text_ack(&k, &mac)].concat();
+            crate::push::send(&at, &ack).await;
+        }
+        if taken_text(dir, &from, &text) {
+            return None;
+        }
+        let who = match name.is_empty() {
+            true => from.fmt_short().to_string(),
+            false => name,
+        };
+        let id = Id(*from.as_bytes());
+        Some(Notice::new(id, Ch::default(), who, text, false, false))
     }
 
     /// A ring to a phone with no node running, handled without one: a
@@ -3246,7 +3283,33 @@ impl Node {
                     crate::push::event(&dir, &at, &ack).await
                 });
             }
+            Some((crate::push::TEXT, l, rest)) => {
+                let Some((sp, k)) = self.labelled(&l, None) else { return };
+                let Some(((from, _, back, _, text), mac)) =
+                    open_text(&k, rest).filter(|_| sp.id == self.own)
+                else {
+                    return;
+                };
+                if !self.devices().iter().any(|d| d.0 == from) {
+                    return;
+                }
+                if let Some(at) = crate::push::lane_of(&back) {
+                    let a = text_ack(&k, &mac);
+                    let ack = [&[crate::push::ACK][..], &a].concat();
+                    tokio::spawn(
+                        async move { crate::push::send(&at, &ack).await },
+                    );
+                }
+                if !taken_text(&self.dir, &from, &text) {
+                    self.show_text(from, text);
+                }
+            }
             Some((crate::push::ACK, a, _)) => {
+                // A text of ours, taken by the device it went to.
+                if let Some(tx) = lock(&self.told).remove(&a) {
+                    let _ = tx.send(());
+                    return;
+                }
                 // Our own, back through the relay: our lane works.
                 let mut echo = lock(&self.echo);
                 if same(&echo.0, &a) && a != Key::default() {
@@ -3410,9 +3473,109 @@ impl Node {
 
     /// Hand `text` to one of our own devices: one link straight to it (no
     /// space, no sync, no other device), so fewer packets; it must be up.
-    pub async fn hand(&self, device: EndpointId, text: &str) -> Result<()> {
+    /// True once it took it; false if it went by its lane and that device
+    /// is away (the relay keeps it: it shows there as it is back).
+    pub async fn hand(&self, device: EndpointId, text: &str) -> Result<bool> {
         ensure!(self.devices().iter().any(|d| d.0 == device), "not ours");
         ensure!(text.len() <= MAX_TEXT, "too long");
+        // By its lane: shown there at once, asleep or not, and acked back;
+        // and directly too (a device before 0.4.9 hears only that). Either
+        // way it is taken once (`taken_text`).
+        let lane = self.text_by_lane(device, text);
+        let ack = lane.as_ref().map(|l| l.0);
+        let acked = async move {
+            if let Some((_, rx)) = lane
+                && rx.await.is_ok()
+            {
+                return;
+            }
+            std::future::pending::<()>().await
+        };
+        let r = tokio::select! {
+            () = acked => Ok(true),
+            r = self.hand_direct(device, text, ack.is_some()) => match r {
+                Ok(()) => Ok(true),
+                Err(_) if ack.is_some() => Ok(false),
+                Err(e) => Err(e),
+            },
+        };
+        ack.map(|a| lock(&self.told).remove(&a));
+        r
+    }
+
+    /// `text` on `device`'s lane, to its mailbox (the relay keeps it while
+    /// it is away), where it opens with no node running; again until acked,
+    /// as an event is. None if it cannot go so: no lane, too long a text.
+    pub(crate) fn text_by_lane(
+        &self,
+        device: EndpointId,
+        text: &str,
+    ) -> Option<(Key, tokio::sync::oneshot::Receiver<()>)> {
+        let own = self.get(&self.own).ok()?;
+        let k = lock(&own.book).key(own.inv.as_ref()?).0;
+        let all = self.all().into_iter();
+        let to = all
+            .into_iter()
+            .find_map(|sp| self.lanes(&sp.id).remove(&device))?;
+        let back = crate::push::lane_at(&self.dir).unwrap_or_default();
+        let name = self.label(&self.device()).unwrap_or_default();
+        let t: Text = (self.device(), now(), back, name, text.into());
+        let mac = text_mac(&k, &t);
+        let body = postcard::to_allocvec(&(&t, mac)).ok()?;
+        let label = ev_label(&self.own, &k);
+        let f = [&[crate::push::TEXT][..], &label, &body].concat();
+        if f.len() > pushir::MAX {
+            return None;
+        }
+        let a = text_ack(&k, &mac);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        lock(&self.told).insert(a, tx);
+        let n = self.this.get().cloned().unwrap_or_default();
+        tokio::spawn(async move {
+            for wait in [0, 3, 10, 45] {
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                let Some(n) = n.upgrade() else { return };
+                if !lock(&n.told).contains_key(&a) {
+                    return;
+                }
+                drop(n);
+                crate::push::send(&to, &f).await;
+            }
+        });
+        Some((a, rx))
+    }
+
+    /// `text` straight to `device` (QUIC proves us), waking it through its
+    /// lane if it is up in no space we share: at once, or (the text went by
+    /// its lane too, which wakes nothing) once that had 5 s to be acked.
+    async fn hand_direct(
+        &self,
+        device: EndpointId,
+        text: &str,
+        lane: bool,
+    ) -> Result<()> {
+        let up = self.all().iter().any(|sp| self.present(sp, &device));
+        let wake = async {
+            if lane {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            if !up {
+                self.rouse(device);
+            }
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            r = self.hand_tries(device, text, up) => r,
+            () = wake => unreachable!(),
+        }
+    }
+
+    async fn hand_tries(
+        &self,
+        device: EndpointId,
+        text: &str,
+        up: bool,
+    ) -> Result<()> {
         let once = || async {
             let c = self.connect(device, HAND).await?;
             let (mut tx, mut rx) = c.open_bi().await?;
@@ -3422,12 +3585,12 @@ impl Node {
             c.close(0u32.into(), b"");
             anyhow::Ok(ok)
         };
-        // Asleep, it is woken through its lane (as a file sent to it is),
-        // and tried again for a minute while it starts.
-        let (ten, end) = (Duration::from_secs(10), Instant::now() + WOKEN);
-        let mut woken = false;
+        // Not taken (asleep, or its ack lost: then taken once, `handed`):
+        // woken through its lane if not yet, and tried again for a minute.
+        let (each, end) = (Duration::from_secs(15), Instant::now() + WOKEN);
+        let mut woken = !up;
         loop {
-            match tokio::time::timeout(ten, once()).await {
+            match tokio::time::timeout(each, once()).await {
                 Ok(Ok(ok)) => {
                     ensure!(ok, "it did not take it");
                     return Ok(());
@@ -3436,7 +3599,7 @@ impl Node {
                     if !std::mem::replace(&mut woken, true) {
                         self.rouse(device);
                     }
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 _ => bail!("that device did not wake: off, or no push lane"),
             }
@@ -3452,8 +3615,20 @@ impl Node {
         tx.write_all(&[ours as u8]).await?;
         tx.finish()?;
         if ours {
-            let (name, text) = (self.label(&from), String::from_utf8(text)?);
-            // A notice too: out of sight, or asleep and woken for it.
+            let text = String::from_utf8(text)?;
+            if !taken_text(&self.dir, &from, &text) {
+                self.show_text(from, text);
+            }
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), c.closed()).await;
+        Ok(())
+    }
+
+    /// A text from one of our devices, taken: a notice, as a message is
+    /// (out of sight, or woken for it), and to the page.
+    fn show_text(&self, from: EndpointId, text: String) {
+        {
+            let name = self.label(&from);
             let who =
                 name.clone().unwrap_or_else(|| from.fmt_short().to_string());
             let n = Notice::new(
@@ -3467,8 +3642,6 @@ impl Node {
             lock(&self.texts).push(n);
             self.emit(Event::Handed { from, name, text });
         }
-        let _ = tokio::time::timeout(Duration::from_secs(5), c.closed()).await;
-        Ok(())
     }
 
     /// A short code (one minute, one try) for `code` (any code, or a
@@ -5068,6 +5241,51 @@ async fn quiet(links: Links, d: EndpointId, c: Connection) {
 /// An event's label, for space `id` under key `k`: a relay sees no space.
 fn ev_label(id: &Id, k: &Key) -> Key {
     crate::crypto::kdf("event", &[&id.0, k])
+}
+
+/// A text by lane: from which of our devices, when, that device's lane
+/// (for the ack), its name, and the text.
+type Text = (EndpointId, u64, String, String, String);
+
+/// A text's MAC under our own space's key: only our devices make it.
+fn text_mac(k: &Key, (from, ts, back, name, text): &Text) -> Key {
+    let ts = ts.to_le_bytes();
+    let parts =
+        [&k[..], from.as_bytes(), &ts, back.as_bytes(), name.as_bytes()];
+    crate::crypto::kdf(
+        "device text",
+        &[&parts[..], &[text.as_bytes()]].concat(),
+    )
+}
+
+/// Its ack: only a device of ours that opened it makes it.
+fn text_ack(k: &Key, mac: &Key) -> Key {
+    crate::crypto::kdf("device text ack", &[k, mac])
+}
+
+/// A text frame's body, if one of our devices made it under `k` (not
+/// dated ahead past the skew).
+fn open_text(k: &Key, rest: &[u8]) -> Option<(Text, Key)> {
+    let (t, mac): (Text, Key) = postcard::from_bytes(rest).ok()?;
+    (t.1 <= now() + SKEW && same(&text_mac(k, &t), &mac)).then_some((t, mac))
+}
+
+/// Whether `text` from `from` was taken within `AGAIN` (a retry whose ack
+/// was lost, or the same text by lane and directly): noted either way.
+/// On disk: a sleeping device's ring and its node share it.
+fn taken_text(dir: &Path, from: &EndpointId, text: &str) -> bool {
+    let f = dir.join("handed");
+    let key =
+        *blake3::hash(&[from.as_bytes(), text.as_bytes()].concat()).as_bytes();
+    let (at, since) = (now(), AGAIN.as_millis() as u64);
+    let mut seen: Vec<(Key, u64)> = store::load(&f);
+    seen.retain(|x| at.saturating_sub(x.1) < since);
+    let again = seen.iter().any(|x| x.0 == key);
+    if !again {
+        seen.push((key, at));
+        let _ = store::save(&f, &seen);
+    }
+    again
 }
 
 /// The ack device `d` owes for an event at `ts`: none but a member makes

@@ -2039,16 +2039,13 @@ function openDevice(d) {
   const input = h("textarea", { rows: 1, maxLength: MAX_HAND,
     placeholder: d.own ? `Text to ${d.name ?? "it"}` : "Files only",
     disabled: !d.own });
-  const send = async () => {
+  // Shown and cleared at once, sending until the device takes it (a
+  // sleeping one is woken first): never typed twice.
+  const send = () => {
     const text = input.value.trim();
     if (!text) return;
-    try {
-      await call("hand", { device: d.id, text });
-    } catch {
-      return;
-    }
-    said(d.id, text, true);
     input.value = "";
+    hand(d.id, said(d.id, text, true));
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2100,12 +2097,25 @@ async function sendFiles(list) {
   schedule("dev");
 }
 
-/** Text a device of ours handed this one, or this one handed it. */
+/** Text a device of ours handed this one, or this one handed it (then
+ * "sending" until it took it, or "failed"): the entry. */
 function said(dev, text, me) {
   S.texts ??= new Map();
   const v = S.texts.get(dev) ?? [];
-  v.push({ text, me, ts: Date.now() });
+  const x = { dev, text, me, ts: Date.now(), state: me ? "sending" : "" };
+  v.push(x);
   S.texts.set(dev, v.slice(-100));
+  if (S.dev?.id === dev) schedule("dev");
+  return x;
+}
+
+/** Ours to `dev`, once, however long it takes to wake. */
+async function hand(dev, x) {
+  x.state = "sending";
+  if (S.dev?.id === dev) schedule("dev");
+  x.state = await rpc("hand", { device: dev, text: x.text })
+    .then((taken) => taken === false ? "away" : "",
+      (e) => (x.error = String(e), "failed"));
   if (S.dev?.id === dev) schedule("dev");
 }
 
@@ -2129,8 +2139,14 @@ async function renderDevice() {
   if (!log || S.dev !== d) return;
   const mine = all.filter((t) => t.device === d.id).map((t) => ({ t }));
   const texts = (S.texts?.get(d.id) ?? []).map((x) => ({ x }));
-  const row = ({ t, x }) => x ? h("div", { class: "said" + (x.me ? " me" : "") },
-    h("small", {}, new Date(x.ts).toLocaleTimeString()), x.text,
+  const row = ({ t, x }) => x ? h("div", { class: "said" + (x.me ? " me" : "") +
+    (x.state ? " " + x.state : ""), title: x.error ?? "" },
+    h("small", {}, new Date(x.ts).toLocaleTimeString(),
+      x.state === "sending" && " · Sending…",
+      x.state === "away" && " · On its way: shows there once it is online",
+      x.state === "failed" && " · Not delivered"), x.text,
+    x.state === "failed" && h("button", { class: "btn grey",
+      onclick: () => hand(x.dev, x) }, "Retry"),
     h("button", { class: "gear", title: "Copy", onclick: () => copy(x.text) },
       icon("copy")))
     : h("div", { class: "xfer " + t.state, title: queued(t)
@@ -3102,9 +3118,13 @@ async function sendTo(d) {
       "Asleep, it is woken first.", label: "Text or link", ok: "Send",
     maxLength: 4000 });
   if (!text) return;
+  const x = said(d.id, text, true);
   const wait = toast("Sending (waking it if asleep)…", false, 75e3);
-  quiet(call("hand", { device: d.id, text }).then(() => toast("Sent"))
-    .finally(() => wait.remove()));
+  await hand(d.id, x);
+  wait.remove();
+  toast(x.state === "failed" ? `Not delivered: ${x.error}`
+    : x.state === "away" ? "On its way: it shows there once that device is online"
+    : "Delivered", x.state === "failed");
 }
 
 async function profilesFlow() {

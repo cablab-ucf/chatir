@@ -151,6 +151,11 @@ async fn hear(app: AppHandle, n: Arc<Node>) {
             n.hear(&f);
             continue;
         }
+        // A text from another of ours: shown from the push alone.
+        if let Some(x) = Node::text(&dir, &f).await {
+            notify(&app, &x).await;
+            continue;
+        }
         let Some(news) = Node::news(&dir, &f) else { continue };
         let (x, catch) = news.map_or((None, true), |w| Node::woken(&dir, &w));
         if let Some(x) = &x {
@@ -1250,7 +1255,12 @@ fn forward(app: AppHandle, n: Arc<Node>) {
 
 fn alerts(n: &Node, front: bool) -> Vec<Notice> {
     let view = *VIEW.lock().unwrap_or_else(|e| e.into_inner());
-    let shown = |x: &Notice| front && view == Some((x.space, x.room));
+    // In front, the page shows the room in view, and a device's text or
+    // file (no space's) as it comes: not a banner too.
+    let spaces = n.spaces();
+    let shown = |x: &Notice| {
+        front && (view == Some((x.space, x.room)) || !spaces.contains(&x.space))
+    };
     n.notices().into_iter().filter(|x| x.ring || !shown(x)).collect()
 }
 

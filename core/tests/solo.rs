@@ -350,3 +350,59 @@ async fn a_reply_to_you_is_a_mention_while_asleep() {
     let n = woken(&db, &rung(&db).await).0.expect("to b: told");
     assert_eq!(n.body, "me!");
 }
+
+/// A text from one of our devices reaches our phone with its node down at
+/// once, by its lane: shown from the phonebook (our own space's key), no
+/// node started, acked back, so the sender knows within seconds. Again (a
+/// retry, or the same text directly too) it shows nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_text_reaches_our_sleeping_phone_at_once() {
+    let a = node(&dir("ta"), "laptop", false).await;
+    let db = dir("tb");
+    let link = Some(a.link_code().await);
+    let cfg = Config {
+        dir: db.clone(),
+        name: "phone".into(),
+        net: relay(),
+        link,
+        serve: false,
+        notes: None,
+        big: None,
+        inbox: None,
+    };
+    let b = Node::start(cfg).await.unwrap();
+    let dev = b.device();
+    let own = a.own();
+    let lane = || {
+        let p = a.view(&own, |s| s.pushes_of(None)).unwrap_or_default();
+        p.iter().any(|(d, u)| *d == dev && u.contains("pushir:"))
+    };
+    until("the laptop has the phone's lane", lane).await;
+    b.shutdown().await;
+    drop(b);
+    assert!(db.join("phonebook").exists(), "left as it slept");
+    let to = a.clone();
+    let t = std::time::Instant::now();
+    let sent = tokio::spawn(async move { to.hand(dev, "on its way").await });
+    // What the phone's mailbox hands Push.kt, read with no node running.
+    let mut shown = None;
+    for _ in 0..400 {
+        let frames: Vec<Frame> = RANG.lock().unwrap().clone();
+        for f in frames.iter().filter_map(|f| read(&db, f)) {
+            if let Some(n) = Node::text(&db, &f).await {
+                shown = Some((n, f));
+            }
+        }
+        if shown.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (n, f) = shown.expect("shown from the push alone");
+    let from = a.label(&a.device()).unwrap();
+    assert_eq!((n.title, n.body.as_str()), (from, "on its way"), "by name");
+    let taken = tokio::time::timeout(Duration::from_secs(15), sent).await;
+    assert!(taken.expect("acked within seconds").unwrap().unwrap(), "taken");
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(Node::text(&db, &f).await.is_none(), "shown once");
+}
