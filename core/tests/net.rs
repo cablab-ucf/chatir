@@ -1330,6 +1330,12 @@ async fn iroh_sleeps_and_a_dial_wakes_it() {
         assert!(i < 120, "b's iroh never slept");
     }
     assert!(!b.iroh_up(), "asleep");
+    // Its blob store is the node's, not the router's that rested: an
+    // image still goes in (it failed with "send update").
+    let img = dir("img");
+    std::fs::create_dir_all(&img).unwrap();
+    std::fs::write(img.join("a.png"), b"not much of a png").unwrap();
+    b.offer(&id, &img.join("a.png"), None).await.expect("a file after a rest");
     let n = texts(&a, &id, &ch).len();
     say(&b, &id, ch, "by lane, iroh asleep").await;
     until("a hears b", || texts(&a, &id, &ch).len() > n).await;

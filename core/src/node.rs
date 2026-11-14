@@ -279,6 +279,9 @@ struct Page {
     key: Key,
     names: BTreeMap<Id, String>,
     rooms: BTreeMap<Ch, String>,
+    // Who we are: what we said from another device of ours tells us nothing.
+    #[serde(default)]
+    me: Option<Id>,
 }
 
 /// A member's device here (said `Here`, or answered one) or `Gone`, when
@@ -1302,7 +1305,7 @@ impl Node {
         // Every link counted, each way (`traffic`).
         use crate::traffic::Counted;
         let t = &self.traffic;
-        let blobs = BlobsProtocol::new(&self.files, gate);
+        let blobs = Kept(BlobsProtocol::new(&self.files, gate));
         let mut router = Router::builder(ep.clone())
             .accept(iroh_blobs::ALPN, Counted(blobs, t.clone()))
             .accept(iroh_gossip::ALPN, Counted(gossip.clone(), t.clone()))
@@ -1647,6 +1650,7 @@ impl Node {
                 key,
                 names,
                 rooms: s.rooms().into_iter().collect(),
+                me: Some(me),
             };
             if !locked {
                 pb.insert(sp.id, page);
@@ -1734,11 +1738,18 @@ impl Node {
         if !e.live && store::append(&log, raw).is_err() {
             return (None, true);
         }
-        let Some(who) = p.names.get(&s.author) else { return (None, true) };
-        let who = match who.is_empty() {
-            true => s.author.to_string()[..8].to_string(),
-            false => who.clone(),
-        };
+        // Ours, from another device of ours: nothing to tell us, but the
+        // node starts for it (a space joined there, a level set).
+        if p.me == Some(s.author) {
+            return (None, true);
+        }
+        // One the phonebook does not name yet (it is older than their
+        // profile): shown all the same, by a short id (only a member opens
+        // ops under this key), and the node starts to learn who.
+        let unknown = !p.names.contains_key(&s.author);
+        let who = p.names.get(&s.author).filter(|w| !w.is_empty());
+        let who =
+            who.cloned().unwrap_or_else(|| s.author.to_string()[..8].into());
         let room = |ch| p.rooms.get(ch).map_or("call", String::as_str);
         let at = |ch| match p.dm {
             true => who.clone(),
@@ -1788,7 +1799,7 @@ impl Node {
             Op::Knock { .. } => return (None, true),
             _ => None,
         };
-        (shown, false)
+        (shown, unknown)
     }
 
     /// Whether our lane wakes us: it is on a relay, and a frame we sent it
@@ -2324,6 +2335,7 @@ impl Node {
         }
         // A new key: a new room, which our storage nodes hear of at once.
         if self.rehome(&sp) && sp.inv.is_some() {
+            self.phonebook();
             self.stores(&sp.id).into_iter().for_each(|s| self.sync(&sp, s.0));
             // Our ring code too: the old one, which those cut off hold, dies.
             let me = self.id();
@@ -2381,6 +2393,8 @@ impl Node {
         // Members came or went: our storage nodes hear at once whom to take.
         let n = sp.devices().len();
         if sp.inv.is_some() && sp.vouched.swap(n, Relaxed) != n {
+            // Their names too, for a ring while this node is down.
+            self.phonebook();
             self.stores(&sp.id).into_iter().for_each(|s| self.sync(&sp, s.0));
         }
         if fix {
@@ -2576,6 +2590,9 @@ impl Node {
         if !card || ours {
             let _ = self.tell_push(&id).await;
         }
+        // A ring in it rings at once even if this node never sleeps
+        // cleanly (Android kills it): the phonebook has it now.
+        self.phonebook();
         Ok(id)
     }
 
@@ -5247,6 +5264,8 @@ impl Node {
             let _ = i.router.shutdown().await;
             i.ep.close().await;
         }
+        // Closed with the node alone: every router it had kept it open.
+        let _ = self.files.shutdown().await;
         lock(&self.held).take();
         crate::usage::note(&self.dir, "down", moved);
     }
@@ -5312,6 +5331,19 @@ async fn quiet(links: Links, d: EndpointId, c: Connection) {
             return c.close(0u32.into(), b"quiet");
         }
         tokio::time::sleep(left).await;
+    }
+}
+
+/// The blob store, served by each router iroh has (it rests and wakes):
+/// a router's end leaves it open (iroh-blobs' own handler closes it, and
+/// every image and file after the first rest then failed: "send update").
+/// The node's end closes it.
+#[derive(Debug, Clone)]
+struct Kept(BlobsProtocol);
+
+impl ProtocolHandler for Kept {
+    async fn accept(&self, c: Connection) -> Result<(), AcceptError> {
+        self.0.accept(c).await
     }
 }
 
@@ -5608,6 +5640,7 @@ async fn heartbeat(n: Weak<Node>) {
         lock(&n.waits).retain(|_, w| w.4.elapsed() < WAITED);
         // Our lane, proved now and then: only one that works wakes us.
         if i % LANE_BEATS == 0 && n.serve.is_none() {
+            n.phonebook();
             n.check_lane().await;
         }
         // Nothing needs iroh: asleep, our lane wakes it (`up`).
