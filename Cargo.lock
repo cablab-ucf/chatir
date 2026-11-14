@@ -1010,7 +1010,6 @@ dependencies = [
  "ndk-context",
  "objc2-foundation",
  "pushir",
- "qrcode",
  "serde",
  "serde_json",
  "tauri",
@@ -1026,6 +1025,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webkit2gtk",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1050,6 +1050,7 @@ dependencies = [
  "pairir",
  "postcard",
  "pushir",
+ "qrcode",
  "reqwest",
  "serde",
  "serde_json",

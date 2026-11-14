@@ -44,41 +44,68 @@ async fn seen(app: &AppHandle, fg: bool) {
     }
 }
 
-/// A minute, then asleep if still out of sight; in a call, once it ends.
+/// Asleep a minute after out of sight, or once it may (a call or a file
+/// on its way ended; a laptop unplugged): checked each minute.
 #[cfg(any(desktop, target_os = "android"))]
 async fn doze(app: AppHandle) {
     use std::sync::atomic::Ordering::SeqCst;
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;
-        if FG.load(SeqCst) {
+        if FG.load(SeqCst) || running().is_none() {
             return;
         }
-        // A call, or a file on its way: up till it ends.
-        if running().is_none_or(|n| n.in_call().is_none() && !n.transferring())
-        {
-            break;
+        if nap().await {
+            app.state::<App>().0.send_replace(None);
+            return;
         }
-    }
-    if nap().await {
-        app.state::<App>().0.send_replace(None);
     }
 }
 
-/// Asleep, out of sight and out of calls (desktops: only while their
-/// pushir lane is on a relay; else they stay up in the tray). True if it
-/// stopped.
+/// Asleep, out of sight and out of calls, no file on its way. A computer
+/// only on battery, and while its pushir lane is on a relay: plugged in
+/// (a desktop always), it stays up in the tray, a peer that syncs, serves
+/// and receives. True if it stopped.
 #[cfg(any(desktop, target_os = "android"))]
 async fn nap() -> bool {
     use std::sync::atomic::Ordering::SeqCst;
     let n = running().filter(|n| n.in_call().is_none() && !FG.load(SeqCst));
     let n = n.filter(|n| !n.transferring());
     #[cfg(desktop)]
-    let n = n.filter(|n| n.wakes());
+    let n = n.filter(|n| n.wakes() && on_battery());
     let Some(n) = n else { return false };
     let _one = ONE.lock().await;
     *NODE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     n.shutdown().await;
     true
+}
+
+/// Running on battery: some battery discharging (Linux), "Battery Power"
+/// (macOS), no AC line (Windows). No battery, a desktop: never.
+#[cfg(desktop)]
+fn on_battery() -> bool {
+    #[cfg(target_os = "linux")]
+    return std::fs::read_dir("/sys/class/power_supply").is_ok_and(|d| {
+        d.flatten().any(|e| {
+            let s = std::fs::read_to_string(e.path().join("status"));
+            s.is_ok_and(|s| s.trim() == "Discharging")
+        })
+    });
+    #[cfg(target_os = "macos")]
+    return std::process::Command::new("pmset")
+        .args(["-g", "batt"])
+        .output()
+        .is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout).contains("'Battery Power'")
+        });
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Power::{
+            GetSystemPowerStatus, SYSTEM_POWER_STATUS,
+        };
+        // SAFETY: plain data, filled in by the call.
+        let mut p: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+        unsafe { GetSystemPowerStatus(&mut p) != 0 && p.ACLineStatus == 0 }
+    }
 }
 
 /// Desktop: in sight is a window shown, not minimized.
@@ -923,13 +950,6 @@ fn log(msg: String) {
     tracing::warn!("page: {}", msg.chars().take(500).collect::<String>());
 }
 
-#[tauri::command]
-fn qr(text: String) -> Result<String, String> {
-    let q = qrcode::QrCode::new(text.as_bytes()).map_err(|e| e.to_string())?;
-    let mut svg = q.render::<qrcode::render::svg::Color>();
-    Ok(svg.quiet_zone(true).min_dimensions(240, 240).build())
-}
-
 /// MathML; the page checks the tags.
 #[tauri::command]
 async fn math(src: String, display: bool) -> Result<String, String> {
@@ -1092,7 +1112,6 @@ pub fn run() {
     let b = b.invoke_handler(tauri::generate_handler![
         chatir,
         link,
-        qr,
         math,
         save,
         share,

@@ -1181,6 +1181,35 @@ async fn text_is_handed_to_one_of_our_devices() {
     assert!(b.hand(a2.device(), "hi").await.is_err(), "not b's device");
 }
 
+/// Down, our device is woken (its lane) and the text waits for it: here
+/// it starts again 12 s on, as its app does on that push (past the 10 s
+/// one try that said "asleep?" before).
+#[tokio::test(flavor = "multi_thread")]
+async fn text_waits_for_our_device_to_wake() {
+    let a = node("a").await;
+    let d2 = dir("a2");
+    let a2 = start(&d2, "laptop", Some(a.link_code().await), false).await;
+    let dev = a2.device();
+    until("a knows a2", || a.devices().iter().any(|d| d.0 == dev)).await;
+    a2.shutdown().await;
+    drop(a2);
+    let to = a.clone();
+    let sent = tokio::spawn(async move { to.hand(dev, "later").await });
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    let a2 = start(&d2, "laptop", None, false).await;
+    let mut rx = a2.subscribe();
+    let got = async {
+        loop {
+            if let Ok(Event::Handed { text, .. }) = rx.recv().await {
+                return text;
+            }
+        }
+    };
+    let got = tokio::time::timeout(Duration::from_secs(80), got).await;
+    assert_eq!(got.expect("woken, it gets it"), "later");
+    sent.await.unwrap().unwrap();
+}
+
 /// A small space holds no gossip mesh: ops go straight to each of its
 /// devices, and posts, presence and a call's ring all arrive.
 #[tokio::test(flavor = "multi_thread")]
