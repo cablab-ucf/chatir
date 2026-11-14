@@ -77,7 +77,9 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
   or added here: you on another device (link code), a person (contact
   code), a space (invite), a device for files (its key), a storage node.
 - Channels dragged into order (admins); Ctrl+B hides the sidebar; images
-  pasted straight in; QR codes scanned with the camera you pick.
+  pasted straight in; QR codes scanned with the camera you pick, zoomed
+  (pinch or slider) to read only the square on screen.
+- On a touch screen Enter is a new line and the send button sends.
 - Search, Ctrl+K, vim keys; profiles, linked devices, themes; *Network
   use* (a table and the day's traffic an hour a bar, relay keys and their
   state) and *Devices* (who is up and since when, direct or relayed, bytes
