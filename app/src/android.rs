@@ -508,6 +508,8 @@ fn shown(dir: &std::path::Path, news: News) -> Shown {
         return took(&n, dir, false);
     }
     let (n, catch) = Node::woken(dir, &news);
+    let ev = if n.is_some() { "shown" } else { "unshown" };
+    chatir_core::usage::note(dir, ev, serde_json::json!({ "catch": catch }));
     // A call: the node starts as it rings, so it connects as it is answered.
     let catch = catch || n.as_ref().is_some_and(|x| x.ring);
     if catch {

@@ -25,6 +25,16 @@ class MainActivity : TauriActivity() {
   private var veiled = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Swiped away before, the process lived on for pushes, but Tauri's page
+    // went with its activity and is made once a process: start afresh, as
+    // asked (a call answered from its notification stays answered).
+    if (gone) {
+      super.onCreate(savedInstanceState)
+      startActivity(Intent(intent).setClass(this, MainActivity::class.java)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+      Runtime.getRuntime().exit(0)
+      return
+    }
     // The UI is dark: light system-bar icons whatever the system theme.
     val bars = SystemBarStyle.dark(Color.TRANSPARENT)
     enableEdgeToEdge(bars, bars)
@@ -56,8 +66,23 @@ class MainActivity : TauriActivity() {
   // Swiped away, the process stays (pushir's service): the node naps, and
   // nothing reaches for an activity there is none of.
   override fun onDestroy() {
-    if (!isChangingConfigurations) Wake.page(false)
+    if (!isChangingConfigurations) {
+      gone = true
+      Wake.page(false)
+    }
     super.onDestroy()
+  }
+
+  // In sight, Android always lets the push service into the foreground: a
+  // start it refused in the background (boot, an alarm) is made good now.
+  override fun onStart() {
+    super.onStart()
+    org.pushir.Pushir.hold(this)
+  }
+
+  companion object {
+    /** The last activity was destroyed for good: its page with it. */
+    @Volatile private var gone = false
   }
 
   // Out of sight, off the lock screen: back over it only as a call rings

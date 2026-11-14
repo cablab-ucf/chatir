@@ -3244,7 +3244,9 @@ async function usageFlow() {
   const row = (k, v, tip) => h("tr", {}, h("th", {}, k, tip && [" ", info(tip)]),
     h("td", {}, v));
   const what = (e) => ({ up: "chatir started", down: "chatir stopped",
-    woken: "woken by a push", "iroh asleep": "iroh slept" })[e.ev] ?? e.ev;
+    woken: "woken by a push", "iroh asleep": "iroh slept",
+    shown: "a push, shown", unshown: "a push, nothing new to show" })[e.ev]
+    ?? e.ev;
   modal((finish) => h("div", {},
     h("div", { class: "m-body" }, h("h2", {}, "Network use"),
       h("table", { class: "facts" }, h("tbody", {},
@@ -3532,6 +3534,8 @@ async function health(ask = "") {
   const bad = a ? [!a.notify && "notifications are off",
     !a.background && "Android may stop chatir while the phone sleeps",
     !a.calls && "calls cannot ring on a locked screen",
+    !!a.push && `chatir's push service is not running (${a.push}), so ` +
+      "nothing can wake this phone while it sleeps",
     deaf && "pushes do not come back to this phone, so nothing can wake " +
       "it (no network, or the relay unreachable)"].filter(Boolean) : [];
   // Fix's next step.
