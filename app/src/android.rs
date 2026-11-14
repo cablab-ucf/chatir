@@ -429,7 +429,7 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
         reply(e, &ctx, async move {
             if let Some(n) = crate::running() {
                 n.hear(&b);
-                return Ok(Shown::default());
+                return Ok(took(&n, &dir));
             }
             // A text from another of ours: shown from the push alone.
             if let Some(x) = Node::text(&dir, &b).await {
@@ -456,10 +456,20 @@ struct Shown {
     catch: bool,
 }
 
+/// What a node running here took, shown from here: no page may be up to
+/// show it (`forward` tells only in sight), and told nowhere it is lost.
+fn took(n: &Node, dir: &std::path::Path) -> Shown {
+    let (hide, quiet) =
+        (dir.join("private").exists(), dir.join("silent").exists());
+    let show = crate::alerts(n, crate::FG.load(SeqCst)).into_iter();
+    let show = show.map(|x| crate::veil(x, hide, quiet)).collect();
+    Shown { show, catch: false }
+}
+
 fn shown(dir: &std::path::Path, news: News) -> Shown {
     if let Some(n) = crate::running() {
         n.deliver(news);
-        return Shown::default();
+        return took(&n, dir);
     }
     let (n, catch) = Node::woken(dir, &news);
     // A call: the node starts as it rings, so it connects as it is answered.
