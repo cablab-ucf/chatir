@@ -1242,11 +1242,6 @@ fn forward(app: AppHandle, n: Arc<Node>) {
                 e,
                 Changed { .. } | Call { .. } | Incoming { .. } | Handed { .. }
             );
-            // Android out of sight: the push that brought it shows it
-            // (`Wake.ring`); this page's plugin may be gone with its
-            // activity, and told here it would be lost.
-            let news =
-                news && (cfg!(not(target_os = "android")) || front(&app));
             if let Some(n) = n.upgrade().filter(|_| news) {
                 for x in alerts(&n, front(&app)) {
                     let _ = app.emit("alert", &x);
