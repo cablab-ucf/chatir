@@ -759,6 +759,8 @@ table.keys kbd {
   margin: 4px 0;
 }
 .edit-box small { font-size: 12px; color: var(--muted); }
+.edit-box small button { color: var(--link); }
+.edit-box small button:hover { text-decoration: underline; }
 
 /* Composer */
 #composer { flex: none; padding: 0 16px; }
@@ -808,6 +810,12 @@ table.keys kbd {
   min-height: 44px;
 }
 #input::placeholder { color: var(--dim); }
+/* Send where there is something to send (text, files), else the mic
+ * (kept while it records, to stop it). */
+#input:placeholder-shown ~ #send-btn { display: none; }
+#files-bar:not(.hidden) + .box #send-btn { display: grid; }
+#input:not(:placeholder-shown) ~ #mic-btn:not(.live),
+#files-bar:not(.hidden) + .box #mic-btn:not(.live) { display: none; }
 #typing {
   height: 24px;
   font-size: 13px;
@@ -1460,7 +1468,12 @@ dialog:has(.preview) { width: min(900px, calc(100vw - 32px)); }
 .check { margin: 4px 0; color: var(--red); font-size: 14px; }
 .check.ok { color: var(--green); }
 
-/* QR scanner */
+/* QR scanner: what is drawn is what is read. */
+canvas.scan {
+  display: block; width: min(100%, 50vh); aspect-ratio: 1; margin: 0 auto;
+  border-radius: var(--radius); background: #000; touch-action: none;
+}
+input.zoom { display: block; width: 100%; accent-color: var(--pink); }
 video.scan {
   width: 100%;
   max-height: 50vh;
