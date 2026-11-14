@@ -26,6 +26,10 @@ object Wake {
   /** Hand Android's context back before the activity's runtime takes it. */
   @JvmStatic external fun release()
 
+  /** The activity made, or destroyed for good (native code must not reach
+   *  it then: wry aborts the process for want of one). */
+  @JvmStatic external fun page(on: Boolean)
+
   /** "Private notifications" is on, in this profile. */
   @JvmStatic external fun veiled(dir: String): Boolean
 

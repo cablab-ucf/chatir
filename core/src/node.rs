@@ -290,6 +290,9 @@ struct Page {
     // Who we are: what we said from another device of ours tells us nothing.
     #[serde(default)]
     me: Option<Id>,
+    // A small space's devices' lanes: what rang asleep is acked to its own.
+    #[serde(default)]
+    lanes: BTreeMap<EndpointId, String>,
 }
 
 /// A member's device here (said `Here`, or answered one) or `Gone`, when
@@ -1641,6 +1644,12 @@ impl Node {
                 .iter()
                 .map(|u| (*u, self.name_of(u, None).unwrap_or_default()));
             let names = names.collect();
+            let lanes = self.lanes(&sp.id).into_iter();
+            let mut lanes: BTreeMap<_, _> =
+                lanes.map(|(d, l)| (d, l.to_string())).collect();
+            if lanes.len() > FANOUT {
+                lanes.clear(); // a big space's would weigh on every push
+            }
             let b = lock(&sp.book);
             let (key, locked) = b.key(inv);
             let (s, dm) = (&b.st, b.st.dm.is_some());
@@ -1659,6 +1668,7 @@ impl Node {
                 names,
                 rooms: s.rooms().into_iter().collect(),
                 me: Some(me),
+                lanes,
             };
             if !locked {
                 pb.insert(sp.id, page);
@@ -1736,10 +1746,14 @@ impl Node {
         if e.ts > now() + SKEW {
             return (None, false);
         }
-        // Once: a ring comes again until acked, and none is acked asleep.
+        // Here now: acked to the device it came from, as a running node acks
+        // an event, so its sender says it is on this device and rings no more.
+        let ack = || ack_asleep(dir, space, p, e.ts, &s.device);
+        // Once: a ring comes again until acked (its ack may be lost).
         let f = dir.join("rung");
         let mut rung: Vec<Id> = store::load(&f);
         if rung.contains(&s.id) {
+            ack();
             return (None, false);
         }
         rung.push(s.id);
@@ -1750,6 +1764,7 @@ impl Node {
         if !e.live && store::append(&log, raw).is_err() {
             return (None, true);
         }
+        ack();
         // Ours, from another device of ours: nothing to tell us, but the
         // node starts for it (a space joined there, a level set).
         if p.me == Some(s.author) {
@@ -1930,8 +1945,8 @@ impl Node {
             urls.extend(self.card_lanes(&p));
         }
         // Told by its lane: the op on it; too big for a frame, the space
-        // alone (catch up). Again for a minute, until acked (a sleeping one
-        // acks nothing: it shows it once).
+        // alone (catch up). Again for a minute, until acked (asleep too:
+        // `woken` acks what it took, and shows it once).
         for (d, url) in urls.iter().filter(|u| u.0 != dev) {
             let Some(to) = crate::push::lane_of(url) else { continue };
             let raw = raw.as_deref().unwrap_or_default();
@@ -1945,7 +1960,7 @@ impl Node {
             // Sent just now as an event (`event`: it is up): not twice.
             let w = (*id, ts, *d, live, Instant::now());
             let sent = a.and_then(|a| lock(&self.waits).insert(a, w));
-            let (n, dir) = (Arc::downgrade(self), self.dir.clone());
+            let n = Arc::downgrade(self);
             tokio::spawn(async move {
                 for wait in [0, 3, 10, 45] {
                     tokio::time::sleep(Duration::from_secs(wait)).await;
@@ -1955,8 +1970,10 @@ impl Node {
                         return;
                     }
                     drop(n);
+                    // Without a lane of ours it still goes: unacked, asleep
+                    // or not, it is shown (CLAUDE.md).
                     if wait > 0 || sent.is_none() {
-                        crate::push::event(&dir, &to, &f).await;
+                        crate::push::send(&to, &f).await;
                     }
                 }
             });
@@ -2489,7 +2506,7 @@ impl Node {
         op: Op,
     ) -> Result<(Id, Vec<u8>)> {
         let inv = sp.inv.as_ref().ok_or_else(|| anyhow!("only hosted here"))?;
-        let (key, ts) = {
+        let (key, ts, moved) = {
             let b = lock(&sp.book);
             let (key, locked) = b.key(inv);
             // Locked out, admins can still ban and rekey, dated after the rest.
@@ -2499,12 +2516,20 @@ impl Node {
             let gone = b.st.peer(&me).is_some_and(|p| b.st.out(&p));
             ensure!(!gone || op.live(), "they retired this identity");
             let after = if fix { b.st.horizon() + 1 } else { 0 };
-            (key, self.tick().max(after))
+            // Our lane, moved (not first told), in a small space.
+            let moved = matches!(op, Op::Push { .. })
+                && b.st.push(&me, &self.device()).is_some()
+                && b.st.devices(FANOUT + 1).len() <= FANOUT;
+            (key, self.tick().max(after), moved)
         };
         let rekey = matches!(op, Op::Rekey { .. });
         let (s, raw) = self.seal(sp, &key, ts, op);
         self.ingest(sp, vec![raw.clone()], true);
         self.tell(sp, &raw);
+        // Asleep, members would ring the old lane until they next met us.
+        if moved {
+            self.wake(&sp.id, Some(raw.clone()));
+        }
         // A rekey to those it cut off too: no key for them, only the news
         // that theirs moved on (they show the space locked).
         if rekey {
@@ -3380,14 +3405,13 @@ impl Node {
                 }
                 let by = env.and_then(|e| lock(&sp.book).check(&sp.id, &e));
                 let Some(d) = by.map(|s| s.device) else { return };
-                let Some(at) = self.lanes(&sp.id).remove(&d) else { return };
+                // Taken, then acked if its device told us a lane: never
+                // dropped for want of one (asleep, `woken` takes it too).
                 let Some(e) = self.take(&sp, d, rest) else { return };
+                let Some(at) = self.lanes(&sp.id).remove(&d) else { return };
                 let a = ev_ack(&sp.id, &k, e.ts, &self.device());
                 let ack = [&[crate::push::ACK][..], &a].concat();
-                let dir = self.dir.clone();
-                tokio::spawn(async move {
-                    crate::push::event(&dir, &at, &ack).await
-                });
+                tokio::spawn(async move { crate::push::send(&at, &ack).await });
             }
             Some((crate::push::TEXT, l, rest)) => {
                 let Some((sp, k)) = self.labelled(&l, None) else { return };
@@ -5418,6 +5442,20 @@ fn ev_ack(id: &Id, k: &Key, ts: u64, d: &EndpointId) -> Key {
     )
 }
 
+/// An op taken with no node running, acked to the lane of the device it
+/// came from (as the phonebook has it): sent on the runtime we run in.
+fn ack_asleep(dir: &Path, space: &Id, p: &Page, ts: u64, from: &EndpointId) {
+    let to = p.lanes.get(from).and_then(|l| crate::push::lane_of(l));
+    let me = std::fs::read(dir.join("device")).ok();
+    let me =
+        me.and_then(|k| k.try_into().ok()).map(|k| SecretKey::from_bytes(&k));
+    let rt = tokio::runtime::Handle::try_current();
+    let (Some(to), Some(me), Ok(rt)) = (to, me, rt) else { return };
+    let a = ev_ack(space, &p.key, ts, &me.public());
+    let ack = [&[crate::push::ACK][..], &a].concat();
+    rt.spawn(async move { crate::push::send(&to, &ack).await });
+}
+
 /// What reaches our lane, while we hear it.
 async fn hear(
     n: Weak<Node>,
@@ -6226,12 +6264,16 @@ fn a_phonebook_reads_across_versions() {
         names: BTreeMap::new(),
         rooms: BTreeMap::new(),
         me: None,
+        lanes: BTreeMap::from([(
+            SecretKey::from_bytes(&[3; 32]).public(),
+            "pushir:x".into(),
+        )]),
     };
     let mut v =
         serde_json::to_value(BTreeMap::from([(Id([1; 32]), page)])).unwrap();
     let p = v.as_object_mut().unwrap().values_mut().next().unwrap();
     let p = p.as_object_mut().unwrap();
-    for added in ["own", "ours", "me"] {
+    for added in ["own", "ours", "me", "lanes"] {
         p.remove(added);
     }
     p.insert("from_a_newer_one".into(), serde_json::json!(1));

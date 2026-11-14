@@ -190,6 +190,32 @@ static CTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 static NEWS: std::sync::Mutex<Vec<News>> = std::sync::Mutex::new(vec![]);
 
+/// chatir's activity is up (made, not yet destroyed): only then may the
+/// node reach Kotlin through it (`Bridge`). With none, wry panics, and a
+/// panic aborts the process: the mailbox, and every push after, with it.
+pub static PAGE: AtomicBool = AtomicBool::new(false);
+
+/// The activity made, or destroyed for good: then the node naps (its
+/// pushes come to `Wake.ring`, which shows them with no activity).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_center_cxn_chatir_Wake_page<'l>(
+    _: EnvUnowned<'l>,
+    _: JClass<'l>,
+    on: bool,
+) {
+    PAGE.store(on, SeqCst);
+    if !on {
+        tauri::async_runtime::spawn(async {
+            while !PAGE.load(SeqCst) && crate::running().is_some() {
+                if crate::nap().await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        });
+    }
+}
+
 /// Notices as JSON: at once, or (`full`) after catching up.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_center_cxn_chatir_Wake_run<'l>(

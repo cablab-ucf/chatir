@@ -33,6 +33,7 @@ class MainActivity : TauriActivity() {
     answerable(intent)
     overLock(ringing(intent))
     super.onCreate(savedInstanceState)
+    Wake.page(true)
     // Edge to edge: inset the page by the bars, cutouts and keyboard.
     val root = findViewById<View>(android.R.id.content)
     ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
@@ -50,6 +51,13 @@ class MainActivity : TauriActivity() {
     answerable(intent)
     if (ringing(intent)) overLock(true)
     super.onNewIntent(intent)
+  }
+
+  // Swiped away, the process stays (pushir's service): the node naps, and
+  // nothing reaches for an activity there is none of.
+  override fun onDestroy() {
+    if (!isChangingConfigurations) Wake.page(false)
+    super.onDestroy()
   }
 
   // Out of sight, off the lock screen: back over it only as a call rings
