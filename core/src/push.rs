@@ -123,10 +123,13 @@ impl Server {
 // learns a mailbox and a time. An empty message says sync: a bare wake, or
 // the mailbox back from a gap in which frames may have been missed.
 
-/// What a frame carries: an op (empty: catch up), an ack (its ts), a dial.
+/// What a frame carries: an op (empty: catch up), an ack (its ts), a dial,
+/// or a text from one of our devices (since 0.4.9: an older one ignores
+/// it, and is reached directly as before).
 pub const OP: u8 = 0;
 pub const ACK: u8 = 1;
 pub const DIAL: u8 = 2;
+pub const TEXT: u8 = 3;
 /// A space, and one sealed op of it: what a lane brought.
 pub type News = (crate::Id, Vec<u8>);
 /// A message for chatir, opened (pushir's senders are nameless).
@@ -164,9 +167,10 @@ fn hand(dir: &Path, m: Vec<u8>) {
 }
 
 /// A lane message, `kind ‖ 32 bytes ‖ rest`: an event (its space's label,
-/// then the op), an ack (its MAC) or a dial (a label).
+/// then the op), an ack (its MAC), a dial (a label) or a text (our own
+/// space's label, then the text).
 pub fn split(b: &[u8]) -> Option<(u8, [u8; 32], &[u8])> {
-    let (k, r) = b.split_first().filter(|(k, _)| **k <= DIAL)?;
+    let (k, r) = b.split_first().filter(|(k, _)| **k <= TEXT)?;
     let (x, rest) = r.split_first_chunk::<32>()?;
     Some((*k, *x, rest))
 }
@@ -361,7 +365,8 @@ fn frames_are_told_apart() {
     let f = [&[ACK][..], &[7; 32], b"op"].concat();
     assert_eq!(split(&f), Some((ACK, [7; 32], &b"op"[..])));
     assert_eq!(split(&[DIAL; 33]).map(|x| x.2.len()), Some(0));
-    assert!(split(&[DIAL + 1; 40]).is_none() && split(&[OP; 32]).is_none());
+    assert_eq!(split(&[TEXT; 33]).map(|x| x.0), Some(TEXT));
+    assert!(split(&[TEXT + 1; 40]).is_none() && split(&[OP; 32]).is_none());
     let l = Lane {
         relay: "https://r.example./".parse().unwrap(),
         id: SecretKey::from_bytes(&[1; 32]).public(),

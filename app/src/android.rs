@@ -431,6 +431,13 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
                 n.hear(&b);
                 return Ok(Shown::default());
             }
+            // A text from another of ours: shown from the push alone.
+            if let Some(x) = Node::text(&dir, &b).await {
+                let (hide, quiet) =
+                    (dir.join("private").exists(), dir.join("silent").exists());
+                let show = vec![crate::veil(x, hide, quiet)];
+                return Ok(Shown { show, catch: false });
+            }
             Ok(match Node::news(&dir, &b) {
                 Some(Some(news)) => shown(&dir, news),
                 Some(None) => Shown { catch: true, ..Shown::default() },

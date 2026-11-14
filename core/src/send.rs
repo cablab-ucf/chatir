@@ -583,6 +583,15 @@ fn shape() -> (usize, usize) {
     v.filter(ok).unwrap_or(SHAPE)
 }
 
+/// A size as people read it.
+fn sized(b: u64) -> String {
+    match b {
+        b if b < 1 << 20 => format!("{} KB", b.div_ceil(1 << 10)),
+        b if b < 1 << 30 => format!("{:.0} MB", b as f64 / f64::from(1 << 20)),
+        b => format!("{:.1} GB", b as f64 / f64::from(1 << 30)),
+    }
+}
+
 /// Pulls `id` until it is whole, fails or is stopped; between tries, a
 /// wait that doubles to `PATIENCE`, or less if the network changes.
 async fn run(n: Weak<Node>, id: Id, from: EndpointId, part: Arc<Part>) {
@@ -623,6 +632,7 @@ async fn deliver(n: Weak<Node>, id: Id, to: EndpointId) {
         let Some(node) = n.upgrade() else { return };
         let r = node.row(&id).filter(|r| r.stage == Stage::Waiting);
         let Some(r) = r else { return };
+        let what = format!("Sending you {}, {}", r.name, sized(r.size));
         let offer = Ask::Offer(id, r.name, r.size, node.id());
         match timeout(Duration::from_secs(15), node.say(to, &offer)).await {
             Ok(Ok(a)) if a[..] == [OK] => {
@@ -631,6 +641,11 @@ async fn deliver(n: Weak<Node>, id: Id, to: EndpointId) {
             // Heard, not taken yet (it may not know us yet): asked again.
             Ok(Ok(_)) => {}
             _ if roused.is_none_or(|t| t.elapsed() > ROUSE) => {
+                // One of ours asleep: told by its lane at once (shown with
+                // no node running), the file to follow as it wakes.
+                if roused.is_none() {
+                    node.text_by_lane(to, &what);
+                }
                 node.rouse(to);
                 roused = Some(Instant::now());
             }

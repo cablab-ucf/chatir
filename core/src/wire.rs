@@ -19,7 +19,10 @@ const PINS: &[(&str, &str, &str)] = &[
     ("push.rs", "const OP", "5bb043d3aec2bb22"),
     ("push.rs", "const ACK", "bcf22c66328fba4d"),
     ("push.rs", "const DIAL", "7d0e2025576eaa56"),
-    ("push.rs", "fn split", "adb53c479281e170"),
+    // 0.4.9: kind TEXT appended; before it, `split` returns none for it
+    // (`<= DIAL`), so an older receiver ignores a text by lane.
+    ("push.rs", "fn split", "8d5901fd95c95940"),
+    ("push.rs", "const TEXT", "14433a31acdfd4f9"),
     ("send.rs", "const ALPN", "82a3fd9ab3daf32b"),
     ("send.rs", "enum Ask", "cb8dd3892e8d9ad7"),
     ("send.rs", "enum End", "3ac0d6f8f7c94920"),
@@ -130,6 +133,7 @@ fn wire_constants_are_as_v0_4_5() {
         (crate::push::OP, crate::push::ACK, crate::push::DIAL),
         (0, 1, 2)
     );
+    assert_eq!(crate::push::TEXT, 3, "appended in 0.4.9");
     let k = crate::crypto::kdf("wire", &[b"v0.4.5"]);
     assert_eq!(data_encoding::HEXLOWER.encode(&k)[..16], *"035ad9700806b658");
     for (kind, first) in [("join", 'a'), ("link", 'a'), ("host", 'a')] {
