@@ -1,5 +1,12 @@
 # Notes for Claude
 
+- The one rule, as Linux never breaks userspace: chatir never breaks
+  communication. A message, ring, device text or file that reached a
+  device must always reach it, at once, by push, whatever version either
+  side runs. A change that could stop one is wrong, whatever else it gains;
+  when unsure, change less. What a sleeping device reads (the phonebook)
+  stays readable across versions, and a sender's own push trouble never
+  keeps anyone else from being woken.
 - CI and release builds are deliberate, never routine: Actions minutes are
   scarce (private repos' Actions do not run; chatir's ci.yml is off by hand).
   Verify locally (`cargo fmt`, `clippy -D warnings`, tests). Never dispatch a
@@ -27,4 +34,5 @@
   What is larger, or a stream (sync, files, calls), follows on an irnet
   connection, which falls back to standard iroh relays (`irnet::fallback`)
   when the lab's do not answer. Nothing waits on the other side's app
-  being open.
+  being open. The push mailbox is what is always on (a ping minutes or
+  hours apart); iroh starts when something must stream and rests after.

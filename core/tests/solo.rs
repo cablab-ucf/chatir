@@ -380,7 +380,7 @@ async fn a_text_reaches_our_sleeping_phone_at_once() {
     until("the laptop has the phone's lane", lane).await;
     b.shutdown().await;
     drop(b);
-    assert!(db.join("phonebook").exists(), "left as it slept");
+    assert!(db.join("phonebook.json").exists(), "left as it slept");
     let to = a.clone();
     let t = std::time::Instant::now();
     let sent = tokio::spawn(async move { to.hand(dev, "on its way").await });

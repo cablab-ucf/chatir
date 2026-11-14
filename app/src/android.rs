@@ -429,7 +429,12 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
         reply(e, &ctx, async move {
             if let Some(n) = crate::running() {
                 n.hear(&b);
-                return Ok(Shown::default());
+                // A file or a dial: what it brings comes as the node syncs.
+                let sync = match Node::news(&dir, &b) {
+                    Some(Some(x)) => x.1.is_empty(),
+                    x => x.is_some(),
+                };
+                return Ok(took(&n, &dir, sync));
             }
             // A text from another of ours: shown from the push alone.
             if let Some(x) = Node::text(&dir, &b).await {
@@ -456,10 +461,25 @@ struct Shown {
     catch: bool,
 }
 
+/// What a node running here took, shown from the push out of sight (in
+/// sight, the page shows it): a node a wake started has no page to tell it
+/// (`forward`); told once, it is shown once, here or there. `sync`: what
+/// the push brings comes as the node syncs, shown by catching up.
+fn took(n: &Node, dir: &std::path::Path, sync: bool) -> Shown {
+    if crate::FG.load(SeqCst) {
+        return Shown::default();
+    }
+    let (hide, quiet) =
+        (dir.join("private").exists(), dir.join("silent").exists());
+    let show = crate::alerts(n, false).into_iter();
+    let show = show.map(|x| crate::veil(x, hide, quiet)).collect();
+    Shown { show, catch: sync }
+}
+
 fn shown(dir: &std::path::Path, news: News) -> Shown {
     if let Some(n) = crate::running() {
         n.deliver(news);
-        return Shown::default();
+        return took(&n, dir, false);
     }
     let (n, catch) = Node::woken(dir, &news);
     // A call: the node starts as it rings, so it connects as it is answered.

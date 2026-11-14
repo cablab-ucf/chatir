@@ -260,6 +260,14 @@ impl Notice {
     }
 }
 
+/// The phonebook as a sleeping device reads it: JSON, which an older or
+/// newer chatir's added fields never break; before 0.4.12, postcard.
+fn phonebook_of(dir: &Path) -> BTreeMap<Id, Page> {
+    let json = std::fs::read(dir.join("phonebook.json")).ok();
+    json.and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| store::load(&dir.join("phonebook")))
+}
+
 /// A space as a ring needs it before any node starts: its current key,
 /// whether its calls ring here, who is in it and its rooms' names.
 #[derive(Serialize, Deserialize)]
@@ -1656,14 +1664,18 @@ impl Node {
                 pb.insert(sp.id, page);
             }
         }
-        self.stash("phonebook", &pb);
+        // JSON: a field added later (`serde(default)`) never leaves a
+        // sleeping device unable to read it, so every push unshown.
+        let json = serde_json::to_vec(&pb).unwrap_or_default();
+        let r = store::write(&self.dir.join("phonebook.json"), &json);
+        let _ = r.inspect_err(|e| warn!("saving the phonebook: {e}"));
     }
 
     /// A frame on our lane with no node running, read from the phonebook:
     /// an op's news; `Some(None)` to wake for (a member's device wants a
     /// link to us, or a space we do not know yet); `None` for an ack.
     pub fn news(dir: &Path, b: &[u8]) -> Option<Option<crate::push::News>> {
-        let pb: BTreeMap<Id, Page> = store::load(&dir.join("phonebook"));
+        let pb = phonebook_of(dir);
         let label = |l: &Key| {
             pb.iter().find(|(i, p)| ev_label(i, &p.key) == *l).map(|x| *x.0)
         };
@@ -1684,7 +1696,7 @@ impl Node {
         if kind != crate::push::TEXT {
             return None;
         }
-        let pb: BTreeMap<Id, Page> = store::load(&dir.join("phonebook"));
+        let pb = phonebook_of(dir);
         let mine = |(i, p): &(&Id, &Page)| p.own && ev_label(i, &p.key) == l;
         let k = pb.iter().find(mine)?.1.key;
         let ((from, _, back, name, text), mac) = open_text(&k, rest)?;
@@ -1713,7 +1725,7 @@ impl Node {
         (space, raw): &crate::push::News,
     ) -> (Option<Notice>, bool) {
         crate::usage::note(dir, "woken", serde_json::json!({}));
-        let pb: BTreeMap<Id, Page> = store::load(&dir.join("phonebook"));
+        let pb = phonebook_of(dir);
         let opened = postcard::from_bytes::<Env>(raw).ok().and_then(|e| {
             let p = pb.get(space)?;
             let (s, _) = op::open(space, &p.key, &e, None)?;
@@ -6195,4 +6207,40 @@ mod tests {
         assert!(b.orphans().is_empty());
         std::fs::remove_file(p).unwrap();
     }
+}
+
+/// A phonebook another chatir wrote, with a field this one lacks and none
+/// of those added since: still read (an unreadable one left every push to
+/// a sleeping device unshown).
+#[test]
+fn a_phonebook_reads_across_versions() {
+    let page = Page {
+        own: false,
+        name: "lab".into(),
+        dm: false,
+        ring: true,
+        level: Level::All,
+        tag: "@me".into(),
+        ours: vec![],
+        key: [7; 32],
+        names: BTreeMap::new(),
+        rooms: BTreeMap::new(),
+        me: None,
+    };
+    let mut v =
+        serde_json::to_value(BTreeMap::from([(Id([1; 32]), page)])).unwrap();
+    let p = v.as_object_mut().unwrap().values_mut().next().unwrap();
+    let p = p.as_object_mut().unwrap();
+    for added in ["own", "ours", "me"] {
+        p.remove(added);
+    }
+    p.insert("from_a_newer_one".into(), serde_json::json!(1));
+    let dir = std::env::temp_dir()
+        .join(format!("chatir-pb-{}", u64::from_le_bytes(rand())));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("phonebook.json"), serde_json::to_vec(&v).unwrap())
+        .unwrap();
+    let pb = phonebook_of(&dir);
+    assert_eq!(pb.get(&Id([1; 32])).map(|p| p.key), Some([7; 32]));
+    let _ = std::fs::remove_dir_all(dir);
 }
