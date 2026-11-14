@@ -18,6 +18,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- chatir's own updates, signature checked (ChatirPlugin.install) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- AndroidTV support -->
@@ -72,6 +74,7 @@
             android:exported="false"
             android:foregroundServiceType="shortService" />
         <receiver android:name=".Decline" android:exported="false" />
+        <receiver android:name=".Installed" android:exported="false" />
 
     </application>
 </manifest>

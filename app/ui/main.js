@@ -842,8 +842,9 @@ async function updates(quietly) {
   const ok = await modal((finish) => h("div", {},
     h("div", { class: "m-body" }, h("h2", {}, `chatir ${v} is out`),
       h("p", { class: "sub" }, android
-        ? "Your browser downloads it; open it, and Android installs it "
-          + "over this one."
+        ? "It downloads and its signature is checked; Android installs it "
+          + "over this one (asking nothing from Android 12 on, once chatir "
+          + "may install apps). chatir closes: open it again."
         : "It downloads, checks its signature, and chatir restarts (or, if "
           + "chatir came another way, its release page opens).")),
     foot(cancel(finish),
@@ -4486,6 +4487,11 @@ async function start() {
     }
   });
   await T.event.listen("open-url", ({ payload }) => openUrl(payload));
+  // A release while chatir runs (desktops: every 6 h): asked once in sight.
+  await T.event.listen("newer", () => document.hidden
+    ? document.addEventListener("visibilitychange", () => updates(true),
+      { once: true })
+    : updates(true));
   // A desktop's drops, by path: to the open device, else the channel.
   await T.event.listen("dropped", ({ payload }) => {
     if (S.dev) sendFiles(payload);

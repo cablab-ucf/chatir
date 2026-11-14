@@ -44,6 +44,11 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       chatir should open and take it (a link or storage code asked
       first). Which camera apps offer to open a custom scheme varies:
       never run
+- [ ] Android's Update installs in chatir: the first asks "install
+      apps" for chatir, then Android 12+ installs with no prompt; before
+      12 Android's own prompt. Watch whether Play Protect warns about
+      REQUEST_INSTALL_PACKAGES on a sideloaded install (built by the
+      release, never run)
 - [ ] A laptop out of sight naps only on battery, a desktop never:
       `on_battery` (sysfs, `pmset`, `GetSystemPowerStatus`) checked on
       Linux alone; macOS and Windows built by the release, never run
