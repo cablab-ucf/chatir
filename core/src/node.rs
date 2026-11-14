@@ -1876,7 +1876,7 @@ impl Node {
         // Only devices that would show it: a sleeping phone is woken for a
         // message to it (or as loud as its owner asked), never for the rest.
         let Ok(sp) = self.get(id) else { return };
-        let (urls, labels, at) = {
+        let (mut urls, labels, at, unjoined) = {
             let b = lock(&sp.book);
             let key = sp.inv.as_ref().map(|i| b.key(i).0);
             // A lane's frame is labelled as events are: by the op's epoch
@@ -1891,8 +1891,21 @@ impl Node {
                 let user = b.st.owner_of(d).unwrap_or_default();
                 wants(&b.st, op.as_ref(), level_of(url), &user)
             });
-            (all.collect::<Vec<_>>(), labels, at)
+            let all = all.collect::<Vec<_>>();
+            // A DM they have not joined yet (our knock on its way): no lane
+            // of theirs here.
+            let peer = b.st.peer(&self.id());
+            let theirs = |(d, _): &(EndpointId, String)| {
+                peer.is_some_and(|p| b.st.owner_of(d) == Some(p))
+            };
+            let unjoined = peer.filter(|_| !all.iter().any(theirs));
+            (all, labels, at, unjoined)
         };
+        // Then their lane from their card wakes them; the op is taken once
+        // they are in (it comes again until acked).
+        if let Some(p) = unjoined {
+            urls.extend(self.card_lanes(&p));
+        }
         // Told by its lane: the op on it; too big for a frame, the space
         // alone (catch up). Again for a minute, until acked (a sleeping one
         // acks nothing: it shows it once).
@@ -1925,6 +1938,19 @@ impl Node {
                 }
             });
         }
+    }
+
+    /// The lanes `user` told in their own contact card that we hold.
+    fn card_lanes(&self, user: &Id) -> Vec<(EndpointId, String)> {
+        let theirs = |s: &Arc<Space>| {
+            s.inv.as_ref().is_some_and(|i| i.card() && i.owner == *user)
+        };
+        let cards = self.all().into_iter().filter(theirs);
+        cards
+            .flat_map(|s| {
+                self.view(&s.id, |st| st.pushes_of(None)).unwrap_or_default()
+            })
+            .collect()
     }
 
     fn get(&self, id: &Id) -> Result<Arc<Space>> {
@@ -2300,7 +2326,10 @@ impl Node {
         if self.rehome(&sp) && sp.inv.is_some() {
             self.stores(&sp.id).into_iter().for_each(|s| self.sync(&sp, s.0));
             // Our ring code too: the old one, which those cut off hold, dies.
-            if sp.id != self.own && !self.locked(&sp.id) && !self.card(&sp.id) {
+            let me = self.id();
+            let theirs =
+                sp.inv.as_ref().is_some_and(|i| i.card() && i.owner != me);
+            if sp.id != self.own && !self.locked(&sp.id) && !theirs {
                 let _ = self.tell_push(&sp.id).await;
             }
         }
@@ -2543,7 +2572,8 @@ impl Node {
             let (name, kem) = (self.name(), self.me.pk());
             self.post(&sp, Op::Profile { name, kem }).await?;
         }
-        if !card {
+        // Our own card too: a holder's knock wakes us for it.
+        if !card || ours {
             let _ = self.tell_push(&id).await;
         }
         Ok(id)
@@ -2564,6 +2594,20 @@ impl Node {
 
     pub async fn join(self: &Arc<Self>, code: &str) -> Result<Id> {
         let inv = Invite::decode(code)?;
+        // Someone's contact code: they are woken by the lane it carries.
+        let lane = uncode::<(Invite, String)>("join", code).ok();
+        let lane = lane.and_then(|x| crate::push::lane_of(&x.1));
+        if inv.card()
+            && inv.owner != self.id()
+            && let Some(l) = lane
+        {
+            let (n, card, owner) = (self.clone(), inv.id(), inv.owner);
+            tokio::spawn(async move {
+                // In, first: `meet` dials what it holds.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                n.meet(card, owner, l).await
+            });
+        }
         let Ok(sp) = self.get(&inv.id()) else { return self.enter(inv).await };
         // Already in: a fresh invite carries the key a rekey left us out of.
         if lock(&sp.book).learn(&sp.id, &self.me, inv.key) {
@@ -2803,7 +2847,36 @@ impl Node {
                 id
             }
         };
-        self.invite(&id).await
+        let card = self.invite(&id).await?;
+        // Our lane rides the code, after the invite (a reader before 0.4.9
+        // stops before it): whoever adds us wakes this device at once.
+        Ok(match crate::push::lane_at(&self.dir) {
+            Some(lane) => code("join", &(Invite::decode(&card)?, lane)),
+            None => card,
+        })
+    }
+
+    /// A card's owner, asleep or not, woken by the lane its code carried
+    /// until their key is here and a DM with them stands: a dial on their
+    /// card each time, and their card synced again (a phone's node runs a
+    /// minute or so once woken).
+    async fn meet(self: Arc<Self>, card: Id, owner: Id, lane: pushir::Lane) {
+        for wait in [0, 2, 3, 5, 10, 20, 30, 60, 120] {
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            if !self.dms_with(&owner).is_empty() {
+                return;
+            }
+            let Ok(sp) = self.get(&card) else { return };
+            let Some(inv) = sp.inv.clone() else { return };
+            let k = lock(&sp.book).key(&inv).0;
+            let dial =
+                [&[crate::push::DIAL][..], &ev_label(&card, &k)].concat();
+            crate::push::send(&lane, &dial).await;
+            for a in inv.peers {
+                self.lookup.add_endpoint_info(a.clone());
+                self.sync(&sp, a);
+            }
+        }
     }
 
     /// The DM both are in: of several, the lowest id, as both sides pick.
@@ -3224,7 +3297,11 @@ impl Node {
         let lane = crate::push::lane_at(&self.dir);
         if lane.is_some() && *lock(&self.told_lane) != lane {
             *lock(&self.told_lane) = lane;
-            for sp in self.all() {
+            let me = self.id();
+            let theirs = |s: &Space| {
+                s.inv.as_ref().is_some_and(|i| i.card() && i.owner != me)
+            };
+            for sp in self.all().into_iter().filter(|s| !theirs(s)) {
                 let _ = self.tell_push(&sp.id).await;
             }
         }
