@@ -19,6 +19,8 @@ mod traffic;
 pub mod usage;
 #[cfg(feature = "voice")]
 pub mod voice;
+#[cfg(test)]
+mod wire;
 
 pub use irnet;
 pub use node::{
