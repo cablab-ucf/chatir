@@ -1220,7 +1220,7 @@ async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
 
 /// Core events to the page; lagging, it refreshes everything.
 fn forward(app: AppHandle, n: Arc<Node>) {
-    use chatir_core::Event::{Call, Changed, Incoming};
+    use chatir_core::Event::{Call, Changed, Handed, Incoming};
     // Weak: a node stopped (on Android, out of sight) goes, and this ends.
     let (mut rx, n) = (n.subscribe(), Arc::downgrade(&n));
     tauri::async_runtime::spawn(async move {
@@ -1233,8 +1233,10 @@ fn forward(app: AppHandle, n: Arc<Node>) {
                 }
                 Err(RecvError::Closed) => break,
             };
-            let news =
-                matches!(e, Changed { .. } | Call { .. } | Incoming { .. });
+            let news = matches!(
+                e,
+                Changed { .. } | Call { .. } | Incoming { .. } | Handed { .. }
+            );
             if let Some(n) = n.upgrade().filter(|_| news) {
                 for x in alerts(&n, front(&app)) {
                     let _ = app.emit("alert", &x);

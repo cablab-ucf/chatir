@@ -41,32 +41,39 @@ object Wake {
   @JvmStatic external fun ring(ctx: Context, dir: String, data: ByteArray): String?
 }
 
-/** The phone's one mailbox, shared with every pushir app (pushir's library:
- *  its owner holds the socket and its heartbeats). A ring wakes chatir here,
- *  running or not. */
+/** chatir's own mailbox (pushir's library: chatir's own service holds the
+ *  socket and its pings, depending on no other app). A ring wakes chatir
+ *  here, running or not. */
 class ChatirApp : android.app.Application() {
   override fun onCreate() {
     super.onCreate()
-    val dir = dataDir.absolutePath
-    Wake.share("")
-    val seen = getSharedPreferences("chatir-push", 0)
-    // No secret (a full disk), no lane: never one that anyone could guess.
-    val secret = Wake.lane(dir)
-    if (secret.size != 32) return
-    Pushir.start(this, "chatir_app", secret, onId = { id ->
-      Wake.share(id)
-      // A new mailbox: members told where.
-      if (seen.getString("id", null) != id) {
-        seen.edit().putString("id", id).apply()
-        live(this)
-      }
-    }) { d ->
-      Thread {
-        // Empty: the mailbox is back from a gap. A node that runs catches
-        // up; asleep, the relay hands on what it kept.
-        if (show(this, Wake.ring(applicationContext, dir, d) ?: "")) wake(this)
-      }.start()
+    push(this)
+  }
+}
+
+/** Listening on chatir's lane: at each start, and again if its pushes did
+ *  not come back (`repush`). */
+fun push(ctx: Context) {
+  val app = ctx.applicationContext
+  val dir = app.dataDir.absolutePath
+  Wake.share("")
+  val seen = app.getSharedPreferences("chatir-push", 0)
+  // No secret (a full disk), no lane: never one that anyone could guess.
+  val secret = Wake.lane(dir)
+  if (secret.size != 32) return
+  Pushir.start(app, "chatir_app", secret, onId = { id ->
+    Wake.share(id)
+    // A new mailbox: members told where.
+    if (seen.getString("id", null) != id) {
+      seen.edit().putString("id", id).apply()
+      live(app)
     }
+  }) { d ->
+    Thread {
+      // Empty: the mailbox is back from a gap. A node that runs catches
+      // up; asleep, the relay hands on what it kept.
+      if (show(app, Wake.ring(app, dir, d) ?: "")) wake(app)
+    }.start()
   }
 }
 

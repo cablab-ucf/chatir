@@ -69,6 +69,7 @@ pub async fn notify_check(
     }
     let cmd = match ask {
         "fix" => Some("allowAlerts"),
+        "repush" => Some("repush"),
         "test" => Some("testAlert"),
         "battery" => Some("batteryUse"),
         _ => None,

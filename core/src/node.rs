@@ -800,6 +800,8 @@ pub struct Node {
     // Closed conversations, and when: hidden until something newer.
     closed: Mutex<BTreeMap<Id, u64>>,
     rang: Mutex<HashSet<(Id, Id, Ch)>>,
+    // Texts from our devices not yet told: a notice each, as a message is.
+    texts: Mutex<Vec<Notice>>,
     name: Mutex<String>,
     events: broadcast::Sender<Event>,
     clock: AtomicU64,
@@ -1134,6 +1136,7 @@ impl Node {
             prefs: Mutex::new(prefs),
             closed: Mutex::new(closed),
             rang: Mutex::default(),
+            texts: Mutex::default(),
             name: Mutex::new(cfg.name),
             events: broadcast::channel(1024).0,
             clock: AtomicU64::new(0),
@@ -1584,6 +1587,7 @@ impl Node {
         }
         lock(&self.rang).retain(|c| live.contains(c));
         out.extend(self.offer_notices());
+        out.append(&mut lock(&self.texts));
         // On disk only when it moved: this runs on every change.
         if lock(&self.prefs).told != was {
             self.save_prefs();
@@ -3449,6 +3453,18 @@ impl Node {
         tx.finish()?;
         if ours {
             let (name, text) = (self.label(&from), String::from_utf8(text)?);
+            // A notice too: out of sight, or asleep and woken for it.
+            let who =
+                name.clone().unwrap_or_else(|| from.fmt_short().to_string());
+            let n = Notice::new(
+                Id(*from.as_bytes()),
+                Ch::default(),
+                who,
+                text.clone(),
+                false,
+                false,
+            );
+            lock(&self.texts).push(n);
             self.emit(Event::Handed { from, name, text });
         }
         let _ = tokio::time::timeout(Duration::from_secs(5), c.closed()).await;
