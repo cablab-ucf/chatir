@@ -39,6 +39,14 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       pasa beside it: chatir exempt (Alerts › Allow) holds pushir's
       connection while pasa is not; pasa's sync off hands it to chatir
       within seconds, on again takes it back, and no ring is lost
+- [ ] Scan a code's QR with each OS's own camera app (Android's camera
+      and Lens, iOS Camera, a desktop's): it is a `chatir:` link, so
+      chatir should open and take it (a link or storage code asked
+      first). Which camera apps offer to open a custom scheme varies:
+      never run
+- [ ] A laptop out of sight naps only on battery, a desktop never:
+      `on_battery` (sysfs, `pmset`, `GetSystemPowerStatus`) checked on
+      Linux alone; macOS and Windows built by the release, never run
 - [ ] Run the app (each OS) with its narrowed CSP and capabilities
       (`ipc:` only in connect-src; event listen/unlisten and clipboard
       write alone): built and validated, never run

@@ -27,7 +27,6 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 data-encoding = "2"
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-deep-link = "2"
@@ -51,6 +50,10 @@ webkit2gtk = "2"
 libloading = "0.9"
 
 # The data folder out of backups (setup); already in Tauri's tree.
+# Whether a laptop runs on battery (nap only then).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSValue", "NSError"] }
 

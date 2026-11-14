@@ -89,6 +89,8 @@ type Links = Arc<Mutex<HashMap<EndpointId, (Connection, Instant)>>>;
 type Wait = (Id, u64, EndpointId, bool, Instant);
 /// An unacked op is forgotten after this long (`wake_who` retries to 58 s).
 const WAITED: Duration = Duration::from_secs(120);
+/// How long a text to one of our devices waits for it to wake.
+const WOKEN: Duration = Duration::from_secs(70);
 /// Our lane is proved every this many beats, and trusted this long after.
 const LANE_BEATS: u64 = 5;
 const PROVED: Duration = Duration::from_secs(7 * 60);
@@ -3407,20 +3409,34 @@ impl Node {
     pub async fn hand(&self, device: EndpointId, text: &str) -> Result<()> {
         ensure!(self.devices().iter().any(|d| d.0 == device), "not ours");
         ensure!(text.len() <= MAX_TEXT, "too long");
-        let go = async {
+        let once = || async {
             let c = self.connect(device, HAND).await?;
             let (mut tx, mut rx) = c.open_bi().await?;
             tx.write_all(text.as_bytes()).await?;
             tx.finish()?;
             let ok = rx.read_to_end(1).await? == [1];
             c.close(0u32.into(), b"");
-            ensure!(ok, "it did not take it");
-            anyhow::Ok(())
+            anyhow::Ok(ok)
         };
-        let ten = Duration::from_secs(10);
-        tokio::time::timeout(ten, go).await.map_err(|_| {
-            anyhow!("that device is not reachable now (asleep?)")
-        })?
+        // Asleep, it is woken through its lane (as a file sent to it is),
+        // and tried again for a minute while it starts.
+        let (ten, end) = (Duration::from_secs(10), Instant::now() + WOKEN);
+        let mut woken = false;
+        loop {
+            match tokio::time::timeout(ten, once()).await {
+                Ok(Ok(ok)) => {
+                    ensure!(ok, "it did not take it");
+                    return Ok(());
+                }
+                _ if Instant::now() < end => {
+                    if !std::mem::replace(&mut woken, true) {
+                        self.rouse(device);
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                _ => bail!("that device did not wake: off, or no push lane"),
+            }
+        }
     }
 
     /// From one of our own devices only (QUIC proves which device).
@@ -3439,16 +3455,21 @@ impl Node {
         Ok(())
     }
 
-    /// A short code (one minute, one try) for an invite to `space`, or,
-    /// with none, for our link code (`code.rs`).
+    /// A short code (one minute, one try) for `code` (any code, or a
+    /// device's key), else an invite to `space`, else our link code.
     pub async fn short_code(
         &self,
         space: Option<Id>,
+        code: Option<String>,
         password: Option<String>,
     ) -> Result<String> {
-        let long = match space {
-            Some(id) => self.invite(&id).await?,
-            None => self.link_code().await,
+        let long = match (code, space) {
+            (Some(c), _) => {
+                ensure!(crate::code::kind(&c).is_some(), "not a code");
+                c
+            }
+            (None, Some(id)) => self.invite(&id).await?,
+            (None, None) => self.link_code().await,
         };
         let (code, end) = crate::code::give(&self.net, long, password).await?;
         // Spent by someone who reached it without proving it: said, as

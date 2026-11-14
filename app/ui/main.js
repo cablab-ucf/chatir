@@ -871,6 +871,8 @@ async function openUrl(url) {
     if (!av.call.on && !calling) quiet(invoke("in_call", { on: false }));
     return;
   }
+  // A code, as a camera app hands it on: `chatir:` and the code.
+  if (/^chatir:(?!\/\/)/i.test(url)) return takeAny(url, true);
   if (!String(url).startsWith("chatir://open/")) return;
   // A channel's link, or a message's.
   const [sid, ch, msg] = url.replace(/^chatir:\/\/open\//, "").split("/");
@@ -2345,15 +2347,20 @@ function storageFlow(focus) {
           checked: s.storage.find((y) => y.node === x.node)?.on,
           onchange: (e) => keep(s, x.node, e.target.checked) }), h("i")))));
     const code = h("input",
-      { type: "text", placeholder: "Storage code", maxLength: 8192 });
-    const pair = async () => {
-      const c = code.value.trim();
-      if (!c) return;
+      { type: "text", placeholder: "Storage code, or a short code",
+        maxLength: 8192 });
+    const pair = async (c = code.value) => {
+      c = String(c ?? "").trim().replace(/^chatir:/i, "");
       finish(null);
+      c = c && await long(c);
+      if (!c) return;
       await quiet(call("add_storage", { code: c }));
       again();
     };
     code.addEventListener("keydown", (e) => e.key === "Enter" && pair());
+    const scan = h("button", { class: "btn grey", title: "Scan its QR code",
+      onclick: () => { finish(null); scanQR().then((c) => c && pair(c)); } },
+    icon("cam"));
     const here = local && !nodes.some((x) => x.node === local) &&
       h("button", { class: "btn", onclick: go(() =>
         quiet(call("store_local")).then(() => again(local))) },
@@ -2379,8 +2386,8 @@ function storageFlow(focus) {
           "on under it."),
         nodes.map(node), here, start,
         h("label", {}, "Pair one with the code it shows"),
-        h("div", { class: "row" }, code,
-          h("button", { class: "btn grey", onclick: pair }, "Pair"))),
+        h("div", { class: "row" }, code, scan,
+          h("button", { class: "btn grey", onclick: () => pair() }, "Pair"))),
       foot(h("button", { class: "btn grey", onclick: () => finish(null) },
         "Done")));
   });
@@ -2548,17 +2555,17 @@ function confirmBox({ title, sub, ok }) {
 }
 
 // A secret code: never to other apps, and off the clipboard after a minute.
-/** A short code (one minute, one try) for an invite, or with no space our
- * link code: shown large, with what is left of its minute. */
-async function shortCode(space) {
+/** A short code (one minute, one try) for `code`, any code: shown large,
+ * with what is left of its minute. */
+async function shortCode(code) {
   const password = await ask({ title: "Short code",
     sub: "A password is optional: one more lock, for codes said aloud or " +
       "written where others look. Tell it to them apart from the code.",
     label: "Password (optional)", ok: "Make code", maxLength: 128 });
   if (password === null || password === undefined) return;
-  const code = await call("short_code", { space, password: password || null })
-    .catch(() => null);
-  if (!code) return;
+  const short = await call("short_code", { space: null, code,
+    password: password || null }).catch(() => null);
+  if (!short) return;
   const left = h("p", { class: "sub" });
   const end = Date.now() + 60e3;
   const tick = setInterval(() => {
@@ -2568,10 +2575,10 @@ async function shortCode(space) {
   }, 250);
   await modal((finish) => h("div", {},
     h("div", { class: "m-body" }, h("h2", {}, "Short code"),
-      h("p", { class: "code-big mono" }, code), left,
-      h("p", { class: "note" }, "Typed into the other device's Join (or " +
-        "Link this device), it hands over the full code, sealed to that " +
-        "device. A wrong try spends it.")),
+      h("p", { class: "code-big mono" }, short), left,
+      h("p", { class: "note" }, "Typed where the other device takes a " +
+        "code (Connect › Add here), it hands over the full code, sealed " +
+        "to that device. A wrong try spends it.")),
     foot(h("button", { class: "btn grey", onclick: () => finish(null) },
       "Done"))));
   clearInterval(tick);
@@ -2598,8 +2605,52 @@ async function long(code) {
   }
 }
 
-async function showCode({ title, label, code, note, secret, space }) {
-  const qr = await invoke("qr", { text: code }).catch(() => null);
+/** Any code however it came (typed, pasted, scanned, a short code, a
+ * camera app's `chatir:` link), taken as what it is. From outside the
+ * page (`outside`), what would change this device is asked first. */
+async function takeAny(text, outside = false) {
+  let code = String(text ?? "").trim().replace(/^chatir:/i, "");
+  code = code && await long(code);
+  if (!code) return;
+  const kind = await rpc("kind", { code }).catch(() => null);
+  if (kind === "join") return joinCode(code);
+  if (kind === "link") {
+    const ok = !outside || await confirmBox({ title: "Link this device?",
+      sub: "A link code makes this device the one who made it, with its " +
+        "spaces. Only your own device's code.", ok: "Continue" });
+    return ok && linkFlow(null, code);
+  }
+  if (kind === "host") {
+    const ok = !outside || await confirmBox({ title: "Pair a storage node?",
+      sub: "It will keep your spaces' sealed messages.", ok: "Pair" });
+    return ok && pairStorage(code);
+  }
+  if (kind === "key") return allowKey(code);
+  toast("That is not a chatir code", true);
+}
+
+async function pairStorage(code) {
+  await quiet(call("add_storage", { code }));
+  S.spaces = await rpc("spaces").catch(() => S.spaces);
+  renderSidebar();
+}
+
+/** A device's key (any code taken as one), allowed under a name. */
+async function allowKey(key) {
+  key = String(key).trim().replace(/^chatir:/i, "");
+  if (!/^[0-9a-f]{64}$/i.test(key)) {
+    return toast("That is not a device key", true);
+  }
+  const name = await ask({ title: "Allow a device", label: "Name",
+    sub: `Key ${key.slice(0, 10)}…`, placeholder: "Whose, and which",
+    ok: "Allow" });
+  if (name !== null && name !== undefined) await quiet(allow(key, name));
+}
+
+/** A code shown every way: its text (copied, shared), its QR (a
+ * `chatir:` link, which a camera app hands to chatir) and a short code. */
+async function showCode({ title, label, code, note, secret }) {
+  const qr = await rpc("qr", { text: `chatir:${code}` }).catch(() => null);
   modal((finish) => {
     const b = h("button", { class: "btn", onclick: async () => {
       await copy(code);
@@ -2619,8 +2670,8 @@ async function showCode({ title, label, code, note, secret, space }) {
       h("div", { class: "m-body" }, h("h2", {}, title), h("label", {}, label),
         h("div", { class: "row" }, field, b, share), img,
         h("p", { class: "note" }, note)),
-      foot(space !== undefined && h("button", { class: "btn grey",
-        onclick: () => { finish(null); shortCode(space); } },
+      foot(h("button", { class: "btn grey",
+        onclick: () => { finish(null); shortCode(code); } },
         "Short code (1 min)"),
         h("button", { class: "btn grey", onclick: () => finish(null) },
         "Done")));
@@ -2681,13 +2732,12 @@ function deviceKey() {
 /** One of someone else's devices allowed, by its key (scanned or pasted). */
 async function allowByKey() {
   let key = await ask({ title: "Allow a device", label: "Its key",
-    sub: "On it: Connect › Device key.", placeholder: "64 hex characters",
-    maxLength: 64, ok: "Next", scan: true });
+    sub: "On it: Connect › Device key.",
+    placeholder: "64 hex characters, or a short code", maxLength: 8192,
+    ok: "Next", scan: true });
   if (key === SCAN) key = await scanQR();
-  if (!key) return;
-  const name = await ask({ title: "Allow a device", label: "Name",
-    placeholder: "Whose, and which", ok: "Allow" });
-  if (name !== null && name !== undefined) await quiet(allow(key.trim(), name));
+  key = key && await long(String(key).trim().replace(/^chatir:/i, ""));
+  if (key) await allowKey(key);
 }
 
 async function addSpace() {
@@ -2740,14 +2790,14 @@ async function createFlow() {
 async function joinFlow(card) {
   if (!(await named())) return;
   let code = await ask(card ? { title: "Add a contact",
-    sub: "Paste or scan their contact code (Contacts › My contact code).",
+    sub: "Paste or scan their contact code (Contacts › My contact code), " +
+      "or type its short code.",
     label: "Contact code", ok: "Add", maxLength: 8192, scan: true } : { title: "Join a space",
     sub: "Paste an invite someone shared with you, or type its short code.",
     label: "Invite", placeholder: "Invite code, or k7m-x9q-p3a-b2c", ok: "Join",
     maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
-  if (code && !card) code = await long(code);
-  if (code) await joinCode(code);
+  if (code) await takeAny(code);
 }
 
 /** What the invite is to, and from whom, before anything is sent. */
@@ -2783,7 +2833,7 @@ async function addCard(code, p) {
   schedule("side");
 }
 
-async function linkFlow(profile = null) {
+async function linkFlow(profile = null, given = null) {
   // Someone already (spaces of its own): linked in a profile beside it.
   if (!profile && S.spaces.some((x) => !x.self)) return linkFlow(await ask({
     title: "Link in a new profile",
@@ -2791,16 +2841,16 @@ async function linkFlow(profile = null) {
       "You elsewhere opens in a new profile beside it, nothing lost; " +
       "switch in Settings › Devices › Profiles.",
     label: "New profile's name", value: "Linked", ok: "Continue",
-    maxLength: 32 }) || undefined);
+    maxLength: 32 }) || undefined, given);
   if (profile === undefined) return;
-  let code = await ask({ title: "Link this device",
+  let code = given ?? await ask({ title: "Link this device",
     sub: "On a device where you use chatir, open Settings › Devices " +
       "› Add another device. Scan its code, paste it, or type its " +
       "short code: this device becomes you, with all your spaces.",
     label: "Link code", placeholder: "Link code, or k7m-x9q-p3a-b2c",
     ok: "Link", maxLength: 8192, scan: true });
   if (code === SCAN) code = await scanQR();
-  if (code) code = await long(code);
+  if (code) code = await long(code.trim().replace(/^chatir:/i, ""));
   if (!code) return;
   const wait = toast("Linking…", false, 60e3);
   try {
@@ -2848,7 +2898,7 @@ async function invitePeople() {
   const s = cur();
   const code = await call("invite", { space: s.id }).catch(() => null);
   if (code) showCode({ title: `Invite friends to ${s.name}`,
-    label: "Send a space invite", code, space: s.id,
+    label: "Send a space invite", code,
     note: "Anyone holding this invite can read and post until an admin " +
       "resets invite links. Share it privately, e.g. in person or over " +
       "Signal. It carries the space's key and a way to reach members' " +
@@ -3047,10 +3097,13 @@ const TAB = {
 /** Text to one device of ours alone, nothing kept anywhere else. */
 async function sendTo(d) {
   const text = await ask({ title: `Send to ${d.name ?? d.device}`,
-    sub: "Straight to that device alone, nothing kept anywhere else. It " +
-      "must be awake.", label: "Text or link", ok: "Send", maxLength: 4000 });
-  if (text) quiet(call("hand", { device: d.id, text })
-    .then(() => toast("Sent")));
+    sub: "Straight to that device alone, nothing kept anywhere else. " +
+      "Asleep, it is woken first.", label: "Text or link", ok: "Send",
+    maxLength: 4000 });
+  if (!text) return;
+  const wait = toast("Sending (waking it if asleep)…", false, 75e3);
+  quiet(call("hand", { device: d.id, text }).then(() => toast("Sent"))
+    .finally(() => wait.remove()));
 }
 
 async function profilesFlow() {
@@ -3500,7 +3553,7 @@ function notifyCheck() {
 async function linkDevice() {
   const code = await call("link_code").catch(() => null);
   if (code) showCode({ title: "Add another device", label: "Your link code",
-    code, secret: true, space: null,
+    code, secret: true,
     note: "On the new device, open chatir and choose \u201cI use chatir on " +
       "another device\u201d (or Settings \u203a Devices \u203a Link this " +
       "device), then scan or paste this, or use a short code. It becomes " +

@@ -85,10 +85,22 @@ pub enum Call {
         user: Id,
     },
     LinkCode,
+    /// For `code` (any code, or a device's key), else an invite to
+    /// `space`, else our link code.
     ShortCode {
         space: Option<Id>,
         #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
         password: Option<String>,
+    },
+    /// What `code` is ("join", "link", "host", "key"); null if nothing.
+    Kind {
+        code: String,
+    },
+    /// `text` as a QR code, an SVG.
+    Qr {
+        text: String,
     },
     TakeCode {
         code: String,
@@ -401,9 +413,11 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
         Call::Rekey { space } => json!(n.rekey(&space).await?),
         Call::Dm { space, user } => json!(n.dm(&space, &user).await?),
         Call::LinkCode => json!(n.link_code().await),
-        Call::ShortCode { space, password } => {
-            json!(n.short_code(space, password).await?)
+        Call::ShortCode { space, code, password } => {
+            json!(n.short_code(space, code, password).await?)
         }
+        Call::Kind { code } => json!(crate::code::kind(&code)),
+        Call::Qr { text } => json!(crate::code::qr(&text)?),
         Call::TakeCode { code, password } => {
             json!(n.take_code(&code, password.as_deref()).await?)
         }
