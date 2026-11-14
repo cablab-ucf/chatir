@@ -406,3 +406,45 @@ async fn a_text_reaches_our_sleeping_phone_at_once() {
     assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
     assert!(Node::text(&db, &f).await.is_none(), "shown once");
 }
+
+/// Added by contact code while their phone sleeps (nothing shared yet, so
+/// no lane known but the one the code carries): it is woken at once, the
+/// DM forms, and the first message reaches it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_contact_added_while_their_phone_sleeps_gets_the_message() {
+    let (a, db, b) = pair().await;
+    let code = b.contact().await.unwrap();
+    let b_id = b.id();
+    b.shutdown().await;
+    drop(b);
+    fresh(&db);
+    a.join(&code).await.unwrap();
+    // Its lane hears a wake for its card (a dial: start, a link is coming).
+    let mut woke = false;
+    for _ in 0..200 {
+        let frames: Vec<Frame> = RANG.lock().unwrap().clone();
+        woke = frames
+            .iter()
+            .filter_map(|f| read(&db, f))
+            .any(|m| matches!(Node::news(&db, &m), Some(None)));
+        if woke {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(woke, "the sleeping phone is woken by the code's lane");
+    // Woken, as Android's service does: the node starts.
+    let b = node(&db, "b", true).await;
+    let dm_of = |n: &Node, with: Id| {
+        n.spaces().into_iter().find(|s| {
+            !n.card(s)
+                && n.view(s, |st| st.peer(&n.id()) == Some(with)) == Some(true)
+        })
+    };
+    until("a's DM with b", || dm_of(&a, b_id).is_some()).await;
+    let dm = dm_of(&a, b_id).unwrap();
+    until("b takes it", || b.spaces().contains(&dm)).await;
+    a.publish(&dm, post(DM, "hello", None)).await.unwrap();
+    until("b has it", || texts(&b, &dm, &DM).contains(&"hello".to_string()))
+        .await;
+}
