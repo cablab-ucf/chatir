@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "chatir"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "anyhow",
  "chatir-core",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "chatir-app"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "anyhow",
  "chatir-core",
@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "chatir-core"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "chatir-math"
-version = "0.4.12"
+version = "0.4.13"
 dependencies = [
  "typst",
  "typst-html",
@@ -6476,7 +6476,7 @@ dependencies = [
 [[package]]
 name = "pushir"
 version = "0.4.0"
-source = "git+https://github.com/cablab-ucf/pushir?rev=55b14535bfee4453db62e0521f326b0544f22f28#55b14535bfee4453db62e0521f326b0544f22f28"
+source = "git+https://github.com/cablab-ucf/pushir?rev=5c1681ba1440387039e07cf8c1d0450b32897701#5c1681ba1440387039e07cf8c1d0450b32897701"
 dependencies = [
  "anyhow",
  "aws-lc-rs",

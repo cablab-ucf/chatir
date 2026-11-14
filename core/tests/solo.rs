@@ -6,7 +6,7 @@
 //! phone here shares one mailbox (each its own lane, all heard as one),
 //! and each test takes the frames its spaces label.
 
-use chatir_core::{Ch, Config, Id, Net, Node, Notice, Op, state::DM};
+use chatir_core::{Ch, Config, Id, Level, Net, Node, Notice, Op, state::DM};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -226,8 +226,8 @@ async fn a_call_shows_on_a_sleeping_phone_at_once() {
     assert!(woken(&db, &rung(&db).await).0.expect("hushed").hush);
 }
 
-/// Unacked (a sleeping phone acks nothing), a ring comes again for a
-/// minute: one lost on the way, the next gets through. Shown once, and a
+/// Unacked (lost, or not yet taken), a ring comes again for a minute: one
+/// lost on the way, the next gets through. Shown once, and a
 /// call rung once (declined, it would ring again).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_ring_comes_again_and_shows_once() {
@@ -265,7 +265,7 @@ async fn a_ring_comes_again_and_shows_once() {
 }
 
 /// A phone with no storage node, its device alone: a message reaches it as
-/// one event, shows from it alone and is kept unopened; once b starts
+/// one event, shows from it alone, is acked and kept unopened; once b starts
 /// again, it is there before any peer is, and not told twice.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_rings_a_solo_phone_by_event_and_keeps() {
@@ -277,6 +277,7 @@ async fn a_message_rings_a_solo_phone_by_event_and_keeps() {
     // Whom its phonebook names: else the node starts, to learn who.
     let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
     until("b knows a", named).await;
+    let bid = b.id();
     b.shutdown().await;
     drop(b);
 
@@ -286,6 +287,10 @@ async fn a_message_rings_a_solo_phone_by_event_and_keeps() {
     let n = n.expect("shown at once");
     assert_eq!((&n.title[..], &n.body[..]), ("a in #general (hub)", "lunch?"));
     assert!(!n.ring && n.room == ch && !node_needed, "kept, no node needed");
+    // Acked asleep: a says it is on b's device, with no node of b's up.
+    let ts = a.view(&id, |s| s.messages(&ch, None, 1)[0].ts).unwrap();
+    let got = || a.reach(&id, &bid).is_some_and(|t| t >= ts);
+    until("a hears b has it", got).await;
 
     a.shutdown().await;
     drop(a);
@@ -477,4 +482,35 @@ async fn a_ring_in_a_new_dm_rings_without_a_clean_sleep() {
     assert!(t.elapsed() < Duration::from_secs(2), "at once");
     assert_eq!((n.space, n.room), (dm, DM));
     drop(b);
+}
+
+/// A member's lane that moves while b's phone sleeps reaches it by b's own
+/// lane: b has the new one as it wakes, from its own log, before it meets
+/// anyone (else it would ring the old one until they next met).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lane_moved_while_a_phone_sleeps_reaches_it() {
+    let (a, db, b) = pair().await;
+    let id = a.create("hub").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("a has b's lane", || told(&a, &id, &b, "")).await;
+    until("b has a's lane", || told(&b, &id, &a, "")).await;
+    let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
+    until("b knows a", named).await;
+    let aid = a.id();
+    b.shutdown().await;
+    drop(b);
+
+    fresh(&db);
+    a.set_level(&id, Level::Mentions); // a's lane, told anew
+    let f = rung(&db).await;
+    assert!(
+        matches!(woken(&db, &f), (None, false)),
+        "nothing shown or started"
+    );
+
+    a.shutdown().await;
+    drop(a);
+    let b = node(&db, "b", true).await;
+    let lanes = b.view(&id, |s| s.pushes_of(Some(&aid))).unwrap_or_default();
+    assert!(lanes.iter().any(|l| l.1.contains("level:mentions")), "{lanes:?}");
 }

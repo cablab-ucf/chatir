@@ -49,11 +49,18 @@ async fn seen(app: &AppHandle, fg: bool) {
 #[cfg(any(desktop, target_os = "android"))]
 async fn doze(app: AppHandle) {
     use std::sync::atomic::Ordering::SeqCst;
+    // By the wall clock: a timer stops while a phone sleeps, which would
+    // keep the node up for hours out of sight.
+    let mut at = std::time::SystemTime::now();
     loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
         if FG.load(SeqCst) || running().is_none() {
             return;
         }
+        if at.elapsed().unwrap_or_default() < Duration::from_secs(60) {
+            continue;
+        }
+        at = std::time::SystemTime::now();
         if nap().await {
             app.state::<App>().0.send_replace(None);
             return;
@@ -1242,6 +1249,11 @@ fn forward(app: AppHandle, n: Arc<Node>) {
                 e,
                 Changed { .. } | Call { .. } | Incoming { .. } | Handed { .. }
             );
+            // Android: told through the activity alone; with none, a push's
+            // `took` shows what the node took.
+            #[cfg(target_os = "android")]
+            let news =
+                news && android::PAGE.load(std::sync::atomic::Ordering::SeqCst);
             if let Some(n) = n.upgrade().filter(|_| news) {
                 for x in alerts(&n, front(&app)) {
                     let _ = app.emit("alert", &x);
