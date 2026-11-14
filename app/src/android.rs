@@ -40,12 +40,21 @@ struct Text<'a> {
     text: &'a str,
 }
 
-/// Via the browser: Play Protect takes apps that install apps for malware.
+/// The release's APK, its signature checked here (as desktops' are), then
+/// Android's package installer (`ChatirPlugin.install`). Android checks
+/// too that it is signed as this one is.
 pub async fn upgrade(app: &tauri::AppHandle) -> anyhow::Result<String> {
-    let url = format!("{}/download/chatir.apk", chatir_core::release::LATEST);
+    use chatir_core::release;
+    let v = release::latest().await?;
+    let apk = release::fetch("chatir.apk", &v).await?;
+    let path = app.path().app_cache_dir()?.join("chatir.apk");
+    std::fs::create_dir_all(path.parent().context("no cache")?)?;
+    std::fs::write(&path, apk)?;
     let bridge = app.try_state::<Bridge>().context("no bridge")?;
-    bridge.call("browse", Url { url: &url }).await;
-    Ok("Your browser downloads chatir: open it to install".into())
+    let path = path.to_string_lossy();
+    let args = serde_json::json!({ "path": path });
+    bridge.0.run_mobile_plugin_async::<()>("install", args).await?;
+    Ok(format!("Installing chatir {v}: it closes, then open it again"))
 }
 
 pub async fn notify_check(

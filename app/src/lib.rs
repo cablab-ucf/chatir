@@ -784,6 +784,29 @@ async fn update(app: AppHandle) -> Result<Option<String>, String> {
     newer(&app).await.map_err(err)
 }
 
+/// A new release looked for every 6 h while chatir runs (up in the tray
+/// for weeks): the page asks, and out of sight a banner says so first.
+/// Each version once; the page asks at launch too.
+#[cfg(desktop)]
+async fn releases(app: AppHandle) {
+    let mut told = None;
+    loop {
+        tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
+        let Ok(Some(v)) = update(app.clone()).await else { continue };
+        if told.as_ref() == Some(&v) {
+            continue;
+        }
+        let _ = app.emit("newer", &v);
+        if !front(&app) {
+            use tauri_plugin_notification::NotificationExt;
+            let body = format!("chatir {v} is out: open chatir to update");
+            let _ =
+                app.notification().builder().title("chatir").body(body).show();
+        }
+        told = Some(v);
+    }
+}
+
 /// In place, signature checked; else (cargo installs) the release page.
 #[tauri::command]
 async fn upgrade(
@@ -1107,6 +1130,8 @@ pub fn run() {
             }
             start(&h, None).await
         });
+        #[cfg(desktop)]
+        tauri::async_runtime::spawn(releases(app.handle().clone()));
         Ok(())
     });
     let b = b.invoke_handler(tauri::generate_handler![

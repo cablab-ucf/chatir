@@ -3,8 +3,10 @@ package center.cxn.chatir
 import android.Manifest.permission.POST_NOTIFICATIONS
 import android.app.Activity
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -34,6 +36,11 @@ import app.tauri.plugin.Channel
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+
+@InvokeArg
+class PathArgs {
+  var path = ""
+}
 
 @InvokeArg
 class UrlArgs {
@@ -95,6 +102,45 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
       else android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
     prompted = true
     activity.startActivity(Intent(act, uri))
+  }
+
+  /** An update chatir downloaded and checked against its signing key,
+   *  installed by Android's package installer: from Android 12 on with no
+   *  prompt of its own (an app updating itself), once chatir may install
+   *  apps, which is asked first. chatir closes as it is replaced. */
+  @Command
+  fun install(invoke: Invoke) {
+    val f = java.io.File(invoke.parseArgs(PathArgs::class.java).path)
+    val pm = activity.packageManager
+    if (!pm.canRequestPackageInstalls()) {
+      runCatching {
+        activity.startActivity(Intent(
+          android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+          android.net.Uri.parse("package:" + activity.packageName)))
+      }
+      f.delete()
+      return invoke.reject("Allow chatir to install apps, then Update again")
+    }
+    runCatching {
+      val p = PackageInstaller.SessionParams(
+        PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+      p.setAppPackageName(activity.packageName)
+      if (Build.VERSION.SDK_INT >= 31) p.setRequireUserAction(
+        PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+      val id = pm.packageInstaller.createSession(p)
+      pm.packageInstaller.openSession(id).use { s ->
+        s.openWrite("chatir.apk", 0, f.length()).use { out ->
+          f.inputStream().use { it.copyTo(out) }
+          s.fsync(out)
+        }
+        // Mutable: the installer adds its answer to it.
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        val done = Intent(activity, Installed::class.java)
+        s.commit(PendingIntent.getBroadcast(activity, id, done, flags).intentSender)
+      }
+    }.onSuccess { invoke.resolve() }
+      .onFailure { invoke.reject(it.message ?: "could not install") }
+    f.delete()
   }
 
   /** "background": chatir exempt, so the phone's pushir connection is
@@ -298,3 +344,21 @@ fun notificationChannel(ctx: Context, id: String, name: String, level: Int) =
   NotificationManagerCompat.from(ctx).createNotificationChannel(
     NotificationChannelCompat.Builder(id, level).setName(name).build()
   )
+
+/** The package installer's answer: its prompt shown when it asks one (an
+ *  update before Android 12), a failure said. */
+class Installed : BroadcastReceiver() {
+  override fun onReceive(c: Context, i: Intent) {
+    when (i.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+      PackageInstaller.STATUS_SUCCESS -> Unit
+      PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+        @Suppress("DEPRECATION")
+        val ask = i.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
+        runCatching { c.startActivity(ask.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+      }
+      else -> android.widget.Toast.makeText(c, "Update failed: " +
+        (i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "?"),
+        android.widget.Toast.LENGTH_LONG).show()
+    }
+  }
+}
