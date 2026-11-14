@@ -6,3 +6,18 @@
   workflow or push a tag to see whether something builds. A release is built
   once, when everything it ships is verified, merged and built as it should
   ship; not a version that is replaced hours later.
+- The transport stays compatible with peers from v0.4.5 on: change it only
+  when nothing else works, and then so that old and new still talk. That
+  is the ALPNs, `PROTO` and every KDF context, ops, envelopes and codes
+  (op.rs), sync, device sends and texts, calls and voice frames, push
+  frames and lanes (pushir), relay TLS (irnet), short codes (pairir), and
+  the iroh-relay version the lab's relay speaks. With postcard only an
+  enum variant appended at the end is compatible; for anything else the
+  old form stays beside the new. `core/src/wire.rs` pins it (pushir's
+  `the_wire_is_as_chatir_v0_4_5` too): repin only for such a change, and
+  say so in the PR.
+- Messages, calls, device texts and files reach every device at once and
+  always: asleep or not, whatever other apps do. A change that could delay
+  or drop one (a wake, a retry, a lane, a nap, a permission) comes with a
+  test that it still arrives, and nothing fails silently: what cannot be
+  delivered is said.
