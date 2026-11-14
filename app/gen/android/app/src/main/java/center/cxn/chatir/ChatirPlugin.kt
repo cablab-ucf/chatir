@@ -143,6 +143,14 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
     f.delete()
   }
 
+  /** chatir's pushes did not come back to it: its mailbox started anew. */
+  @Command
+  fun repush(invoke: Invoke) {
+    org.pushir.Pushir.stop(activity)
+    push(activity)
+    invoke.resolve()
+  }
+
   /** "background": chatir exempt, so the phone's pushir connection is
    *  held by an app Android lets run asleep (chatir, if no other is). */
   @Command

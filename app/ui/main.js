@@ -3491,24 +3491,41 @@ async function ownerFlow(m) {
   if (ok) publish({ Owner: { user: m.id } });
 }
 
-/** What Android keeps from reaching you, and Fix: one setting a tap, the
- * next shown once it is back. */
+/** What keeps messages and calls from reaching this phone, and Fix: one
+ * setting a tap, the next shown once it is back. Pushes are proved, not
+ * assumed: the node sends its own lane a frame through the relay every few
+ * minutes, and hears it back through chatir's mailbox (`wakes`). Not back,
+ * the mailbox is started anew once, unasked; still not, it says so. */
+let repushed = false;
 async function health(ask = "") {
   if (!android) return;
   const a = await invoke("notify_check", { ask }).catch(() => null);
+  // A proof takes seconds from the start: none asked of a page just up.
+  const u = performance.now() > 30e3 ? await rpc("usage").catch(() => null)
+    : null;
+  const deaf = !!u && !u.wakes;
+  if (deaf && !repushed) {
+    repushed = true;
+    quiet(invoke("notify_check", { ask: "repush" }));
+    return setTimeout(health, 30e3);
+  }
   const bad = a ? [!a.notify && "notifications are off",
     !a.background && "Android may stop chatir while the phone sleeps",
-    !a.calls && "calls cannot ring on a locked screen"].filter(Boolean) : [];
+    !a.calls && "calls cannot ring on a locked screen",
+    deaf && "pushes do not come back to this phone, so nothing can wake " +
+      "it (no network, or the relay unreachable)"].filter(Boolean) : [];
   // Fix's next step.
   const next = !a ? "" : !a.notify ? "Allow notifications"
     : !a.background ? "Allow chatir to run in the background"
-    : "Allow full-screen calls";
+    : !a.calls ? "Allow full-screen calls" : "Starting chatir's push again";
+  const fix = a && a.notify && a.background && a.calls ? "repush" : "fix";
   put($("health"), bad.length > 0 && [
     h("b", {}, "Messages and calls may not reach you: "), bad.join("; "),
     h("button", { class: "btn", title: next, onclick: (e) => {
       e.target.disabled = true;
       toast(next, false, 8e3);
-      health("fix");
+      health(fix);
+      if (fix === "repush") setTimeout(health, 30e3);
     } }, "Fix")]);
 }
 document.addEventListener("visibilitychange",
@@ -4508,6 +4525,7 @@ async function start() {
   });
   await loadSidebar();
   health();
+  setTimeout(health, 40e3); // pushes proved by then
   if (store.get("linked")) {
     store.set("linked", "");
     toast("Linked: this device is you. Your spaces arrive as your other " +

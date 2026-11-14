@@ -33,12 +33,12 @@ Design: [PLAN.md](PLAN.md). pushir's own list: pushir's TODO.md.
       its page past 16 GB; not reproduced in software rendering (162 MB,
       flat). Compositing is off on NVIDIA's driver since 0.4.5: see if it
       comes back, and with what (Wayland or X11, the driver's version)
-- [ ] Run v0.4.7 on an Android phone and an iPhone: "private" keeps
+- [ ] Run v0.4.8 on an Android phone and an iPhone: "private" keeps
       chatir out of screenshots and the lock screen, iOS backups leave
-      the data folder out (built by its release run, never run). With
-      pasa beside it: chatir exempt (Alerts › Allow) holds pushir's
-      connection while pasa is not; pasa's sync off hands it to chatir
-      within seconds, on again takes it back, and no ring is lost
+      the data folder out (built by its release run, never run). Pushes
+      on a phone with pasa beside it, each holding its own mailbox: a DM,
+      a call, a device text and file each notify within seconds with
+      chatir closed and the phone locked; Alerts says so if they do not
 - [ ] Scan a code's QR with each OS's own camera app (Android's camera
       and Lens, iOS Camera, a desktop's): it is a `chatir:` link, so
       chatir should open and take it (a link or storage code asked

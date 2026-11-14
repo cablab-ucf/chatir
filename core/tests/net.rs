@@ -1178,6 +1178,13 @@ async fn text_is_handed_to_one_of_our_devices() {
     };
     let got = tokio::time::timeout(Duration::from_secs(10), got).await;
     assert_eq!(got.unwrap(), (a.device(), "https://example.org/x".into()));
+    // Told as a message is: out of sight or woken for it, it notifies.
+    let told = a2.notices();
+    assert!(told.iter().any(|x| x.body == "https://example.org/x"), "a notice");
+    assert!(
+        a2.notices().iter().all(|x| x.body != "https://example.org/x"),
+        "once"
+    );
     assert!(b.hand(a2.device(), "hi").await.is_err(), "not b's device");
 }
 
