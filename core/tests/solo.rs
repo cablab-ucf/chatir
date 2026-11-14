@@ -448,3 +448,33 @@ async fn a_contact_added_while_their_phone_sleeps_gets_the_message() {
     until("b has it", || texts(&b, &dm, &DM).contains(&"hello".to_string()))
         .await;
 }
+
+/// A DM taken since the phone's node last slept cleanly (Android killed
+/// it instead, or it never slept): its ring still rings at once, as the
+/// phonebook follows each space taken, not only a clean sleep.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ring_in_a_new_dm_rings_without_a_clean_sleep() {
+    let (a, db, b) = pair().await;
+    let id = a.create("hub2").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", keyed).await;
+    let dm = a.dm(&id, &b.id()).await.unwrap();
+    until("b in the DM", || b.spaces().contains(&dm)).await;
+    until("a has b's lane in the DM", || told(&a, &dm, &b, "")).await;
+    // No shutdown: the phonebook is what the node kept as it went.
+    fresh(&db);
+    let t = std::time::Instant::now();
+    a.call(Some((dm, DM))).await.unwrap();
+    // Its ring, among whatever else came to the lane meanwhile.
+    let n = loop {
+        if let (Some(n), _) = woken(&db, &rung(&db).await)
+            && n.ring
+        {
+            break n;
+        }
+    };
+    assert!(t.elapsed() < Duration::from_secs(2), "at once");
+    assert_eq!((n.space, n.room), (dm, DM));
+    drop(b);
+}
