@@ -156,9 +156,10 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun alerts(invoke: Invoke) {
     invoke.resolve(JSObject()
-      .put("notify", notificationsAllowed(activity))
+      .put("notify", notificationsAllowed(activity) && heard(activity))
       .put("background", unrestricted(activity))
-      .put("calls", fullScreen(activity)))
+      .put("calls", fullScreen(activity))
+      .put("push", org.pushir.Pushir.held() ?: ""))
   }
 
   /** This app's traffic since boot, pushir's socket too; the battery. */
@@ -186,7 +187,7 @@ class ChatirPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun allowAlerts(invoke: Invoke) {
-    if (!notificationsAllowed(activity)) runCatching {
+    if (!notificationsAllowed(activity) || !heard(activity)) runCatching {
       val i = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,
           activity.packageName)
@@ -342,6 +343,15 @@ fun fullScreen(ctx: Context) = Build.VERSION.SDK_INT < 34 ||
 fun notificationsAllowed(ctx: Context) = Build.VERSION.SDK_INT < 33 ||
   ContextCompat.checkSelfPermission(ctx, POST_NOTIFICATIONS) ==
   PackageManager.PERMISSION_GRANTED
+
+/** Notifications on for chatir, and neither of its channels turned off:
+ *  else Android drops them without a word. */
+fun heard(ctx: Context): Boolean {
+  val nm = NotificationManagerCompat.from(ctx)
+  val off = { id: String ->
+    nm.getNotificationChannel(id)?.importance == NotificationManagerCompat.IMPORTANCE_NONE }
+  return nm.areNotificationsEnabled() && !off(CHAT) && !off(CALLS)
+}
 
 fun openAppIntent(ctx: Context): PendingIntent = PendingIntent.getActivity(
   ctx, 0, Intent(ctx, MainActivity::class.java),

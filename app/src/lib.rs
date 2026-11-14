@@ -1183,6 +1183,14 @@ pub fn run() {
             // macOS: the Dock's icon, clicked, with the window in the tray.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show(app),
+            // Android: swiped away, the last window goes and Tauri would end
+            // the process, pushir's service and the phone's mailbox with it:
+            // nothing could wake it until chatir was opened again. It lives
+            // on; opened again, it starts afresh (MainActivity).
+            #[cfg(target_os = "android")]
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+                api.prevent_exit()
+            }
             // Connections may have died while frozen.
             #[cfg(mobile)]
             tauri::RunEvent::Resumed => {
