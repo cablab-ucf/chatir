@@ -1345,6 +1345,42 @@ async fn iroh_sleeps_and_a_dial_wakes_it() {
     assert!(b.iroh_up(), "awake");
 }
 
+/// A lane held here is trusted while its mailbox is on its relay, with no
+/// frame to itself between; the relay gone, the node says so at once and
+/// iroh comes up within a beat, where members dial.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lane_lasts_as_its_mailbox_and_iroh_wakes_when_it_drops() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let mut cfg = ServerConfig::default();
+    cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    let relay = Server::spawn(cfg).await.unwrap();
+    let url = format!("http://{}/", relay.http_addr().unwrap());
+    let d = dir("b");
+    let mut cfg = ServerConfig::default();
+    cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+    let pushes = Server::spawn(cfg).await.unwrap();
+    lane(&d, &pushes).await;
+    let b =
+        on(&d, "b", None, false, Net::Relay(vec![url.parse().unwrap()])).await;
+    until("b's lane proved as it starts", || b.wakes()).await;
+    for _ in 0..200 {
+        if b.quiet().await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!b.iroh_up(), "asleep behind its lane");
+    pushes.shutdown().await.unwrap();
+    until("b no longer trusts its lane", || !b.wakes()).await;
+    for _ in 0..90 {
+        if b.iroh_up() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    panic!("iroh still asleep a beat after b's mailbox left its relay");
+}
+
 /// On one relay, small ops go as pushir events (one datagram each, acked
 /// the same way), with no link dialed for them.
 #[tokio::test(flavor = "multi_thread")]

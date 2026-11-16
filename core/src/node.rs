@@ -94,9 +94,10 @@ const WOKEN: Duration = Duration::from_secs(70);
 /// A text that came again within this long is a retry whose ack was lost
 /// (the wire carries no id): taken, not told twice.
 const AGAIN: Duration = Duration::from_secs(90);
-/// Our lane is proved every this many beats (each on a phone, whose health
-/// bar says when it is not), and trusted this long after.
-const LANE_BEATS: u64 = if cfg!(target_os = "android") { 1 } else { 5 };
+/// A lane on another process's mailbox (pushir's daemon) is proved every
+/// this many beats and trusted this long after; one held here, as each
+/// connection begins, and trusted while it lasts (`wakes`).
+const LANE_BEATS: u64 = 5;
 const PROVED: Duration = Duration::from_secs(7 * 60);
 
 /// Text handed to one of our own devices: one link, nothing kept elsewhere.
@@ -1831,11 +1832,25 @@ impl Node {
     }
 
     /// Whether our lane wakes us: it is on a relay, and a frame we sent it
-    /// through that relay came back of late (`check_lane`). Only then may
-    /// iroh sleep.
+    /// through that relay came back (`check_lane`): on its mailbox's
+    /// connection, which is still up, where we hold the mailbox; else of
+    /// late. Only then may iroh sleep.
     pub fn wakes(&self) -> bool {
-        let proved = lock(&self.echo).1.is_some_and(|t| t.elapsed() < PROVED);
-        proved && crate::push::lane_at(&self.dir).is_some()
+        let echo = lock(&self.echo).1;
+        match self.mailbox_up() {
+            Some(up) => up && echo.is_some(),
+            None => {
+                let proved = echo.is_some_and(|t| t.elapsed() < PROVED);
+                proved && crate::push::lane_at(&self.dir).is_some()
+            }
+        }
+    }
+
+    /// Whether our lane's mailbox, if this process holds it, is on its
+    /// relay now: pushir's own connection says, at no cost.
+    fn mailbox_up(&self) -> Option<bool> {
+        let lane = crate::push::lane_at(&self.dir)?;
+        pushir::up(&lane.parse::<pushir::Lane>().ok()?.id)
     }
 
     /// The relay our lane is on, if it has one.
@@ -1862,8 +1877,8 @@ impl Node {
             if lock(&n.echo).0 != k {
                 return;
             }
-            // Our mailbox pinged now: lost (a NAT forgot it), it connects
-            // anew and its return proves the lane, not at its next ping.
+            // Our mailbox pinged now, once: lost (a NAT forgot it), it
+            // connects anew and its return proves the lane.
             tokio::task::spawn_blocking(pushir::kick);
             if lock(&n.echo).1.take().is_some() || n.ep().is_none() {
                 warn!("our lane does not answer: iroh stays up");
@@ -5692,10 +5707,21 @@ async fn heartbeat(n: Weak<Node>) {
         }
         last = now();
         lock(&n.waits).retain(|_, w| w.4.elapsed() < WAITED);
-        // Our lane, proved now and then: only one that works wakes us.
+        // Our lane, proved now and then: only one that works wakes us. A
+        // mailbox held here is proved as it connects, watched by pushir.
         if i % LANE_BEATS == 0 && n.serve.is_none() {
             n.phonebook();
-            n.check_lane().await;
+            if n.mailbox_up().is_none() {
+                n.check_lane().await;
+            }
+        }
+        // Our mailbox off its relay: iroh up, where members dial, until
+        // it is back (caught up then).
+        if n.mailbox_up() == Some(false) && n.ep().is_none() {
+            warn!("our mailbox is off its relay: iroh up");
+            if n.up().await.is_ok() {
+                n.resume().await;
+            }
         }
         // Nothing needs iroh: asleep, our lane wakes it (`up`).
         n.rest_iroh(IDLE).await;
