@@ -35,6 +35,12 @@ const randomId = (n) =>
   [...crypto.getRandomValues(new Uint8Array(n))]
     .map((b) => b.toString(16).padStart(2, "0")).join("");
 const mobile = () => matchMedia("(max-width: 760px)").matches;
+/** A touch screen, whose keyboard's Enter is its only new line. */
+const coarse = () => matchMedia("(pointer: coarse)").matches;
+/** Enter sends, Shift+Enter is a new line; on a touch screen Enter is a
+ * new line, and the send button sends (or Ctrl+Enter, from a keyboard). */
+const sends = (e) => e.key === "Enter" && !e.shiftKey && !e.isComposing &&
+  (!coarse() || e.ctrlKey || e.metaKey);
 const android = /Android/.test(navigator.userAgent);
 const ios = /iPhone|iPad/.test(navigator.userAgent);
 
@@ -1946,14 +1952,17 @@ function editBox(m) {
     if (e.key === "Escape") {
       e.stopPropagation();
       stopEdit();
-    } else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    } else if (sends(e)) {
       e.preventDefault();
       save();
     }
   });
   ta.addEventListener("input", () => autosize(ta));
+  const keys = !coarse();
   return h("div", { class: "edit-box" }, ta,
-    h("small", {}, "escape to cancel • enter to save"));
+    h("small", {}, keys && "escape to ",
+      h("button", { onclick: stopEdit }, "cancel"),
+      keys ? " • enter to " : " • ", h("button", { onclick: save }, "save")));
 }
 
 function jumpTo(id) {
@@ -2048,7 +2057,7 @@ function openDevice(d) {
     hand(d.id, said(d.id, text, true));
   };
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (sends(e)) {
       e.preventDefault();
       send();
     }
@@ -2484,11 +2493,16 @@ const foot = (...btns) =>
 const cancel = (finish) =>
   h("button", { class: "btn link", onclick: () => finish(null) }, "Cancel");
 
+/** A code from the camera. What is seen is what is read: the square on
+ * screen, zoomed (pinch, or the slider) to pick one code out of several or
+ * bring a far one near. What it reads that is no code of ours, it says. */
 async function scanQR() {
-  let stream;
-  // The camera picked last time, else the one facing away.
-  const open = (id) => navigator.mediaDevices.getUserMedia({ video: id
-    ? { deviceId: { exact: id } } : { facingMode: "environment" } });
+  let stream, zoom = 1;
+  // The camera picked last time, else the one facing away: as sharp as it
+  // goes, so a far code still has pixels.
+  const open = (id) => navigator.mediaDevices.getUserMedia({ video: {
+    ...(id ? { deviceId: { exact: id } } : { facingMode: "environment" }),
+    width: { ideal: 1920 }, height: { ideal: 1080 } } });
   try {
     if (!window.jsQR) await new Promise((ok, no) => document.head.append(
       h("script", { src: "./vendor/jsQR.js", onload: ok, onerror: no })));
@@ -2496,8 +2510,10 @@ async function scanQR() {
   } catch (e) {
     return toast(`No camera: ${e?.message ?? e}`, true), null;
   }
-  const video = h("video", { class: "scan", autoplay: true, muted: true,
-    playsInline: true, srcObject: stream });
+  // Never on screen: its frames are drawn, cropped, where they are read.
+  const video = h("video", { muted: true, playsInline: true,
+    srcObject: stream });
+  quiet(video.play());
   // Named only once one is allowed: the list is read after.
   const cams = (await navigator.mediaDevices.enumerateDevices()
     .catch(() => [])).filter((d) => d.kind === "videoinput");
@@ -2508,29 +2524,61 @@ async function scanQR() {
       if (!s) return toast("That camera did not start", true);
       stream.getTracks().forEach((t) => t.stop());
       stream = video.srcObject = s;
+      quiet(video.play());
       store.set("camera", e.target.value);
     } }, cams.map((d, i) => h("option", { value: d.deviceId,
     selected: d.deviceId === now }, d.label || `Camera ${i + 1}`)));
-  const c = h("canvas");
-  const g = c.getContext("2d", { willReadFrequently: true });
+  const slider = h("input", { type: "range", class: "zoom", title: "Zoom",
+    min: 1, max: 5, step: 0.05, value: 1,
+    oninput: (e) => (zoom = +e.target.value) });
+  const set = (z) => (slider.value = zoom = Math.min(5, Math.max(1, z)));
+  // Two fingers apart zoom in, as on a photo.
+  const pts = new Map();
+  let pinch = null;
+  const span = () => {
+    const [a, b] = pts.values();
+    return Math.hypot(a[0] - b[0], a[1] - b[1]);
+  };
+  const up = (e) => { pts.delete(e.pointerId); pinch = null; };
+  const view = h("canvas", { class: "scan",
+    onpointerdown: (e) => {
+      pts.set(e.pointerId, [e.clientX, e.clientY]);
+      pinch = pts.size === 2 ? [span(), zoom] : null;
+    },
+    onpointermove: (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, [e.clientX, e.clientY]);
+      if (pinch) set(pinch[1] * span() / pinch[0]);
+    },
+    onpointerup: up, onpointercancel: up });
+  const g = view.getContext("2d", { willReadFrequently: true });
+  const said = h("p", { class: "note" });
+  const ours = (t) => /^\s*(chatir:)?[0-9a-z]+\s*$/i.test(t) || SHORT.test(t);
   let live = true;
   const got = await modal((finish) => {
     const tick = () => {
       if (!live) return;
-      if (video.videoWidth) {
-        [c.width, c.height] = [video.videoWidth, video.videoHeight];
-        g.drawImage(video, 0, 0);
-        const q = window.jsQR(g.getImageData(0, 0, c.width, c.height).data,
-          c.width, c.height);
-        if (q?.data) return finish(q.data);
+      const { videoWidth: w, videoHeight: v } = video;
+      if (w) {
+        // The middle square, 1/zoom of the short side; read at most 720
+        // pixels a side, so each frame is read before the next.
+        const s = Math.min(w, v) / zoom, n = Math.round(Math.min(s, 720));
+        if (view.width !== n) view.width = view.height = n;
+        g.drawImage(video, (w - s) / 2, (v - s) / 2, s, s, 0, 0, n, n);
+        // Ours are dark on light: never read inverted, twice as fast.
+        const t = window.jsQR(g.getImageData(0, 0, n, n).data, n, n,
+          { inversionAttempts: "dontInvert" })?.data;
+        if (t && ours(t)) return finish(t);
+        if (t) said.textContent = `Not a chatir code: ${t.slice(0, 200)}`;
       }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
     return h("div", {},
       h("div", { class: "m-body" }, h("h2", {}, "Scan the code"),
-        h("p", { class: "sub" }, "Hold the other device's code in view."),
-        pick, video),
+        h("p", { class: "sub" }, "Hold the other device's code in the " +
+          "square. Pinch or slide to zoom."),
+        pick, view, slider, said),
       foot(cancel(finish)));
   });
   live = false;
@@ -4266,6 +4314,10 @@ function wire() {
   $("mic-btn").append(icon("mic"));
   $("mic-btn").onclick = voice;
   $("mic-btn").classList.toggle("hidden", !window.AudioWorkletNode);
+  $("send-btn").append(icon("up"));
+  $("send-btn").onclick = send;
+  // A tap keeps the keyboard up, as a phone's send button does.
+  $("send-btn").onmousedown = (e) => e.preventDefault();
   $("call-btn").onclick = ring;
   // A clock only in a call: its tiles and its dial tone want one.
   let ticks = [];
@@ -4377,7 +4429,7 @@ function wire() {
   addEventListener("keydown", active, true);
   addEventListener("pointerdown", active, true);
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (sends(e)) {
       e.preventDefault();
       send();
     } else if (e.key === "ArrowUp" && !input.value) {
