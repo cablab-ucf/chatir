@@ -126,8 +126,6 @@ pub struct Config {
     pub link: Option<String>,
     /// Be a storage node: keep others' ciphertext.
     pub serve: bool,
-    /// A Markdown vault for "Add to notes".
-    pub notes: Option<PathBuf>,
     /// A storage node's password, which keeps files past `MAX_FILE`.
     pub big: Option<String>,
     /// Where files our devices send go (`send.rs`); else the system's
@@ -805,7 +803,6 @@ pub struct Node {
     own: Id,
     dir: PathBuf,
     net: Net,
-    notes: Option<PathBuf>,
     // Our device's key; iroh while needed (`up`), closed once idle.
     key: SecretKey,
     iroh: RwLock<Option<Iroh>>,
@@ -1141,7 +1138,6 @@ impl Node {
             me,
             dir: cfg.dir,
             net: cfg.net,
-            notes: cfg.notes,
             key: dev,
             iroh: RwLock::new(None),
             binding: tokio::sync::Mutex::new(()),
@@ -3099,15 +3095,6 @@ impl Node {
             }
         }
         (*lock(&self.route), crate::voice::routes())
-    }
-
-    pub fn notes(&self) -> Option<Vec<String>> {
-        self.notes.as_deref().map(crate::notes::list)
-    }
-
-    pub fn note(&self, file: &str, md: &str) -> Result<()> {
-        let dir = self.notes.as_deref().context("no notes folder here")?;
-        crate::notes::append(dir, file, md)
     }
 
     /// A call here rings like a phone: a DM, or a space small enough to be
@@ -5824,7 +5811,6 @@ mod tests {
             net,
             link: None,
             serve: false,
-            notes: None,
             big: None,
             inbox: None,
         };

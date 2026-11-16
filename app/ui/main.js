@@ -1894,50 +1894,12 @@ function toolbar(m) {
         "danger"));
 }
 
+// Into loroh, which shows it and writes only when told: a link back here.
 async function toNotes(m) {
-  const files = await rpc("notes").catch(() => null);
-  const last = store.get("note") ?? "Inbox.md";
-  const todo = h("select", {}, h("option", { value: "task" }, "A task"),
-    h("option", { value: "event" }, "An event (calendar)"),
-    h("option", { value: "" }, "A note (quoted)"));
-  const whole = (inThread() || m.thread > 0) &&
-    h("input", { type: "checkbox", checked: inThread() });
-  const into = h("input", { type: "text", value: last, maxLength: 200 });
-  into?.setAttribute("list", "notes-list");
-  const due = h("input", { type: "date" });
-  todo.onchange = () => {
-    const ev = todo.value === "event";
-    due.parentElement.classList.toggle("hidden", !todo.value);
-    due.type = ev ? "datetime-local" : "date";
-    into.value = ev ? store.get("cal") ?? "Calendar.md" : last;
-  };
-  const add = async (finish) => {
-    let file = into.value.trim() || "Inbox.md";
-    if (!file.endsWith(".md")) file += ".md";
-    const ev = todo.value === "event";
-    if (ev && !due.value) return toast("An event needs a time", true);
-    // No notes folder here (a phone): loroh takes it, and asks first.
-    const md = await call("note", { space: S.sid, message: m.id,
-      thread: !!whole?.checked, todo: todo.value === "task",
-      due: todo.value && due.value || null, file: files ? file : null });
-    finish(true);
-    store.set(ev ? "cal" : "note", file);
-    if (files) return toast(`Added to ${file}`);
-    await invoke("to_loroh", { file, text: md }).catch(() =>
-      copy(md, "No loroh here: copied as Markdown, to paste into your notes"));
-  };
-  modal((finish) => h("div", {},
-    h("div", { class: "m-body" }, h("h2", {}, "Add to notes"),
-      h("p", { class: "sub" }, "Plain Markdown with a link back here, for " +
-        "loroh (or any notes app). A shared folder (Lab/Ideas.md) reaches " +
-        "everyone who shares it."),
-      h("label", {}, "As"), todo,
-      h("div", {}, h("label", {}, "When (optional for a task)"), due),
-      whole && h("label", { class: "check" }, whole, "The whole thread"),
-      h("label", {}, "Into"), into, h("datalist", { id: "notes-list" },
-        (files ?? []).map((f) => h("option", { value: f })))),
-    foot(cancel(finish), h("button", { class: "btn",
-      onclick: () => quiet(add(finish)) }, files ? "Add" : "Add in loroh"))));
+  const at = `chatir://open/${S.sid}/${S.ch}/${m.id}`;
+  const text = `${m.text}\n\n— [${m.name}](${at})`;
+  try { await invoke("to_loroh", { file: "Inbox.md", text }); }
+  catch { copy(text, "No loroh here: copied, to paste into your notes"); }
 }
 
 function editBox(m) {

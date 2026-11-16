@@ -7,7 +7,6 @@ pub mod code;
 pub mod crypto;
 pub mod link;
 mod node;
-pub mod notes;
 pub mod op;
 pub mod push;
 pub mod release;

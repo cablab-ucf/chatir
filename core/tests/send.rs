@@ -17,10 +17,10 @@ fn dir(name: &str) -> PathBuf {
 
 /// Files sent it land in DIR/inbox.
 async fn start(dir: &Path, name: &str) -> Arc<Node> {
-    let (net, link, notes, big) = (Net::Direct, None, None, None);
+    let (net, link, big) = (Net::Direct, None, None);
     let (inbox, dir, name) = (Some(dir.join("inbox")), dir.into(), name.into());
     let serve = false;
-    let cfg = Config { dir, name, net, link, serve, notes, big, inbox };
+    let cfg = Config { dir, name, net, link, serve, big, inbox };
     Node::start(cfg).await.unwrap()
 }
 

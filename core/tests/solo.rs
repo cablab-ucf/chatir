@@ -108,8 +108,8 @@ async fn node(dir: &Path, name: &str, phone: bool) -> Arc<Node> {
         chatir_core::push::ours(dir, &net, false).await.unwrap();
     }
     let (dir, name) = (dir.into(), name.into());
-    let (link, serve, notes, big, inbox) = (None, false, None, None, None);
-    Node::start(Config { dir, name, net, link, serve, notes, big, inbox })
+    let (link, serve, big, inbox) = (None, false, None, None);
+    Node::start(Config { dir, name, net, link, serve, big, inbox })
         .await
         .unwrap()
 }
@@ -371,7 +371,6 @@ async fn a_text_reaches_our_sleeping_phone_at_once() {
         net: relay(),
         link,
         serve: false,
-        notes: None,
         big: None,
         inbox: None,
     };

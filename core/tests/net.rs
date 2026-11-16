@@ -43,7 +43,6 @@ async fn on(
         net,
         link,
         serve,
-        notes: None,
         big: None,
         inbox: None,
     };

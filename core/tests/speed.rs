@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 async fn start(name: &str) -> Arc<Node> {
     let t = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("chatir-speed-{t}-{name}"));
-    let (net, link, notes, big, serve) = (Net::Direct, None, None, None, false);
+    let (net, link, big, serve) = (Net::Direct, None, None, false);
     let (inbox, name) = (Some(dir.join("inbox")), name.into());
-    let cfg = Config { dir, name, net, link, serve, notes, big, inbox };
+    let cfg = Config { dir, name, net, link, serve, big, inbox };
     Node::start(cfg).await.unwrap()
 }
 

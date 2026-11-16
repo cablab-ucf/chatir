@@ -188,23 +188,13 @@ async fn main() -> Result<()> {
         log.with_writer(std::io::stderr).init();
     }
     let (name, link, serve) = (c.name, c.link, c.serve);
-    let notes = std::env::var_os("LOROH_VAULT").map(Into::into);
-    let notes = notes.or_else(|| dirs::home_dir().map(|h| h.join("notes")));
     let code_file = dir.join("code");
     let big =
         c.big_password.or_else(|| std::env::var("CHATIR_BIG_PASSWORD").ok());
     let at = dir.clone();
-    let n = Node::start(Config {
-        dir,
-        name,
-        net,
-        link,
-        serve,
-        notes,
-        big,
-        inbox: None,
-    })
-    .await?;
+    let n =
+        Node::start(Config { dir, name, net, link, serve, big, inbox: None })
+            .await?;
     if let Some(code) = n.storage_code().await {
         // Which one it is, as the app lists it: not secret, unlike its code.
         let (name, id) = (chatir_core::storage_name(), n.device());

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use chatir_core::{Ch, Event, Id, Message, Node, Op, Role, notes};
+use chatir_core::{Ch, Event, Id, Message, Node, Op, Role};
 use crossterm::event::{Event as Term, EventStream, KeyCode, KeyEvent};
 use crossterm::event::{KeyEventKind, KeyModifiers};
 use n0_future::StreamExt;
@@ -34,7 +34,7 @@ x         close a DM (kept; back with its next message)
 :close        put a DM away, kept     :invisible  no presence or typing
 :channel NAME  :rmchannel  :rename NAME  :room NAME (a named thread)
 :reply TEXT  :thread TEXT  :react EMOJI  :edit TEXT  :delete
-:search WORDS  in this space          :note [FILE]  :todo [FILE]
+:search WORDS  in this space          :note [FILE]  a loroh:// link
 :file PATH TEXT  send a file   :share PATH TEXT  from here   :save
 :shared  what this machine serves   :unshare N  stop serving the Nth
 :admin :member :ban :unban USER  :rekey  :link  :store CODE|local|here
@@ -698,22 +698,21 @@ impl App {
                 self.post(Op::Topic { thread, name: arg }).await?;
                 self.go(Some((s, Some(thread))));
             }
-            "note" | "todo" => {
+            "note" => {
                 let (s, c) = self.here()?;
                 let id = self.target(false)?;
-                let thread = n.view(&s, |st| st.thread(&c).is_some());
-                let (thread, todo) = (thread == Some(true), cmd == "todo");
-                let md = |st: &chatir_core::State| {
-                    notes::markdown(st, &s, &id, thread, todo, None)
-                };
-                let md = n.view(&s, md).flatten().context("nothing here")?;
-                let mut file =
-                    if arg.is_empty() { "Inbox".into() } else { arg };
-                if !file.ends_with(".md") {
-                    file += ".md";
-                }
-                n.note(&file, &md)?;
-                self.status = format!("added to {file}");
+                let m = n.view(&s, |st| st.message(&id)).flatten();
+                let m = m.context("nothing here")?.1;
+                let at = format!("chatir://open/{s}/{c}/{id}");
+                let text = format!("{}\n\n— [{}]({at})", m.text, m.name);
+                let file = if arg.is_empty() { "Inbox.md" } else { &arg };
+                osc52(&format!(
+                    "loroh://add?file={}&text={}",
+                    enc(file),
+                    enc(&text)
+                ));
+                self.status =
+                    "its loroh:// link, copied: open it to add".into();
             }
             "rmchannel" => {
                 let id = self.here()?.1;
@@ -1275,6 +1274,16 @@ fn center(r: Rect, w: u16, h: u16) -> Rect {
 
 fn rand() -> [u8; 8] {
     chatir_core::crypto::rand()
+}
+
+/// Percent-encoded, as a URL's query takes it.
+fn enc(s: &str) -> String {
+    let keep = |b: &u8| b.is_ascii_alphanumeric() || b"-._~".contains(b);
+    let f = |b: &u8| match keep(b) {
+        true => (*b as char).to_string(),
+        false => format!("%{b:02X}"),
+    };
+    s.as_bytes().iter().map(f).collect()
 }
 
 fn osc52(text: &str) {
