@@ -132,9 +132,10 @@ app of the lab: it homes on irpush.cxn.center (the relay with post-quantum
 TLS), joins iroh.cxn.center once that has not answered for 10 s, then
 n0's, and returns as soon as a better one answers. With no lookup service,
 a device is dialed on the lab's relays, on ours of the moment, and at the
-addresses it was met at. A device proves its lane every five minutes (a
-frame to itself through the relay) and lets iroh sleep only behind one
-that answered: with pushes down, iroh stays up and is dialed.
+addresses it was met at. A device proves its lane every five minutes, a
+phone every minute (a frame to itself through the relay; unheard, its
+mailbox is pinged at once), and lets iroh sleep only behind one that
+answered: with pushes down, iroh stays up and is dialed.
 Relays are open; a relay key (from whoever runs it) lifts its
 rate limit for relayed traffic.
 

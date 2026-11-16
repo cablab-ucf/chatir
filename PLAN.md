@@ -26,10 +26,11 @@ nearly silent and makes a NAT'd device reachable by id.
   comes). Empty, the mailbox is back from a gap: catch up.
 - One relay connection carries a burst and closes 20 s after its last
   frame. An unacked op is dialed after 3 s, and its ack still counts late.
-- A lane is trusted only while it answers: every five minutes, and each
-  time its mailbox connects, a device sends its own lane a frame through
-  the relay. Unheard in 10 s, iroh comes up and stays up, and the device
-  catches up; members' frames fail at once and they dial instead.
+- A lane is trusted only while it answers: every five minutes (a phone,
+  every minute), and each time its mailbox connects, a device sends its
+  own lane a frame through the relay. Unheard in 10 s, its mailbox is
+  pinged (a lost one connects anew), iroh comes up and stays up, and the
+  device catches up; members' frames fail at once and they dial instead.
 - iroh 1.4.1 cannot drop its home relay at runtime, so sleeping is closing
   the endpoint and waking is binding it again (same key, same port).
 
