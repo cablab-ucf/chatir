@@ -8,10 +8,10 @@ use std::time::Duration;
 async fn start(name: &str, serve: bool, big: Option<&str>) -> Arc<Node> {
     let t = std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("chatir-big-{t}-{name}"));
-    let (net, notes, link) = (Net::Direct, None, None);
+    let (net, link) = (Net::Direct, None);
     let (name, big) = (name.into(), big.map(Into::into));
     let inbox = None;
-    Node::start(Config { dir, name, net, link, serve, notes, big, inbox })
+    Node::start(Config { dir, name, net, link, serve, big, inbox })
         .await
         .unwrap()
 }

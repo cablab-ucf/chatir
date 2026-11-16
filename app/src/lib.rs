@@ -209,7 +209,6 @@ fn adopt(n: Arc<Node>) {
 fn config(
     dir: std::path::PathBuf,
     link: Option<String>,
-    notes: Option<std::path::PathBuf>,
 ) -> anyhow::Result<Config> {
     let net =
         match (std::env::var("CHATIR_RELAY"), std::env::var_os("CHATIR_LAN")) {
@@ -221,7 +220,7 @@ fn config(
         };
     let (name, serve) = ("anon".into(), false);
     let (big, inbox) = (None, None);
-    Ok(Config { dir, name, net, link, serve, notes, big, inbox })
+    Ok(Config { dir, name, net, link, serve, big, inbox })
 }
 
 struct App(watch::Sender<Started>);
@@ -1219,13 +1218,8 @@ pub fn run() {
 async fn start(app: &AppHandle, link: Option<String>) -> Result<(), String> {
     let r = async {
         let dir = home(app)?;
-        let notes =
-            std::env::var_os("LOROH_VAULT").map(Into::into).or_else(|| {
-                let home = app.path().home_dir().ok();
-                home.filter(|_| cfg!(desktop)).map(|h| h.join("notes"))
-            });
         let inbox = app.path().download_dir().ok();
-        boot(Config { inbox, ..config(dir, link, notes)? }).await
+        boot(Config { inbox, ..config(dir, link)? }).await
     };
     let r = r.await.map_err(err);
     if let Ok(n) = &r {

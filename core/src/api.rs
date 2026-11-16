@@ -1,7 +1,7 @@
 //! The app's whole bridge: one JSON call in, one JSON value out.
 
 use crate::op::{File, uncode};
-use crate::{Ch, Id, Node, Op, Role, notes, state::Pos};
+use crate::{Ch, Id, Node, Op, Role, state::Pos};
 use anyhow::{Context, Result};
 use data_encoding::BASE64;
 use iroh::EndpointAddr;
@@ -174,15 +174,6 @@ pub enum Call {
     Ring {
         space: Id,
         channel: Ch,
-    },
-    Notes,
-    Note {
-        space: Id,
-        message: Id,
-        thread: bool,
-        todo: bool,
-        due: Option<String>,
-        file: Option<String>,
     },
     /// In `room`, else `space`, else everywhere.
     Search {
@@ -530,25 +521,6 @@ pub async fn call(n: &Arc<Node>, c: Call) -> Result<Value> {
             json!(n.ringing(&space, channel).await)
         }
         Call::SetLevel { space, level } => json!(n.set_level(&space, level)),
-        // Null where there is no notes folder (Android).
-        Call::Notes => json!(n.notes()),
-        Call::Note { space, message, thread, todo, due, file } => {
-            let md = |s: &crate::State| {
-                notes::markdown(
-                    s,
-                    &space,
-                    &message,
-                    thread,
-                    todo,
-                    due.as_deref(),
-                )
-            };
-            let md = n.view(&space, md).flatten().context("no such message")?;
-            if let Some(f) = file {
-                n.note(&f, &md)?;
-            }
-            json!(md)
-        }
     })
 }
 

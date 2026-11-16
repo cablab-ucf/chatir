@@ -1037,15 +1037,6 @@ dialog input[type="text"] {
 .field:focus,
 .picker input:focus,
 dialog input[type="text"]:focus { border-color: var(--pink); }
-dialog input[type="date"] { color-scheme: dark; }
-dialog label.check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-transform: none;
-  font-size: 14px;
-  color: var(--text);
-}
 .field.mono { font: 13px var(--mono); }
 .code-big { font: 600 28px var(--mono); letter-spacing: .1em; text-align: center; user-select: all; margin: 12px 0; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }

@@ -387,7 +387,7 @@ async fn told(dir: PathBuf, full: bool) -> anyhow::Result<Vec<Notice>> {
 }
 
 async fn node(dir: PathBuf) -> anyhow::Result<std::sync::Arc<Node>> {
-    crate::boot(crate::config(dir, None, None)?).await
+    crate::boot(crate::config(dir, None)?).await
 }
 
 /// Our lane (the phone's mailbox), told to our spaces once a run, and when
