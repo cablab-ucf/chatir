@@ -3563,8 +3563,8 @@ async function ownerFlow(m) {
 
 /** What keeps messages and calls from reaching this phone, and Fix: one
  * setting a tap, the next shown once it is back. Pushes are proved, not
- * assumed: the node sends its own lane a frame through the relay every
- * minute, and hears it back through chatir's mailbox (`wakes`). Not back,
+ * assumed: the node sends its own lane a frame through the relay as its
+ * mailbox connects, trusted while that connection lasts, and hears it back through chatir's mailbox (`wakes`). Not back,
  * the mailbox is started anew once, unasked; still not, it says so. */
 let repushed = false;
 async function health(ask = "") {
