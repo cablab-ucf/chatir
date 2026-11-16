@@ -333,11 +333,25 @@ impl Node {
     }
 
     /// Whether our lane wakes us: it is on a relay, and a frame we sent it
-    /// through that relay came back of late (`check_lane`). Only then may
-    /// iroh sleep.
+    /// through that relay came back (`check_lane`): on its mailbox's
+    /// connection, which is still up, where we hold the mailbox; else of
+    /// late. Only then may iroh sleep.
     pub fn wakes(&self) -> bool {
-        let proved = lock(&self.echo).1.is_some_and(|t| t.elapsed() < PROVED);
-        proved && crate::push::lane_at(&self.dir).is_some()
+        let echo = lock(&self.echo).1;
+        match self.mailbox_up() {
+            Some(up) => up && echo.is_some(),
+            None => {
+                let proved = echo.is_some_and(|t| t.elapsed() < PROVED);
+                proved && crate::push::lane_at(&self.dir).is_some()
+            }
+        }
+    }
+
+    /// Whether our lane's mailbox, if this process holds it, is on its
+    /// relay now: pushir's own connection says, at no cost.
+    pub(super) fn mailbox_up(&self) -> Option<bool> {
+        let lane = crate::push::lane_at(&self.dir)?;
+        pushir::up(&lane.parse::<pushir::Lane>().ok()?.id)
     }
 
     /// The relay our lane is on, if it has one.
@@ -364,8 +378,8 @@ impl Node {
             if lock(&n.echo).0 != k {
                 return;
             }
-            // Our mailbox pinged now: lost (a NAT forgot it), it connects
-            // anew and its return proves the lane, not at its next ping.
+            // Our mailbox pinged now, once: lost (a NAT forgot it), it
+            // connects anew and its return proves the lane.
             tokio::task::spawn_blocking(pushir::kick);
             if lock(&n.echo).1.take().is_some() || n.ep().is_none() {
                 warn!("our lane does not answer: iroh stays up");

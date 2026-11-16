@@ -106,9 +106,10 @@ const WOKEN: Duration = Duration::from_secs(70);
 /// A text that came again within this long is a retry whose ack was lost
 /// (the wire carries no id): taken, not told twice.
 const AGAIN: Duration = Duration::from_secs(90);
-/// Our lane is proved every this many beats (each on a phone, whose health
-/// bar says when it is not), and trusted this long after.
-const LANE_BEATS: u64 = if cfg!(target_os = "android") { 1 } else { 5 };
+/// A lane on another process's mailbox (pushir's daemon) is proved every
+/// this many beats and trusted this long after; one held here, as each
+/// connection begins, and trusted while it lasts (`wakes`).
+const LANE_BEATS: u64 = 5;
 const PROVED: Duration = Duration::from_secs(7 * 60);
 
 /// Text handed to one of our own devices: one link, nothing kept elsewhere.

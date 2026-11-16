@@ -18,10 +18,21 @@ pub(super) async fn heartbeat(n: Weak<Node>) {
         }
         last = now();
         lock(&n.waits).retain(|_, w| w.4.elapsed() < WAITED);
-        // Our lane, proved now and then: only one that works wakes us.
+        // Our lane, proved now and then: only one that works wakes us. A
+        // mailbox held here is proved as it connects, watched by pushir.
         if i % LANE_BEATS == 0 && n.serve.is_none() {
             n.phonebook();
-            n.check_lane().await;
+            if n.mailbox_up().is_none() {
+                n.check_lane().await;
+            }
+        }
+        // Our mailbox off its relay: iroh up, where members dial, until
+        // it is back (caught up then).
+        if n.mailbox_up() == Some(false) && n.ep().is_none() {
+            warn!("our mailbox is off its relay: iroh up");
+            if n.up().await.is_ok() {
+                n.resume().await;
+            }
         }
         // Nothing needs iroh: asleep, our lane wakes it (`up`).
         n.rest_iroh(IDLE).await;
