@@ -145,9 +145,11 @@ impl State {
         s
     }
 
+    /// Live ops (presence, typing, rings) are never folded, whoever
+    /// passes one.
     pub fn extend(&mut self, ops: impl IntoIterator<Item = Signed>) -> bool {
         let (mut new, mut control) = (false, false);
-        for s in ops {
+        for s in ops.into_iter().filter(|s| !s.op.live()) {
             let (n, c) = self.insert(s);
             (new, control) = (new | n, control | c);
         }
@@ -236,15 +238,7 @@ impl State {
                     (self.pushes.insert(k, (at, url)).is_none(), false)
                 }
             },
-            Op::Back { .. }
-            | Op::Knock { .. }
-            | Op::Typing { .. }
-            | Op::Typed { .. }
-            | Op::Got { .. }
-            | Op::Here
-            | Op::Call { .. }
-            | Op::Ringing { .. }
-            | Op::Gone => (false, false),
+            Op::Back { .. } | Op::Knock { .. } => (false, false),
             // Judged alone, never walked: a flood of them costs no refold.
             Op::Profile { name, kem } => {
                 let mine = self.profiles_at.entry(s.author).or_default();
@@ -1083,6 +1077,10 @@ mod tests {
             assert!(fwd.extend([s.clone()]));
             assert!(!fwd.extend([s]));
         }
+        // Live: never folded, nor its author's last seen.
+        let seen = fwd.authors.clone();
+        assert!(!fwd.extend([op(99, a, Op::Idle), op(98, b, Op::Here)]));
+        assert_eq!(fwd.authors, seen);
         rev.extend(history().into_iter().rev());
         for st in [&fwd, &rev] {
             assert_eq!(st.name(), "home");
