@@ -206,24 +206,8 @@ fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = vec![];
-    let mut i = 0;
-    while i < b.len() {
-        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok());
-        match (b[i], hex.and_then(|h| u8::from_str_radix(h, 16).ok())) {
-            (b'%', Some(v)) => {
-                out.push(v);
-                i += 3;
-            }
-            (c, _) => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+fn percent_decode(s: &str) -> std::borrow::Cow<'_, str> {
+    percent_encoding::percent_decode_str(s).decode_utf8_lossy()
 }
 
 /// At most `max` bytes of a `kind` body, and its type.
