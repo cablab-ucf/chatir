@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 /// (file, item or "" for the whole file, its pin).
 const PINS: &[(&str, &str, &str)] = &[
-    ("crypto.rs", "", "7cf837a7ac906973"),
+    ("crypto.rs", "", "5b65c3c8624bc939"),
     ("op.rs", "", "df6e8c1b1f7fe41d"),
     ("sync.rs", "", "1e3defc8f3e8ebda"),
     ("call.rs", "", "7a747ca9595a581f"),

@@ -13,8 +13,10 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 blake3 = "1"
+constant_time_eq = "0.6"
 chacha20poly1305 = "0.11"
 data-encoding = "2"
+percent-encoding = "2"
 # Each code's QR, for every front end (the page's, the browser's too).
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 getrandom = "0.4"
