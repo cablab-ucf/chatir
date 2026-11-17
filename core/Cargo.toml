@@ -56,3 +56,4 @@ iroh-relay = { version = "1.4", default-features = false, features = [
   "server", "tls-aws-lc-rs",
 ] }
 tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
