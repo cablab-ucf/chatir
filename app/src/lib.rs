@@ -278,12 +278,16 @@ async fn chatir(
             return Err("only files you pick are shared".into());
         }
         chosen.map(|i| picked.remove(i));
-        // Sealed, an upload's plain copy goes.
-        let seal = matches!(call, api::Call::Seal { .. });
-        upload = (ours && seal).then(|| p.to_path_buf());
+        upload = ours.then(|| p.to_path_buf());
     }
+    let seal = matches!(call, api::Call::Seal { .. });
     let r = api::call(&node(&s).await?, call).await.map_err(err);
-    if let Some(p) = upload {
+    // Sealed (a big offer too, kept by a storage node), an upload's plain
+    // copy goes; offered, it is what is served.
+    let sealed = |v: &Value| {
+        v["key"].as_str().is_some_and(|k| k.contains(|c: char| c != '0'))
+    };
+    if let Some(p) = upload.filter(|_| seal || r.as_ref().is_ok_and(sealed)) {
         let _ = std::fs::remove_file(p);
     }
     r

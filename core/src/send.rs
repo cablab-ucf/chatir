@@ -46,7 +46,9 @@ const SHAPE: (usize, usize) = (8, 8);
 const PER_PEER: usize = 512;
 /// A block whose hash differs is asked again this many times a round.
 const TRIES: u8 = 3;
-/// Offers in a space this big go device to device, not through iroh-blobs.
+/// Offers in a space this big are kept by our storage nodes only if they
+/// have room (sealed), else served from here (iroh-blobs). 64 MiB while
+/// tested; 1 GiB once it works.
 pub const BIG: u64 = 64 << 20;
 /// Progress is told every tick; finished blocks noted on disk every
 /// `FLUSH` ticks (5 s), data synced first.
@@ -205,6 +207,8 @@ pub(crate) struct Sends {
     dirty: Mutex<HashSet<Id>>,
     // Offers to us shown as a notice (once a run).
     shown: Mutex<HashSet<Id>>,
+    // iroh-blobs transfers either way: the node stays up for them.
+    pub(crate) blobs: std::sync::atomic::AtomicUsize,
     // A network change: waiting pulls try again now.
     pub(crate) kick: Arc<tokio::sync::Notify>,
 }
@@ -834,18 +838,6 @@ impl Node {
         Ok((id, s))
     }
 
-    /// A chat offer of a big file: served from here, unhashed, to the
-    /// space's members (`BIG`).
-    pub(crate) fn offer_direct(
-        &self,
-        space: &Id,
-        path: &Path,
-        name: Option<&str>,
-    ) -> Result<File> {
-        let (hash, s) = self.register(path, name, To::Space(*space))?;
-        Ok(File { name: s.name, size: s.size, hash, key: DIRECT })
-    }
-
     /// Chat offers served device to device, as `sharing` lists them.
     pub(crate) fn offered_direct(&self) -> Vec<(Id, Id, String, u64)> {
         let b = lock(&self.send.book);
@@ -897,7 +889,8 @@ impl Node {
     /// stays up for it, out of sight too (it serves what we send).
     pub fn transferring(&self) -> bool {
         let out = |r: &Row| r.out && !r.stage.over();
-        !lock(&self.send.runs).is_empty()
+        self.send.blobs.load(Relaxed) > 0
+            || !lock(&self.send.runs).is_empty()
             || !lock(&self.send.busy).is_empty()
             || lock(&self.send.book).rows.values().any(out)
     }

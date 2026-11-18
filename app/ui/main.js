@@ -1789,14 +1789,14 @@ const b64 = (blob) => new Promise((ok) => {
   r.readAsDataURL(blob);
 });
 
-/** From here a file goes directly, device to device: no storage node
- * keeps it, its members fetch it from this device at full speed. */
+/** From here a file is kept by your storage node if it has room, else
+ * served from this device (core's BIG): 64 MiB while tested, then 1 GiB. */
 const DIRECT = 64 * 2 ** 20;
 
 async function addFiles(list) {
   for (const file of list) {
     const big = file.size >= DIRECT;
-    if (big) toast(`${file.name}: sent directly from this device`);
+    if (big) toast(`${file.name}: to your storage node if it has room, else from this device`);
     const f = await (big ? offerFile(file) : sealFile(file, null))
       .catch(() => null);
     if (f) S.files.push(f);
@@ -1809,7 +1809,7 @@ async function addPaths(list) {
   for (const { path, size } of list) {
     const name = path.split(/[\\/]/).pop();
     const big = size >= DIRECT;
-    if (big) toast(`${name}: sent directly from this device`);
+    if (big) toast(`${name}: to your storage node if it has room, else from this device`);
     const f = await (big ? call("offer", { space: S.sid, path, name })
       : call("seal", { space: S.sid, path, name, password: null }))
       .catch(() => null);
@@ -4327,7 +4327,7 @@ function wire() {
   $("snap-btn").append(icon("cam"));
   $("snap-btn").onclick = snap;
   $("snap-btn").classList.toggle("hidden", !navigator.mediaDevices);
-  $("attach-btn").title = "Attach (from 64 MB: directly, device to device)";
+  $("attach-btn").title = "Attach (from 64 MB: from this device unless your storage node has room)";
   $("attach-btn").onclick = () => native
     ? invoke("pick").then(addPaths, () => {}) : $("picker").click();
   $("picker").onchange = (e) => {

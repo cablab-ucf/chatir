@@ -52,13 +52,16 @@ default 127.0.0.1:4724; the browser holds only a token, new each run; with
   ScienceDirect, Nature) show title, authors, venue, year and abstract,
   from arXiv, PubMed or Crossref rather than the publisher.
 - Files sealed in chunks: up to 5 GB kept by storage nodes (more with
-  `--big-password`; the app sends 64 MiB and up directly, below), any size
-  shared from your device. Media to 25 MB is kept by the space's storage
-  nodes, so it shows inline with the sender away.
+  `--big-password`), within each node's room (`CHATIR_KEEP_GB`, 30 GiB by
+  default). From 64 MiB (1 GiB once tested) a file goes to your storage
+  node only if it has room; else it is served from your device, any size,
+  and saving it wakes that device by its lane. Media to 25 MB is kept by
+  the space's storage nodes, so it shows inline with the sender away.
 - Files straight to a device, as scp: your own, or one you allowed by its
   key (as ssh's `authorized_keys`: the data folder's `allowed`, a key and
   name a line; each side allows the other), taken at once into Downloads
-  (a storage node: `received` in its folder); in a chat, those from 64 MiB.
+  (a storage node: `received` in its folder); in a chat, received from
+  older versions' offers.
   Nothing hashed first, many streams over eight connections, each 4 MiB
   block checked, resumed after a drop or a restart (4 Gbit/s over
   loopback, both ends on one 4-core machine). One sent to a device that

@@ -513,3 +513,53 @@ async fn a_lane_moved_while_a_phone_sleeps_reaches_it() {
     let lanes = b.view(&id, |s| s.pushes_of(Some(&aid))).unwrap_or_default();
     assert!(lanes.iter().any(|l| l.1.contains("level:mentions")), "{lanes:?}");
 }
+
+/// A big file offered from a phone that then sleeps: saving it wakes the
+/// phone by its lane, and it comes whole from there.
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_a_big_file_wakes_its_sleeping_sender() {
+    let (a, db, b) = pair().await;
+    let id = a.create("lab").await.unwrap();
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("a has b's lane", || told(&a, &id, &b, "")).await;
+    let data: Vec<u8> =
+        (0..(64u32 << 20) + 1).map(|i| (i % 251) as u8).collect();
+    let src = dir("big.bin");
+    std::fs::write(&src, &data).unwrap();
+    let f = b.offer(&id, &src, None).await.unwrap();
+    assert!(f.offered(), "no storage node: served from the phone");
+    let ch = general(&b, &id);
+    let post = Op::Post {
+        channel: ch,
+        text: "".into(),
+        reply: None,
+        files: vec![f.clone()],
+    };
+    b.publish(&id, post).await.unwrap();
+    let seen = || a.view(&id, |s| s.sender_of(&f.hash)) == Some(Some(b.id()));
+    until("a sees the post", seen).await;
+    b.shutdown().await;
+    drop(b);
+    fresh(&db);
+    let (n, out) = (a.clone(), dir("out"));
+    let (f2, o) = (f.clone(), out.clone());
+    let save = tokio::spawn(async move { n.save(&id, &f2, &o).await });
+    // Its lane wakes it, as Android's service starts the node.
+    let woke = rung(&db).await;
+    let b = node(&db, "b", true).await;
+    b.hear(&woke);
+    // What else its lane hears (a dial wakes its iroh), as pushir hands on.
+    let (n, d) = (b.clone(), db.clone());
+    let lane = tokio::spawn(async move {
+        loop {
+            let all = std::mem::take(&mut *RANG.lock().unwrap());
+            all.iter().filter_map(|f| read(&d, f)).for_each(|f| n.hear(&f));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    let p = save.await.unwrap().unwrap();
+    lane.abort();
+    assert!(std::fs::read(&p).unwrap() == data, "whole, from the woken phone");
+    drop(b);
+    std::fs::remove_file(src).unwrap();
+}

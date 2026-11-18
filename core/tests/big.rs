@@ -16,8 +16,17 @@ async fn start(name: &str, serve: bool, big: Option<&str>) -> Arc<Node> {
         .unwrap()
 }
 
+fn du(p: &std::path::Path) -> u64 {
+    let Ok(d) = std::fs::read_dir(p) else { return 0 };
+    let size = |e: std::fs::DirEntry| match e.file_type() {
+        Ok(t) if t.is_dir() => du(&e.path()),
+        _ => e.metadata().map_or(0, |m| m.len()),
+    };
+    d.flatten().map(size).sum()
+}
+
 async fn until(what: &str, f: impl Fn() -> bool) {
-    for _ in 0..400 {
+    for _ in 0..1200 {
         if f() {
             return;
         }
@@ -54,6 +63,23 @@ async fn past_the_limit_with_the_password() {
     assert_eq!(f.size, data.len() as u64);
     let small = a.attach(&id, "note.txt", b"fits").await.unwrap();
 
+    // Big, offered: the storage node keeps it sealed while it has room;
+    // full, it is served from a. (The limit past which a password is
+    // asked stands for 5 GB no more.)
+    unsafe { std::env::set_var("CHATIR_TEST_MAX_FILE", "1099511627776") };
+    let big: Vec<u8> =
+        (0..(64u32 << 20) + 1).map(|i| (i % 253) as u8).collect();
+    let bsrc = src.with_extension("big");
+    std::fs::write(&bsrc, &big).unwrap();
+    unsafe { std::env::set_var("CHATIR_KEEP_GB", "0") };
+    let full = a.offer(&id, &bsrc, None).await.unwrap();
+    assert!(full.offered(), "no room: served from a");
+    unsafe { std::env::remove_var("CHATIR_KEEP_GB") };
+    let kept = a.offer(&id, &bsrc, None).await.unwrap();
+    assert!(!kept.offered() && !kept.direct(), "room: sealed for s");
+    let held = || du(&s.dir().join("files")) > big.len() as u64;
+    until("s keeps it", held).await;
+
     // Kept by the storage node: b gets both with a gone.
     let keyed = || a.view(&id, |s| s.kem(&b.id()).is_some()) == Some(true);
     until("b's key", keyed).await;
@@ -65,4 +91,6 @@ async fn past_the_limit_with_the_password() {
     let p = b.save(&id, &f, &out).await.unwrap();
     assert!(std::fs::read(&p).unwrap() == data, "whole, from storage");
     assert_eq!(b.file(&id, &small).await.unwrap(), b"fits");
+    let p = b.save(&id, &kept, &out).await.unwrap();
+    assert!(std::fs::read(&p).unwrap() == big, "whole, from storage");
 }

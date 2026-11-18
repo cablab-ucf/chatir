@@ -145,9 +145,9 @@ async fn a_device_not_allowed_is_refused() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(row(&x, &sent)["state"], "waiting");
     assert!(row(&b, &sent).is_null(), "b never took it");
-    let big = sparse((1 << 30) + 1);
+    let big = sparse((64 << 20) + 1);
     let f = a.offer(&id, &big, None).await.unwrap();
-    assert!(f.direct() && f.size == (1 << 30) + 1);
+    assert!(f.offered() && f.size == (64 << 20) + 1);
     let ch = a.view(&id, |s| s.channels()[0].0).unwrap();
     let files = vec![f.clone()];
     let post =
@@ -195,33 +195,29 @@ async fn an_interrupted_transfer_resumes() {
     std::fs::remove_file(src).unwrap();
 }
 
-/// A chat offer from 64 MiB is served device to device, nothing hashed
-/// first: another member saves it, and it shows as a transfer.
+/// A chat offer from 64 MiB, in a DM with no storage node: served from
+/// its sender's device through iroh-blobs, and saved whole.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_big_chat_offer_is_saved_device_to_device() {
-    let (a, b, id, _) = pair().await;
-    let big = sparse((1 << 30) + 4321);
-    let f = a.offer(&id, &big, Some("disk.img")).await.unwrap();
-    assert!(f.direct() && f.name == "disk.img");
-    let ch = a.view(&id, |s| s.channels()[0].0).unwrap();
-    let files = vec![f.clone()];
-    let post =
-        Op::Post { channel: ch, text: "here".into(), reply: None, files };
-    a.publish(&id, post).await.unwrap();
-    let seen = || b.view(&id, |s| s.sender_of(&f.hash)) == Some(Some(a.id()));
+async fn a_big_offer_in_a_dm_is_saved() {
+    let (a, b) = (start(&dir("a"), "a").await, start(&dir("b"), "b").await);
+    let hub = a.create("hub").await.unwrap();
+    b.join(&a.invite(&hub).await.unwrap()).await.unwrap();
+    let key = || a.view(&hub, |s| s.kem(&b.id()).is_some()) == Some(true);
+    until("b's key", key).await;
+    let dm = a.dm(&hub, &b.id()).await.unwrap();
+    until("b has the DM", || b.spaces().contains(&dm)).await;
+    let big = sparse((64 << 20) + 4321);
+    let f = a.offer(&dm, &big, Some("v.mp4")).await.unwrap();
+    assert!(f.offered() && f.name == "v.mp4");
+    let (channel, files) = (chatir_core::state::DM, vec![f.clone()]);
+    let post = Op::Post { channel, text: "".into(), reply: None, files };
+    a.publish(&dm, post).await.unwrap();
+    let seen = || b.view(&dm, |s| s.sender_of(&f.hash)) == Some(Some(a.id()));
     until("b sees the post", seen).await;
-    assert!(b.file(&id, &f).await.is_err(), "no preview");
     let out = dir("out");
-    let p = b.save(&id, &f, &out).await.unwrap();
-    assert_eq!(p, out.join("disk.img"));
+    let p = b.save(&dm, &f, &out).await.unwrap();
     assert_eq!(hash(&p), hash(&big), "whole");
-    let r = row(&b, &f.hash);
-    assert_eq!(
-        (r["state"].as_str(), r["out"].as_bool()),
-        (Some("done"), Some(false))
-    );
-    a.unshare(&f.hash).await.unwrap();
-    assert!(a.sharing().is_empty());
+    assert!(!a.transferring(), "nothing left on its way");
     std::fs::remove_file(big).unwrap();
     std::fs::remove_dir_all(out).unwrap();
 }

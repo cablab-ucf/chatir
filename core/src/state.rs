@@ -861,8 +861,7 @@ impl State {
     /// Who posted a file sent device to device (by its id): whose devices
     /// serve it. Posted by two (a copy of its id), it is nobody's.
     pub fn sender_of(&self, file: &Id) -> Option<Id> {
-        let has =
-            |p: &&Post| p.files.iter().any(|f| f.direct() && f.hash == *file);
+        let has = |p: &&Post| p.files.iter().any(|f| f.hash == *file);
         let mut by = self.posts.values().flat_map(|c| c.values()).filter(has);
         let a = by.next()?.author;
         by.all(|p| p.author == a).then_some(a)
