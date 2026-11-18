@@ -34,9 +34,7 @@ pub fn rand<const N: usize>() -> [u8; N] {
 }
 
 /// Equal, in time that says nothing about where they differ.
-pub fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0, |x, (a, b)| x | (a ^ b)) == 0
-}
+pub use constant_time_eq::constant_time_eq as same;
 
 fn aead(key: &Key) -> XChaCha20Poly1305 {
     XChaCha20Poly1305::new(key.into())
@@ -50,9 +48,8 @@ pub fn seal(key: &Key, aad: &[u8], msg: &[u8]) -> Vec<u8> {
 }
 
 pub fn open(key: &Key, aad: &[u8], b: &[u8]) -> Option<Vec<u8>> {
-    let (n, msg) = b.split_at_checked(24)?;
-    let n: [u8; 24] = n.try_into().ok()?;
-    aead(key).decrypt(&n.into(), Payload { msg, aad }).ok()
+    let (n, msg) = b.split_first_chunk::<24>()?;
+    aead(key).decrypt(n.into(), Payload { msg, aad }).ok()
 }
 
 /// A file's sealed form begins so (an older one is `seal`ed whole).
@@ -84,31 +81,20 @@ fn chunk(r: &mut impl Read, n: usize) -> io::Result<Vec<u8>> {
 /// `key` is the file's own, never reused.
 pub fn seal_stream(
     key: &Key,
-    mut r: impl Read,
+    r: impl Read,
     mut w: impl Write,
 ) -> io::Result<()> {
     w.write_all(STREAM)?;
-    let mut cur = chunk(&mut r, CHUNK)?;
-    for i in 0.. {
-        let next = match cur.len() == CHUNK {
-            true => chunk(&mut r, CHUNK)?,
-            false => vec![],
-        };
-        let p = Payload { msg: &cur, aad: b"spaces file" };
-        let ct = aead(key).encrypt(&nonce(i, next.is_empty()).into(), p);
-        w.write_all(&ct.map_err(|_| io::Error::other("seal"))?)?;
-        if next.is_empty() {
-            break;
-        }
-        cur = next;
-    }
-    w.flush()
+    let cipher = aead(key);
+    chunks(r, w, CHUNK, |nonce, p| {
+        cipher.encrypt(nonce, p).map_err(|_| io::Error::other("seal"))
+    })
 }
 
 pub fn open_stream(
     key: &Key,
     mut r: impl Read,
-    mut w: impl Write,
+    w: impl Write,
 ) -> io::Result<()> {
     let bad = || io::Error::other("damaged file");
     let mut head = [0; 8];
@@ -116,15 +102,29 @@ pub fn open_stream(
     if head != *STREAM {
         return Err(bad());
     }
-    let mut cur = chunk(&mut r, CHUNK + 16)?;
+    let cipher = aead(key);
+    chunks(r, w, CHUNK + 16, |nonce, p| {
+        cipher.decrypt(nonce, p).map_err(|_| bad())
+    })
+}
+
+fn chunks(
+    mut r: impl Read,
+    mut w: impl Write,
+    size: usize,
+    transform: impl Fn(
+        &chacha20poly1305::XNonce,
+        Payload<'_, '_>,
+    ) -> io::Result<Vec<u8>>,
+) -> io::Result<()> {
+    let mut cur = chunk(&mut r, size)?;
     for i in 0.. {
-        let next = match cur.len() == CHUNK + 16 {
-            true => chunk(&mut r, CHUNK + 16)?,
+        let next = match cur.len() == size {
+            true => chunk(&mut r, size)?,
             false => vec![],
         };
         let p = Payload { msg: &cur, aad: b"spaces file" };
-        let pt = aead(key).decrypt(&nonce(i, next.is_empty()).into(), p);
-        w.write_all(&pt.map_err(|_| bad())?)?;
+        w.write_all(&transform(&nonce(i, next.is_empty()).into(), p)?)?;
         if next.is_empty() {
             break;
         }
