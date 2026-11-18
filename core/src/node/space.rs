@@ -2,6 +2,24 @@
 
 use super::*;
 
+/// Ops the state's walk weighs (who may do what, keys, hosts, names), as
+/// against what members write (`State::insert` keeps those apart).
+fn walked(op: &Op) -> bool {
+    !matches!(
+        op,
+        Op::Post { .. }
+            | Op::Edit { .. }
+            | Op::React { .. }
+            | Op::Pin { .. }
+            | Op::Read { .. }
+            | Op::Preview { .. }
+            | Op::Push { .. }
+            | Op::Profile { .. }
+            | Op::Back { .. }
+            | Op::Knock { .. }
+    )
+}
+
 pub(super) fn rekey_aad(space: &Id, epoch: &[u8; 8]) -> Vec<u8> {
     [&space.0[..], epoch].concat()
 }
@@ -121,7 +139,15 @@ impl Book {
                     self.reject(i, day, net);
                     continue;
                 }
-                if st.role(&s.author) == Role::Banned
+                // What the walk weighs (roles, keys, hosts, names) is judged
+                // as the walk does, at its place: every device keeps the
+                // same such ops, whichever it got first (a ban, or an op
+                // dated before it). The rest from someone banned now: no.
+                let banned = match walked(&s.op) {
+                    true => st.role_at(&s.author, &at) == Role::Banned,
+                    false => st.role(&s.author) == Role::Banned,
+                };
+                if banned
                     || st.known(&e.epoch) && st.stale(&e.epoch, &at, &s.author)
                     || st.burned_after(&at, &s.author)
                 {
@@ -343,11 +369,22 @@ impl Space {
         b.idx.get(&day).map(|s| s.iter().copied().collect()).unwrap_or_default()
     }
 
-    pub fn get(&self, ids: &[Id]) -> Vec<Vec<u8>> {
+    /// The first of `ids` that fit `max` bytes together (one at least),
+    /// read; and how many of `ids` that took.
+    pub fn get_some(&self, ids: &[Id], max: usize) -> (Vec<Vec<u8>>, usize) {
         let mut b = lock(&self.book);
-        let at: Vec<_> =
-            ids.iter().filter_map(|i| b.at.get(i).copied()).collect();
-        at.into_iter().filter_map(|(o, l)| b.log.read(o, l).ok()).collect()
+        let (mut size, mut took, mut at) = (0, 0, vec![]);
+        for i in ids {
+            let a = b.at.get(i).copied();
+            let len = a.map_or(0, |a| a.1 as usize);
+            if took > 0 && size + len > max {
+                break;
+            }
+            (size, took) = (size + len, took + 1);
+            at.extend(a);
+        }
+        let got = at.into_iter().filter_map(|(o, l)| b.log.read(o, l).ok());
+        (got.collect(), took)
     }
 
     /// Devices of members not banned: whom a storage node may take from.
@@ -447,6 +484,45 @@ mod tests {
         b.fold(&sp, &o, vec![post(DAY + 4, "b")]);
         assert_eq!(shown(&b), 2);
         std::fs::remove_file(p).unwrap();
+    }
+
+    /// An admin's op dated before their ban counts on every device, the
+    /// ban first or not: devices that got them in either order agree.
+    #[test]
+    fn devices_agree_whichever_came_first_a_ban_or_an_op_before_it() {
+        let (o, x, v) = (Me::new(rand()), Me::new(rand()), Me::new(rand()));
+        let inv = Invite::new(o.id(), "", None);
+        let (sp, k, dev) = (inv.id(), inv.key, SecretKey::generate().public());
+        let op = |who: &Me, ts, op| {
+            let (s, raw) = op::seal(&sp, &k, &who.user, dev, ts, op);
+            (s.id, postcard::from_bytes(&raw).unwrap(), Src::Net(raw, false))
+        };
+        let role = |by: &Me, ts, user: &Me, role| {
+            op(by, ts, Op::Role { user: user.id(), role })
+        };
+        let roles = |first: bool| {
+            let p = std::env::temp_dir()
+                .join(format!("chatir-agree-{first}-{}", now()));
+            let mut b = Book::new(
+                Log::open(&p, |_, _, _| {}).unwrap(),
+                State::new(&inv),
+            );
+            b.keys.insert(tag(&k), k);
+            b.fold(&sp, &o, vec![role(&o, DAY, &x, Role::Admin)]);
+            b.fold(&sp, &o, vec![role(&o, DAY, &v, Role::Member)]);
+            let ban = || role(&o, DAY + 10, &x, Role::Banned);
+            let before = || role(&x, DAY + 5, &v, Role::Banned);
+            let order =
+                if first { [ban(), before()] } else { [before(), ban()] };
+            for w in order {
+                b.fold(&sp, &o, vec![w]);
+            }
+            let r = (b.st.role(&x.id()), b.st.role(&v.id()));
+            std::fs::remove_file(p).unwrap();
+            r
+        };
+        assert_eq!(roles(true), roles(false));
+        assert_eq!(roles(true), (Role::Banned, Role::Banned));
     }
 
     #[test]

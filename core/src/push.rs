@@ -97,8 +97,12 @@ impl Server {
     }
 
     async fn asked(&self, c: &Connection) -> Result<()> {
-        let (mut tx, mut rx) = c.accept_bi().await?;
-        let b = crate::sync::rest(&mut rx, 64).await?;
+        let ten = Duration::from_secs(10);
+        let ask = async {
+            let (tx, mut rx) = c.accept_bi().await?;
+            anyhow::Ok((tx, crate::sync::rest(&mut rx, 64).await?))
+        };
+        let (mut tx, b) = tokio::time::timeout(ten, ask).await??;
         let (served, relays) = &*self.0;
         // Members' devices we sync with only.
         let ours = lock(served).contains(&c.remote_id());
@@ -270,21 +274,41 @@ type Out = Arc<tokio::sync::Mutex<Option<(pushir::Sender, Instant)>>>;
 static OUT: LazyLock<Mutex<HashMap<RelayUrl, Out>>> =
     LazyLock::new(Mutex::default);
 
+/// Relays that did not answer, and when: for `DOWN` each frame fails at
+/// once instead of waiting its turn behind a connect that will time out
+/// (a link to the device is tried meanwhile; the outbox tries again).
+static FAILED: LazyLock<Mutex<HashMap<RelayUrl, Instant>>> =
+    LazyLock::new(Mutex::default);
+const DOWN: Duration = Duration::from_secs(30);
+
 /// `msg` to lane `to`: whether it left. Not delivery: only its ack is.
 pub async fn send(to: &Lane, msg: &[u8]) -> bool {
     if msg.len() > pushir::MAX {
         return false;
     }
+    let down =
+        |r: &RelayUrl| lock(&FAILED).get(r).is_some_and(|t| t.elapsed() < DOWN);
+    if down(&to.relay) {
+        return false;
+    }
     let out = lock(&OUT).entry(to.relay.clone()).or_default().clone();
     let mut o = out.lock().await;
+    // Failed while we waited our turn: no second wait.
+    if down(&to.relay) {
+        return false;
+    }
     // Twice at most: a connection gone stale, then a fresh one.
     for _ in 0..2 {
         let (mut s, fresh) = match o.take().filter(|s| s.1.elapsed() < KEPT) {
             Some((s, _)) => (s, false),
             None => match pushir::Sender::connect(&to.relay).await {
-                Ok(s) => (s, true),
+                Ok(s) => {
+                    lock(&FAILED).remove(&to.relay);
+                    (s, true)
+                }
                 Err(e) => {
                     tracing::debug!("lane: {e:#}");
+                    lock(&FAILED).insert(to.relay.clone(), Instant::now());
                     return false;
                 }
             },
@@ -318,6 +342,8 @@ async fn idle(out: Out) {
 
 /// Another network: what was open to a relay is gone with the old one.
 pub async fn reset() {
+    // A new network: relays that failed may answer now.
+    lock(&FAILED).clear();
     let all: Vec<Out> = lock(&OUT).values().cloned().collect();
     for o in all {
         o.lock().await.take();

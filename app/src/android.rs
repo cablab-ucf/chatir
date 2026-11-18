@@ -411,14 +411,20 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
 }
 
 /// chatir's lane secret on the phone's mailbox, for pushir's library; empty
-/// if it cannot be kept (never zeros: a secret anyone knows).
+/// if it cannot be kept (never zeros: a secret anyone knows). The first
+/// call as the process starts (no activity: at boot, after an update, a
+/// sticky service restarted): Android's context is held for native code
+/// from here, before pushir looks a relay up (else, unset, that panics,
+/// and `panic = "abort"` takes the process and every push with it).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_center_cxn_chatir_Wake_lane<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
+    ctx: JObject<'l>,
     dir: JString<'l>,
 ) -> JByteArray<'l> {
     env.with_env(|e| {
+        hold(e, &ctx);
         let k = push::secret(&profile(e, &dir));
         e.byte_array_from_slice(k.as_ref().map_or(&[][..], |k| &k[..]))
     })

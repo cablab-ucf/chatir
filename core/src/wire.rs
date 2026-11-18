@@ -11,7 +11,7 @@ use std::path::PathBuf;
 const PINS: &[(&str, &str, &str)] = &[
     ("crypto.rs", "", "5b65c3c8624bc939"),
     ("op.rs", "", "df6e8c1b1f7fe41d"),
-    ("sync.rs", "", "1e3defc8f3e8ebda"),
+    ("sync.rs", "", "c0bda6e608badfd1"),
     ("call.rs", "", "7a747ca9595a581f"),
     ("code.rs", "const APP", "6bdd9ce91f92c8b9"),
     ("push.rs", "const ALPN", "25b892e629921b57"),
@@ -41,7 +41,7 @@ const PINS: &[(&str, &str, &str)] = &[
     ("node.rs", "fn ev_ack", "fd5fcada693d870d"),
     ("node.rs", "fn hold_token", "7bd0b4878353508d"),
     ("node.rs", "fn level_of", "83a1628cc52cfd4f"),
-    ("node.rs", "fn tell_push", "d80cef2949338a0b"),
+    ("node.rs", "fn tell_push", "7a4be3d665771214"),
 ];
 
 /// Comments and spacing gone: what a formatter or a note may change.

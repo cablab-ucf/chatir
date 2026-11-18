@@ -380,8 +380,12 @@ impl State {
                 }
                 // Never one leaving the owner out: their word must still
                 // count. A retired owner has no word and takes no key.
+                // A tag once only (the first by place): one set again for
+                // fewer would make everyone else stale under the key they
+                // hold, silenced without being banned.
                 Op::Rekey { epoch, boxes }
                     if admin
+                        && !self.epochs.iter().any(|e| e.tag == *epoch)
                         && (head
                             || self.burned.contains_key(&self.head)
                             || boxes.iter().any(|b| b.0 == self.head)) =>
@@ -466,7 +470,7 @@ impl State {
     }
 
     /// `u`'s role just before `at`, as the walk had it then.
-    fn role_at(&self, u: &Id, at: &Pos) -> Role {
+    pub(crate) fn role_at(&self, u: &Id, at: &Pos) -> Role {
         let h = self.history.get(u).map_or(&[][..], Vec::as_slice);
         match h.partition_point(|x| x.0 < *at) {
             0 if *u == self.owner => Role::Admin,

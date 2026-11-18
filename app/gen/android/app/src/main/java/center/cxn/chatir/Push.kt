@@ -35,7 +35,7 @@ object Wake {
 
   /** chatir's lane secret on the phone's mailbox (32 random bytes, kept);
    *  empty if it could not be kept. */
-  @JvmStatic external fun lane(dir: String): ByteArray
+  @JvmStatic external fun lane(ctx: Context, dir: String): ByteArray
 
   /** The phone's mailbox id, from pushir's library ("" until known). */
   @JvmStatic external fun share(id: String)
@@ -63,7 +63,7 @@ fun push(ctx: Context) {
   Wake.share("")
   val seen = app.getSharedPreferences("chatir-push", 0)
   // No secret (a full disk), no lane: never one that anyone could guess.
-  val secret = Wake.lane(dir)
+  val secret = Wake.lane(app, dir)
   if (secret.size != 32) return
   Pushir.start(app, "chatir_app", secret, onId = { id ->
     Wake.share(id)

@@ -447,6 +447,10 @@ pub struct Node {
     // We hear our lane ourselves (no app does): let go as we stop, so the
     // next node here hears it.
     ear: AtomicBool,
+    // Links others opened to us, by device (`Proto`'s caps).
+    inbound: Mutex<HashMap<EndpointId, usize>>,
+    // When each space last told a stale key it is out (`sync::session`).
+    pub(crate) outs: Mutex<HashMap<Id, Instant>>,
     // Our lane, proved: the nonce last sent to it through its relay, and
     // when one last came back (`check_lane`).
     echo: Mutex<(Key, Option<Instant>)>,
@@ -631,6 +635,8 @@ impl Node {
             outbox: Mutex::new(outbox),
             out_dirty: AtomicBool::new(false),
             ear: AtomicBool::new(false),
+            inbound: Mutex::default(),
+            outs: Mutex::default(),
             echo: Mutex::default(),
             caught: Mutex::default(),
             evs: Default::default(),
@@ -939,7 +945,9 @@ impl Node {
         if sp.inv.is_none() {
             return Ok(());
         }
-        // How loud we are here: members ring us only for what we would show.
+        // How loud we are here: members ring us only for what we would show;
+        // and that our acks are signed (older parsers skip the word).
+        let url = format!("{url} {ACK_SIGNED}");
         let url = match self.level(id) {
             Level::All => url,
             Level::Mentions => format!("{url} level:mentions"),
@@ -1435,6 +1443,20 @@ mod tests {
         assert_eq!(lock(&a.waits).keys().collect::<Vec<_>>(), [&early]);
         a.hear(&[&[1u8][..], &early].concat());
         assert!(lock(&a.waits).is_empty() && !a.delivering());
+        // A device whose lane says it signs its acks: one unsigned (any
+        // member could make it) counts for nothing; its own does.
+        let relay = "https://relay.invalid./".parse().unwrap();
+        let l = pushir::Lane { relay, id: dev(14), secret: [0; 32] };
+        let url = Some(format!("{l} {ACK_SIGNED}"));
+        let signs = op::seal(&id, &k, &u.user, dev(3), now(), Op::Push { url });
+        a.ingest(&sp, vec![signs.1], false);
+        let want = ev_ack(&id, &k, 9, &dev(3));
+        lock(&a.waits).insert(want, (id, 9, dev(3), false, Instant::now()));
+        a.hear(&[&[1u8][..], &want].concat());
+        a.hear(&ack_frame(&want, &SecretKey::from_bytes(&[4; 32])));
+        assert!(lock(&a.waits).contains_key(&want), "made up, or another's");
+        a.hear(&ack_frame(&want, &SecretKey::from_bytes(&[3; 32])));
+        assert!(lock(&a.waits).is_empty(), "its own");
         stop(a).await;
     }
 

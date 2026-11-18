@@ -20,15 +20,26 @@ pub async fn latest() -> Result<String> {
     let json: serde_json::Value =
         serde_json::from_slice(&get("latest.json").await?)?;
     let v = json["version"].as_str().context("no version")?;
-    Ok(v.trim_start_matches('v').to_string())
+    let v = v.trim_start_matches('v');
+    // Shown as it is (a banner): digits and dots, nothing else.
+    let ok = v
+        .split('.')
+        .all(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit()));
+    anyhow::ensure!(ok && v.len() <= 32, "not a version: {v:.32}");
+    Ok(v.to_string())
+}
+
+/// Whether version `v` is older than `than` (numbers, dot by dot).
+pub fn older(v: &str, than: &str) -> bool {
+    let n = |s: &str| {
+        s.split('.').map(|x| x.parse().unwrap_or(0)).collect::<Vec<u64>>()
+    };
+    n(v) < n(than)
 }
 
 pub async fn newer(ours: &str) -> Result<Option<String>> {
     let v = latest().await?;
-    let n = |s: &str| {
-        s.split('.').map(|x| x.parse().unwrap_or(0)).collect::<Vec<u64>>()
-    };
-    Ok((n(&v) > n(ours)).then_some(v))
+    Ok(older(ours, &v).then_some(v))
 }
 
 pub async fn fetch(name: &str, version: &str) -> Result<Vec<u8>> {

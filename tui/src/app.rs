@@ -833,7 +833,8 @@ impl App {
             }
             "link" => {
                 self.notice = Some(format!(
-                    "Start chatir on your other device with\n\n  chatir --link \
+                    "On your other device run\n\n  chatir --link -\n\nand \
+                     paste this code (kept out of ps and shell history):\n\n  \
                      {}\n\nIt becomes you: keep this secret.",
                     n.link_code().await
                 ));

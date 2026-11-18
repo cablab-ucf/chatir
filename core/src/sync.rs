@@ -23,7 +23,7 @@ use iroh::{EndpointId, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const ALPN: &[u8] = b"spaces/sync/1";
 pub type Bucket = (u32, u32, [u8; 16]);
@@ -169,6 +169,14 @@ async fn session(
     anyhow::ensure!(lock(each).insert(who), "busy");
     let _each = Turn(each, who);
     if let Some(ids) = out {
+        // Told they are out (its rekeys, up to 16 MB) once a minute a
+        // space: a stale key from any number of new ids costs no more.
+        let fresh = {
+            let mut o = lock(&n.outs);
+            o.retain(|_, t| t.elapsed() < Duration::from_secs(60));
+            o.insert(sp.id, Instant::now()).is_none()
+        };
+        anyhow::ensure!(fresh, "busy");
         write(&mut tx, &Reply::Out).await?;
         give(&sp, &mut tx, &ids).await?;
         return Ok(tx.finish()?);
@@ -202,10 +210,14 @@ async fn session(
 }
 
 async fn give(sp: &Space, tx: &mut SendStream, ids: &[Id]) -> Result<()> {
-    for chunk in ids.chunks(256) {
-        for b in sp.get(chunk) {
+    // By bytes, as `take` takes them: 256 of the largest would be 1 GiB.
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let (got, took) = sp.get_some(rest, 16 << 20);
+        for b in got {
             frame(tx, &b).await?;
         }
+        rest = &rest[took..];
     }
     frame(tx, &[]).await
 }

@@ -96,17 +96,56 @@ pub(crate) fn endpoint(net: &Net) -> iroh::endpoint::Builder {
     }
 }
 
+/// Links others opened to us at once: a device (anyone who knows its id)
+/// holds at most `PER_DEVICE` open, all of them `INBOUND` (a storage
+/// node, which serves many, `SERVED`).
+const PER_DEVICE: usize = 16;
+const INBOUND: usize = 256;
+const SERVED: usize = 4096;
+
+/// One link let in, counted until it ends.
+struct Admitted(Weak<Node>, EndpointId);
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        let Some(n) = self.0.upgrade() else { return };
+        let mut m = lock(&n.inbound);
+        if let Some(c) = m.get_mut(&self.1) {
+            *c -= 1;
+            if *c == 0 {
+                m.remove(&self.1);
+            }
+        }
+    }
+}
+
 impl ProtocolHandler for Proto {
     async fn accept(&self, c: Connection) -> Result<(), AcceptError> {
         let gone = || AcceptError::from_err(std::io::Error::other("closing"));
         let n = self.0.upgrade().ok_or_else(gone)?;
+        let d = c.remote_id();
+        {
+            let mut m = lock(&n.inbound);
+            let all: usize = m.values().sum();
+            let most = if n.serve.is_some() { SERVED } else { INBOUND };
+            let one = m.entry(d).or_default();
+            if *one >= PER_DEVICE || all >= most {
+                let busy = std::io::Error::other("too many links open");
+                return Err(AcceptError::from_err(busy));
+            }
+            *one += 1;
+        }
+        let _in = Admitted(self.0.clone(), d);
         let r = match c.alpn() {
             sync::ALPN => sync::respond(&n, &c).await,
             call::ALPN => {
                 n.answer(c).await;
                 Ok(())
             }
-            HAND => n.handed(&c).await,
+            // One text: said within a while, or the link goes.
+            HAND => tokio::time::timeout(Duration::from_secs(30), n.handed(&c))
+                .await
+                .unwrap_or_else(|_| Err(anyhow!("silent"))),
             DIRECT => n.told(&c).await,
             crate::send::ALPN => {
                 n.lend(c).await;

@@ -2855,6 +2855,12 @@ async function addCard(code, p) {
   if (isMe(p.owner)) return toast("That is your own contact code", true);
   const d = S.spaces.find((x) => x.dm && x.with === p.owner);
   if (d) return open(d.id);
+  // Asked, however it came (a web page's link too): adding them dials
+  // them, so they learn this device is theirs to reach.
+  const ok = await confirmBox({ title: `Add ${p.name || "this contact"}?`,
+    sub: "They can then message you, and learn your chatir id. Add only " +
+      "people you meant to.", ok: "Add" });
+  if (!ok) return;
   if (!(await call("join", { code }).catch(() => null))) return;
   S.meet = p.owner;
   toast(`${p.name || "Contact"} added: your DM opens once they're reachable.`);

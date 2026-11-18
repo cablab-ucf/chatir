@@ -183,9 +183,13 @@ impl Node {
     /// from devices that space knows only.
     pub(super) async fn told(self: &Arc<Self>, c: &Connection) -> Result<()> {
         let from = c.remote_id();
-        while let Ok(mut s) = c.accept_uni().await {
-            // One stream too big or cut short: the next ones still count.
-            let Ok(b) = sync::rest(&mut s, 32 + GOSSIP_MAX).await else {
+        // Quiet a while (its dialer closes a quiet link at `QUIET_LINK`):
+        // closed, so nobody holds it open saying nothing.
+        let next = || tokio::time::timeout(3 * QUIET_LINK, c.accept_uni());
+        while let Ok(Ok(mut s)) = next().await {
+            // One stream too big, cut short or slow: the next ones count.
+            let read = sync::rest(&mut s, 32 + GOSSIP_MAX);
+            let Ok(Ok(b)) = tokio::time::timeout(QUIET_LINK, read).await else {
                 continue;
             };
             let Some((id, raw)) = b.split_first_chunk::<32>() else { continue };
@@ -226,9 +230,10 @@ impl Node {
         self.neighbor(sp, from);
         self.signaled(sp, raw, from);
         // Acked only once kept: refused (dated ahead, a full disk), its
-        // sender keeps trying. A storage node acks once it fetched it.
+        // sender keeps trying. A storage node fetches it first (a sync,
+        // which tells its sender it is kept): no ack before.
         let i = Id(blake3::hash(raw).into());
-        let kept = sp.inv.is_none() || e.live || lock(&sp.book).has(&i, e.ts);
+        let kept = e.live || lock(&sp.book).has(&i, e.ts);
         kept.then_some(e)
     }
 

@@ -12,6 +12,31 @@ fn phonebook_of(dir: &Path) -> BTreeMap<Id, Page> {
 
 /// An op taken with no node running, acked to the lane of the device it
 /// came from (as the phonebook has it): sent on the runtime we run in.
+/// An ack's frame, signed by the device that acks (`ACK_SIGNED`): with
+/// the space's key any member could make the ack itself. Older senders
+/// read the ack alone.
+pub(super) fn ack_frame(a: &Key, me: &SecretKey) -> Vec<u8> {
+    let sig = me.sign(&[ACK_CTX, a].concat()).to_bytes();
+    [&[crate::push::ACK][..], a, &sig].concat()
+}
+
+const ACK_CTX: &[u8] = b"chatir ack 1";
+/// In a device's lane (its `Push`): its acks are signed, so one that is
+/// not is someone else's.
+pub(super) const ACK_SIGNED: &str = "acks:signed";
+
+/// Whether ack `a` (`sig`: what followed it) is `d`'s own, as a device
+/// that says it signs must; one that does not say (older) is taken as is.
+fn acked_by(signs: bool, d: &EndpointId, a: &Key, sig: &[u8]) -> bool {
+    match <&[u8; 64]>::try_from(sig) {
+        Ok(s) => {
+            let s = iroh::Signature::from_bytes(s);
+            d.verify(&[ACK_CTX, a].concat(), &s).is_ok()
+        }
+        Err(_) => !signs,
+    }
+}
+
 fn ack_asleep(dir: &Path, space: &Id, p: &Page, ts: u64, from: &EndpointId) {
     let to = p.lanes.get(from).and_then(|l| crate::push::lane_of(l));
     let me = std::fs::read(dir.join("device")).ok();
@@ -20,7 +45,7 @@ fn ack_asleep(dir: &Path, space: &Id, p: &Page, ts: u64, from: &EndpointId) {
     let rt = tokio::runtime::Handle::try_current();
     let (Some(to), Some(me), Ok(rt)) = (to, me, rt) else { return };
     let a = ev_ack(space, &p.key, ts, &me.public());
-    let ack = [&[crate::push::ACK][..], &a].concat();
+    let ack = ack_frame(&a, &me);
     rt.spawn(async move { crate::push::send(&to, &ack).await });
 }
 
@@ -60,7 +85,8 @@ pub(super) async fn acks(c: Connection, n: Weak<Node>) {
             continue;
         };
         let Ok(ts) = <[u8; 8]>::try_from(ts) else { continue };
-        n.acked(Id(*id), d, u64::from_le_bytes(ts));
+        // Never past now: a host saying u64::MAX would mark all kept.
+        n.acked(Id(*id), d, u64::from_le_bytes(ts).min(now()));
     }
 }
 
@@ -668,7 +694,7 @@ impl Node {
                 let Some(e) = self.take(&sp, d, rest) else { return };
                 let Some(at) = self.lanes(&sp.id).remove(&d) else { return };
                 let a = ev_ack(&sp.id, &k, e.ts, &self.device());
-                let ack = [&[crate::push::ACK][..], &a].concat();
+                let ack = ack_frame(&a, &self.key);
                 tokio::spawn(async move { crate::push::send(&at, &ack).await });
             }
             Some((crate::push::TEXT, l, rest)) => {
@@ -692,7 +718,26 @@ impl Node {
                     self.show_text(from, text);
                 }
             }
-            Some((crate::push::ACK, a, _)) => {
+            Some((crate::push::ACK, a, sig)) => {
+                // Whose it is (an op of ours a device acks), signed by that
+                // device if its lane says it signs: else a member made it
+                // up (any member could), and it counts for nothing.
+                let w = lock(&self.waits).get(&a).map(|w| (w.0, w.2));
+                let o = || {
+                    let o = lock(&self.outbox);
+                    let o = o.iter().find(|o| o.ack == a);
+                    o.and_then(|o| {
+                        Some((o.space, EndpointId::from_bytes(&o.device).ok()?))
+                    })
+                };
+                // (Our own space's key only our devices hold: their acks,
+                // texts' too, need no signature.)
+                if let Some((space, d)) = w.or_else(o)
+                    && space != self.own
+                    && !acked_by(self.signs_acks(&space, &d), &d, &a, sig)
+                {
+                    return;
+                }
                 // Delivered: off the outbox, whatever it was.
                 self.out_done(|o| o.ack == a);
                 // A text of ours, taken by the device it went to.
@@ -726,6 +771,14 @@ impl Node {
     /// (`wake_who`) still run.
     pub fn delivering(&self) -> bool {
         lock(&self.waits).values().any(|w| w.4.elapsed() < WAITED)
+    }
+
+    /// Whether device `d`'s lane in `space` says its acks are signed.
+    fn signs_acks(&self, space: &Id, d: &EndpointId) -> bool {
+        let p = self.view(space, |s| s.pushes_of(None)).unwrap_or_default();
+        p.iter().any(|(x, url)| {
+            x == d && url.split_whitespace().any(|t| t == ACK_SIGNED)
+        })
     }
 
     /// Every space caught up with, once a `BEAT` at most.

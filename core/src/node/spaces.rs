@@ -559,8 +559,15 @@ impl Node {
             (key, self.tick().max(after), moved)
         };
         let rekey = matches!(op, Op::Rekey { .. });
+        let live = op.live();
         let (s, raw) = self.seal(sp, &key, ts, op);
-        self.ingest(sp, vec![raw.clone()], true);
+        // Refused here (a role or key moved under us): said, never a
+        // message that silently goes nowhere.
+        let kept = self.ingest(sp, vec![raw.clone()], true);
+        ensure!(
+            live || kept > 0,
+            "refused here: your role or this space's key changed"
+        );
         self.tell(sp, &raw);
         // Asleep, members would ring the old lane until they next met us.
         if moved {

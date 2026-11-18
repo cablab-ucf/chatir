@@ -597,8 +597,35 @@ async fn a_message_had_by_the_node_does_not_ring_again_asleep() {
     a.publish(&id, post(ch, "seen", None)).await.unwrap();
     until("b has it", || texts(&b, &id, &ch).contains(&"seen".to_string()))
         .await;
-    until("noted as had", || db.join("rung").exists()).await;
+    let id_of = || {
+        let ms = b.view(&id, |s| s.messages(&ch, None, 9)).unwrap_or_default();
+        ms.into_iter().find(|m| m.text == "seen").map(|m| m.id)
+    };
+    let seen = id_of().expect("b has it");
+    let rung_has = || {
+        let b = std::fs::read(db.join("rung")).unwrap_or_default();
+        postcard::from_bytes::<Vec<Id>>(&b).is_ok_and(|r| r.contains(&seen))
+    };
+    until("noted as had", rung_has).await;
     b.shutdown().await;
     drop(b);
-    assert!(matches!(woken(&db, &rung(&db).await), (None, false)));
+    // Whatever rang for b (its message's frame, a hang-up its `Gone`
+    // brings): none shows "seen" again.
+    let mut rang = 0;
+    for _ in 0..30 {
+        let got = {
+            let mut r = RANG.lock().unwrap();
+            r.iter().position(|f| ours(&db, f)).map(|i| r.remove(i))
+        };
+        match got.and_then(|f| read(&db, &f)) {
+            Some(f) => {
+                TAKEN.lock().unwrap().push(f.clone());
+                let (n, _) = woken(&db, &f);
+                assert!(n.is_none_or(|n| n.body != "seen"), "shown again");
+                rang += 1;
+            }
+            None => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    assert!(rang > 0, "it rang");
 }
