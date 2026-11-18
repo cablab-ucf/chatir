@@ -823,16 +823,24 @@ impl Node {
     pub async fn rekey(self: &Arc<Self>, id: &Id) -> Result<()> {
         let sp = self.get(id)?;
         let inv = sp.inv.as_ref().ok_or_else(|| anyhow!("only hosted here"))?;
-        let (new, old, boxes) = {
+        let (new, old, to) = {
             let b = lock(&sp.book);
             ensure!(b.st.role(&self.id()) == Role::Admin, "only admins rekey");
             let (new, old): (Key, Key) = (rand(), b.key(inv).0);
-            let aad = rekey_aad(id, &tag(&new));
-            let to = b.st.members().into_iter().filter_map(|m| {
-                Some((m.id, kem_seal(b.st.kem(&m.id)?, &aad, &new)?))
-            });
-            (new, old, to.collect())
+            let to =
+                b.st.members()
+                    .into_iter()
+                    .filter_map(|m| Some((m.id, b.st.kem(&m.id)?.to_vec())));
+            (new, old, to.collect::<Vec<_>>())
         };
+        // Past what a rekey carries (`op::fits`) it would be refused on
+        // every device, its own too: said now, not redone each minute.
+        ensure!(to.len() <= 3000, "too many members to rekey (3000 at most)");
+        // Sealed outside the book's lock: thousands of X-Wing seals.
+        let aad = rekey_aad(id, &tag(&new));
+        let boxes: Vec<_> = (to.iter())
+            .filter_map(|(u, k)| Some((*u, kem_seal(k, &aad, &new)?)))
+            .collect();
         lock(&sp.book).keys.insert(tag(&new), new);
         self.post(&sp, Op::Rekey { epoch: tag(&new), boxes }).await?;
         self.post(&sp, Op::Back { key: old }).await?;

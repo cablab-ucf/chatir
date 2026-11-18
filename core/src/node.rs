@@ -451,6 +451,8 @@ pub struct Node {
     inbound: Mutex<HashMap<EndpointId, usize>>,
     // When each space last told a stale key it is out (`sync::session`).
     pub(crate) outs: Mutex<HashMap<Id, Instant>>,
+    // Devices whose `Here` we answered (with our call), and when.
+    answered: Mutex<HashMap<(Id, EndpointId), (Instant, u8)>>,
     // Our lane, proved: the nonce last sent to it through its relay, and
     // when one last came back (`check_lane`).
     echo: Mutex<(Key, Option<Instant>)>,
@@ -637,6 +639,7 @@ impl Node {
             ear: AtomicBool::new(false),
             inbound: Mutex::default(),
             outs: Mutex::default(),
+            answered: Mutex::default(),
             echo: Mutex::default(),
             caught: Mutex::default(),
             evs: Default::default(),
@@ -1422,6 +1425,10 @@ mod tests {
         let lanes = a.lanes(&id);
         assert!(!lanes.contains_key(&dev(1)), "claimed twice: neither's");
         assert!(lanes[&dev(2)].id == dev(13));
+        // Proven u's (its sync): u's lane, whoever else claims it.
+        a.bind(dev(1), u.id());
+        assert!(a.lanes(&id)[&dev(1)].id == dev(11), "its owner's");
+        lock(&a.verified).remove(&dev(1));
         // u's op from device 2's lane: under its label, not the space's id.
         let raw = op::seal(&id, &k, &u.user, dev(2), now(), post(ch, "ev")).1;
         a.hear(&[&[0u8][..], &id.0, &raw].concat());

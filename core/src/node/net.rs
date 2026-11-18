@@ -238,7 +238,11 @@ pub(crate) fn client() -> reqwest::ClientBuilder {
     let ca = iroh::tls::CaTlsConfig::system();
     #[cfg(target_os = "android")]
     let ca = iroh::tls::CaTlsConfig::embedded();
-    let tls = ca.client_config(irnet::tls()).expect("TLS");
+    // No system roots (a bare host): the embedded ones, not a crash loop.
+    let tls = ca.client_config(irnet::tls());
+    let embedded =
+        || iroh::tls::CaTlsConfig::embedded().client_config(irnet::tls());
+    let tls = tls.or_else(|_| embedded()).expect("TLS with embedded roots");
     let b = reqwest::Client::builder().tls_backend_preconfigured(tls);
     // Stalls end a request, not its length: an update can be large.
     let b = b.connect_timeout(Duration::from_secs(20));
@@ -255,7 +259,10 @@ pub(crate) fn web() -> reqwest::Client {
         _ => a.follow(),
     });
     let b = client().redirect(hop).https_only(true).dns_resolver(Public);
-    b.user_agent("chatir link preview").build().expect("HTTP client")
+    // Said as any browser might (not "chatir": the site learns enough),
+    // and given up whole after 15 s, however slowly it trickles.
+    let b = b.user_agent("Mozilla/5.0 (compatible)");
+    b.timeout(Duration::from_secs(15)).build().expect("HTTP client")
 }
 
 /// https, and no address of a LAN's or this machine's.

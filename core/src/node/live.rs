@@ -569,10 +569,23 @@ impl Node {
             }
             // New here, or back from sleep: answered once with our call
             // (none, mostly), which says we are here without asking back.
+            // Not in a call: three times a minute a device at most, however
+            // often it comes and goes (each answer goes to every device: N²
+            // for a member toggling `Gone` and `Here`), a lost one retried.
             Op::Here => {
                 let id = sp.id;
                 let ch = move |n: &Node| n.in_call().filter(|c| c.0 == id);
-                if (changed && !self.invisible()) || ch(self).is_some() {
+                let fresh = || {
+                    let mut a = lock(&self.answered);
+                    a.retain(|_, t| t.0.elapsed() < Duration::from_secs(60));
+                    let t =
+                        a.entry((id, s.device)).or_insert((Instant::now(), 0));
+                    t.1 += 1;
+                    t.1 <= 3
+                };
+                if (changed && !self.invisible() && fresh())
+                    || ch(self).is_some()
+                {
                     let (n, sp) = (self.clone(), sp.clone());
                     // Our call as it is when said: a call begun meanwhile
                     // is never undone by a "none" stamped after it.

@@ -535,6 +535,15 @@ impl State {
     }
 
     pub fn pushes_of(&self, who: Option<&Id>) -> Vec<(EndpointId, String)> {
+        let c = self.push_claims(who).into_iter();
+        c.map(|(_, d, u)| (d, u)).collect()
+    }
+
+    /// Each lane, with who claims its device (anyone may claim any).
+    pub fn push_claims(
+        &self,
+        who: Option<&Id>,
+    ) -> Vec<(Id, EndpointId, String)> {
         let ok = |((a, _), (at, _)): &(&(Id, EndpointId), &(Pos, _))| {
             !self.out(a) && !self.stale_at(at, a)
         };
@@ -550,7 +559,7 @@ impl State {
             *c <= 4
         });
         p.into_iter()
-            .filter_map(|((_, d), (_, u))| Some((*d, u.clone()?)))
+            .filter_map(|((a, d), (_, u))| Some((*a, *d, u.clone()?)))
             .collect()
     }
 

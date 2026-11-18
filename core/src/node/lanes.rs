@@ -502,12 +502,12 @@ impl Node {
                 (at.map(|k| ev_label(id, &k)), key.map(|k| ev_label(id, &k)));
             let op = env.zip(key).and_then(|(e, k)| op::open(id, &k, &e, None));
             let op = op.map(|o| o.0.op);
-            let all = b.st.pushes_of(who).into_iter();
-            let all = all.filter(|(d, url)| {
-                let user = b.st.owner_of(d).unwrap_or_default();
-                wants(&b.st, op.as_ref(), level_of(url), &user)
+            // As its claimant would see it: claimed by two, its owner's.
+            let all = self.owned(b.st.push_claims(who)).into_iter();
+            let all = all.filter(|(user, _, url)| {
+                wants(&b.st, op.as_ref(), level_of(url), user)
             });
-            let all = all.collect::<Vec<_>>();
+            let all = all.map(|(_, d, u)| (d, u)).collect::<Vec<_>>();
             // A DM they have not joined yet (our knock on its way): no lane
             // of theirs here.
             let peer = b.st.peer(&self.id());
@@ -655,13 +655,28 @@ impl Node {
     /// Each device of space `id` that told its events address; one two
     /// members claim is neither's (dialed, never sent events).
     pub(super) fn lanes(&self, id: &Id) -> HashMap<EndpointId, pushir::Lane> {
-        let p = self.view(id, |s| s.pushes_of(None)).unwrap_or_default();
-        let mut claims: HashMap<EndpointId, usize> = HashMap::new();
-        p.iter().for_each(|x| *claims.entry(x.0).or_default() += 1);
-        let at = |(d, u): (EndpointId, String)| {
-            (claims[&d] == 1).then_some((d, crate::push::lane_of(&u)?))
+        let p = self.view(id, |s| s.push_claims(None)).unwrap_or_default();
+        let at = |(_, d, u): (Id, EndpointId, String)| {
+            Some((d, crate::push::lane_of(&u)?))
         };
-        p.into_iter().filter_map(at).collect()
+        self.owned(p).into_iter().filter_map(at).collect()
+    }
+
+    /// Claims of lanes, one a device: its only claimant's, or (a member
+    /// claimed another's device, to silence it) its proven owner's, the
+    /// user its sync proved it is; unproven, nobody's.
+    fn owned(
+        &self,
+        p: Vec<(Id, EndpointId, String)>,
+    ) -> Vec<(Id, EndpointId, String)> {
+        let mut who: HashMap<EndpointId, HashSet<Id>> = HashMap::new();
+        for (a, d, _) in &p {
+            who.entry(*d).or_default().insert(*a);
+        }
+        let proven = |d: &EndpointId| lock(&self.verified).get(d).map(|v| v.0);
+        p.into_iter()
+            .filter(|(a, d, _)| who[d].len() == 1 || proven(d) == Some(*a))
+            .collect()
     }
 
     /// A message on our lane (`push::split`): from a member's device an
