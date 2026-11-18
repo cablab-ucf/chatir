@@ -59,18 +59,48 @@ function h(tag, props, ...kids) {
   return e;
 }
 
-/** What a control does, behind an (i): its tooltip, and on a tap (a
- * phone has no hover) shown beneath it. */
-function info(text) {
-  const note = h("p", { class: "note why hidden" }, text);
-  const b = h("button", { class: "info", title: text, "aria-label": "About",
-    onclick: (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      note.classList.toggle("hidden");
-    } }, icon("info"));
-  return [b, note];
+/** A popover for what a control does or holds: `brief` on hover, `body`
+ * pinned by a tap (a phone has no hover) until a tap elsewhere. */
+const tipBox = h("div", { id: "tip", class: "hidden", role: "tooltip" });
+document.body.append(tipBox);
+let tipAt = null, tipPinned = false;
+function tipHide() {
+  tipBox.classList.add("hidden");
+  tipAt = null;
+  tipPinned = false;
 }
+function tip(el, body, brief = body) {
+  const show = (f = body) => {
+    tipAt = el;
+    put(tipBox, f());
+    tipBox.classList.remove("hidden");
+    const r = el.getBoundingClientRect();
+    const [w, ht] = [tipBox.offsetWidth, tipBox.offsetHeight];
+    tipBox.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2,
+      innerWidth - w - 8)) + "px";
+    tipBox.style.top = Math.max(8, r.bottom + ht + 14 > innerHeight
+      ? r.top - ht - 6 : r.bottom + 6) + "px";
+  };
+  el.onpointerenter = (e) =>
+    e.pointerType === "mouse" && !tipPinned && show(brief);
+  el.onpointerleave = () => tipAt === el && !tipPinned && tipHide();
+  el.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (tipPinned && tipAt === el) return tipHide();
+    show();
+    tipPinned = true;
+  };
+  if (tipAt === el) show(); // redrawn while open: what it says now
+  return el;
+}
+addEventListener("pointerdown", (e) => tipAt && !tipAt.contains(e.target) &&
+  !tipBox.contains(e.target) && tipHide());
+addEventListener("scroll", () => tipAt && tipHide(), true);
+
+/** What a control does, behind an (i). */
+const info = (text) => tip(h("button", { class: "info", "aria-label": text },
+  icon("info")), () => text);
 
 const put = (el, ...kids) =>
   el.replaceChildren(
@@ -952,10 +982,13 @@ function renderHeader() {
   net.className = s?.peers ? "up" : "";
   put(net, s && [h("i", { class: "dot" }),
     `${s.peers} peer${s.peers === 1 ? "" : "s"}`]);
-  const near = (s?.near ?? []).map((p) => `${p.who} (device ${p.device})`);
-  net.title = near.length ? `Connected with:\n${near.join("\n")}`
-    : "Connected with no one now";
-  net.onclick = () => toast(net.title);
+  const near = s?.near ?? [];
+  net.setAttribute("aria-label", near.length ? "Connected with " +
+    near.map((p) => p.who).join(", ") : "Connected with no one now");
+  tip(net, () => near.length ? [h("small", {}, "Connected with"),
+    near.map((p) => h("p", {}, h("b", {}, p.who),
+      h("small", {}, `device ${p.device}`)))]
+    : h("p", {}, "Connected with no one now"));
   const input = $("input");
   input.placeholder = S.normal ? "-- NORMAL --  j/k pick, ? keys, i types"
     : parent ? `Reply in ${ch.name}`
@@ -2958,8 +2991,7 @@ const TABS = { account: "Account", devices: "Devices", privacy: "Privacy",
   look: "Appearance", network: "Network", about: "About" };
 
 const toggle = (title, small, checked, change) => {
-  const [b, why] = info(small);
-  return h("label", { class: "switch" }, h("span", {}, title, b, why),
+  return h("label", { class: "switch" }, h("span", {}, title, info(small)),
     h("input", { type: "checkbox", checked,
       onchange: (e) => change(e.target.checked) }), h("i"));
 };
@@ -3220,10 +3252,10 @@ function trafficChart(ends, since) {
     "aria-label": "Sent and received, an hour a bar, the last day" });
   bins.forEach(([o, g], i) => {
     const [ho, hg] = [36 * o / top, 36 * g / top];
-    const t = svg("title", {});
-    t.textContent = `${24 - i} h ago: sent ${amount(o)}, received ${amount(g)}`;
-    const col = svg("g", {});
-    col.append(t, svg("rect", { x: i * 10 + 1, y: 40 - ho, width: 8,
+    const col = tip(svg("g", {}), () => h("p", {}, h("b", {}, `${24 - i} h ago`),
+      h("small", {}, `sent ${amount(o)}`), h("small", {},
+        `received ${amount(g)}`)));
+    col.append(svg("rect", { x: i * 10 + 1, y: 40 - ho, width: 8,
       height: Math.max(ho, o ? 0.5 : 0), class: "sent" }),
     svg("rect", { x: i * 10 + 1, y: 42, width: 8,
       height: Math.max(hg, g ? 0.5 : 0), class: "got" }));
@@ -3399,22 +3431,12 @@ function connectionsFlow() {
 /** How far one of ours went, in icons: no connection; ✓ left here, the
  * storage disk and the relay's cloud struck through until each has it;
  * ✓✓ on their device (* not yet on the one they used last); ✓✓ lit, read.
- * Hover for the whole of it; tap on a phone. */
+ * Hover for a word, tap for the whole of it. */
 function ticks(m) {
-  const n = (k) => m.of > 1 ? ` ${k} of ${m.of}` : "";
-  const why = [
-    m.status === "offline" ? "Only on this device: no connection now."
-      : "Left this device.",
-    m.relay ? "A relay holds us (relays pass it on and keep nothing, so " +
-      "they cannot say they had it)." : "No relay holds us now.",
-    !m.storage ? "No storage node keeps this space."
-      : m.kept ? "A storage node keeps it, for whoever is away."
-      : "No storage node has it yet.",
-    m.got ? `On their device:${n(m.got)}` + (m.active < m.got
-      ? `; on the one they used last:${n(m.active) || " not yet"}.` : ".")
-      : "Not on any device of theirs yet.",
-    m.readers ? `Read:${n(m.readers)}.` : "",
-  ].filter(Boolean).join(" ");
+  const n = (k) => m.of > 1 ? `${k} of ${m.of}` : k ? "yes" : "not yet";
+  const word = { offline: "Not sent", waiting: "Waiting", sent: "Sent",
+    kept: "Kept", delivered: "Delivered", read: "Read" }[m.status] ?? "Sent";
+  const line = (k, v) => h("p", {}, h("b", {}, k), h("small", {}, v));
   const ic = {
     offline: ["offline"],
     waiting: ["check", ...(m.storage ? ["diskOff"] : []),
@@ -3425,10 +3447,18 @@ function ticks(m) {
     read: ["checks"],
   }[m.status] ?? ["check"];
   const star = m.status === "delivered" && m.active < m.got;
-  return h("span", {
-    class: `ticks ${m.status}`, title: why, "aria-label": why, role: "button",
-    tabindex: 0, onclick: (e) => { e.stopPropagation(); toast(why, false, 9e3); },
-  }, ic.map(icon), star && h("b", {}, "*"));
+  return tip(h("span", { class: `ticks ${m.status}`, "aria-label": word,
+    role: "button", tabindex: 0 }, ic.map(icon), star && h("b", {}, "*")),
+  () => [
+    line("This device", m.status === "offline" ? "Only here: no connection"
+      : "Sent from here"),
+    line("Relay", m.relay ? "Passing it on, keeping nothing" : "None now"),
+    line("Storage node", !m.storage ? "None for this space"
+      : m.kept ? "Keeps it for whoever is away" : "Not yet"),
+    line("Their devices", n(m.got)),
+    m.active < m.got && line("Last one they used", n(m.active)),
+    m.readers > 0 && line("Read", n(m.readers)),
+  ], () => h("b", {}, word));
 }
 
 /** A storage node off our list (every device of ours); ours, here, it
