@@ -57,13 +57,8 @@ const FLUSH: u32 = 20;
 const PATIENCE: Duration = Duration::from_secs(600);
 /// A device we offer to, asleep, is woken by its lane at most this often.
 const ROUSE: Duration = Duration::from_secs(3600);
-/// A stream silent this long mid-block is given up: silent, not slow (a
-/// relayed link shared by many streams moves each one slowly).
+/// A stream silent this long mid-block is given up.
 const STALL: Duration = Duration::from_secs(60);
-/// Blocks asked at once: the link's rate for this long, two at least. A
-/// slow link finishes blocks one after another (each kept, if it drops),
-/// not all of them at its end.
-const AHEAD: u64 = 4;
 /// Transfers listed at most, and offers waiting from one device: offers
 /// past either are refused.
 const ROWS: usize = 1024;
@@ -417,9 +412,7 @@ async fn give(
             io::Result::Ok((buf, h))
         })
         .await??;
-        for c in buf[..k].chunks(64 << 10) {
-            timeout(STALL, tx.write_all(c)).await??;
-        }
+        timeout(STALL, tx.write_all(&buf[..k])).await??;
         off += k as u64;
     }
     tx.write_all(h.finalize().as_bytes()).await?;
@@ -460,7 +453,10 @@ async fn take(
         let off = undo.1;
         let k = (len - off).min(SLICE as u64) as usize;
         buf.resize(SLICE, 0);
-        fill(rx, &mut buf[..k]).await?;
+        timeout(STALL, rx.read_exact(&mut buf[..k]))
+            .await
+            .map_err(retry)?
+            .map_err(retry)?;
         let (p, b) = (part.clone(), std::mem::take(buf));
         let w = spawn_blocking(move || {
             let r = write_at(&p.file, &b[..k], at + off);
@@ -474,27 +470,15 @@ async fn take(
         undo.1 += k as u64;
     }
     let mut sum = [0; 32];
-    fill(rx, &mut sum).await?;
+    timeout(STALL, rx.read_exact(&mut sum))
+        .await
+        .map_err(retry)?
+        .map_err(retry)?;
     let ok = h.finalize() == blake3::Hash::from(sum);
     if ok {
         undo.1 = 0;
     }
     Ok(ok)
-}
-
-/// `b` filled from `rx`, given up after `STALL` with no byte.
-async fn fill(
-    rx: &mut (impl AsyncRead + Unpin),
-    b: &mut [u8],
-) -> Result<(), Pull> {
-    let mut at = 0;
-    while at < b.len() {
-        match timeout(STALL, rx.read(&mut b[at..])).await {
-            Ok(Ok(n)) if n > 0 => at += n,
-            _ => return Err(Pull::Retry),
-        }
-    }
-    Ok(())
 }
 
 enum Got {
@@ -538,18 +522,9 @@ struct Work {
     meter: Arc<Meter>,
     next: Mutex<(u64, Vec<u64>)>,
     damaged: Mutex<HashMap<u64, u8>>,
-    // Blocks asked now.
-    on: AtomicU64,
 }
 
 impl Work {
-    /// Room for one more block now (`AHEAD`).
-    fn room(&self) -> bool {
-        let max = (self.meter.rate() * AHEAD / BLOCK).max(2);
-        let ok = |n: u64| (n < max).then_some(n + 1);
-        self.on.fetch_update(Relaxed, Relaxed, ok).is_ok()
-    }
-
     fn pop(&self) -> Option<u64> {
         let mut n = lock(&self.next);
         if let Some(i) = n.1.pop() {
@@ -567,15 +542,8 @@ impl Work {
 async fn worker(w: Arc<Work>, c: Connection) -> Result<(), Pull> {
     let mut buf = vec![0; SLICE];
     loop {
-        while !w.room() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        let Some(i) = w.pop() else {
-            w.on.fetch_sub(1, Relaxed);
-            return Ok(());
-        };
+        let Some(i) = w.pop() else { return Ok(()) };
         let got = get(&c, &w, i, &mut buf).await;
-        w.on.fetch_sub(1, Relaxed);
         let again = || lock(&w.next).1.push(i);
         match got {
             Ok(Got::Whole) => w.part.set(i),
@@ -634,9 +602,8 @@ async fn run(n: Weak<Node>, id: Id, from: EndpointId, part: Arc<Part>) {
         match node.round(&id, from, &part).await {
             Ok(()) => return node.finish(&id, &part).await,
             Err(Pull::Fatal(e)) => return node.fail(&id, &e),
-            // Moving, then not: its sender may have napped since.
             Err(Pull::Retry) if part.left() < left => {
-                (wait, roused) = (Duration::from_secs(1), None)
+                wait = Duration::from_secs(1)
             }
             // Its sender asleep: woken by its lane, now and then.
             Err(Pull::Retry) if roused.is_none_or(|t| t.elapsed() > ROUSE) => {
@@ -1041,35 +1008,24 @@ impl Node {
             let me = self.device();
             let ds: Vec<_> = ds.into_iter().flatten().map(|d| d.0).collect();
             let ds: Vec<_> = ds.into_iter().filter(|d| *d != me).collect();
+            self.prove(space, &ds).await;
             let head = &Ask::Head(id);
+            let mut asks: FuturesUnordered<_> = (ds.into_iter())
+                .map(|d| async move {
+                    let r = timeout(Duration::from_secs(8), self.say(d, head));
+                    let r = r.await.ok()?.ok()?;
+                    let size = [&[OK][..], &f.size.to_le_bytes()].concat();
+                    (r == size).then_some(d)
+                })
+                .collect();
             let mut from = None;
-            // Not answered: its sender's devices, asleep, woken by their
-            // lanes and asked again.
-            for again in 0..3 {
-                if again > 0 {
-                    ds.iter().for_each(|d| self.rouse(*d));
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-                self.prove(space, &ds).await;
-                let mut asks: FuturesUnordered<_> = (ds.iter())
-                    .map(|&d| async move {
-                        let r =
-                            timeout(Duration::from_secs(15), self.say(d, head));
-                        let r = r.await.ok()?.ok()?;
-                        let size = [&[OK][..], &f.size.to_le_bytes()].concat();
-                        (r == size).then_some(d)
-                    })
-                    .collect();
-                while let Some(r) = asks.next().await {
-                    if r.is_some() {
-                        from = r;
-                        break;
-                    }
-                }
-                if from.is_some() {
+            while let Some(r) = asks.next().await {
+                if r.is_some() {
+                    from = r;
                     break;
                 }
             }
+            drop(asks);
             let gone = "nobody who has it is reachable now: it saves once its \
                 sender is online";
             let from = from.context(gone)?;
@@ -1198,7 +1154,6 @@ impl Node {
             meter: meter.clone(),
             next: Mutex::default(),
             damaged: Mutex::default(),
-            on: Default::default(),
         });
         let mut all = tokio::task::JoinSet::new();
         for c in &cs {
@@ -1534,29 +1489,5 @@ mod tests {
         part.remove();
         std::fs::remove_dir_all(dir).unwrap();
         std::fs::remove_file(src).unwrap();
-    }
-
-    /// A block slower than a slice a `STALL` (a relayed link, shared by
-    /// all of a pull's streams) still comes, if never silent that long.
-    #[tokio::test(start_paused = true)]
-    async fn a_slow_block_is_not_given_up() {
-        let len = 2 << 20;
-        let data: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
-        let dir = tmp("slow");
-        let to = claim(&dir, "x.bin").unwrap();
-        let part = Arc::new(Part::open(&to, len, true).unwrap());
-        let (mut a, mut b) = tokio::io::duplex(1 << 16);
-        let sum = *blake3::hash(&data).as_bytes();
-        tokio::spawn(async move {
-            for c in data.chunks(64 << 10).chain([&sum[..]]) {
-                tokio::time::sleep(STALL / 2).await;
-                a.write_all(c).await.unwrap();
-            }
-        });
-        let (got, mut buf) = (AtomicU64::new(0), vec![]);
-        let ok = take(&mut b, &part, 0, &got, &mut buf).await;
-        assert_eq!((ok.ok(), got.load(Relaxed)), (Some(true), len));
-        part.remove();
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

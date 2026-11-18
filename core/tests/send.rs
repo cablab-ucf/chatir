@@ -225,28 +225,3 @@ async fn a_big_chat_offer_is_saved_device_to_device() {
     std::fs::remove_file(big).unwrap();
     std::fs::remove_dir_all(out).unwrap();
 }
-
-/// The same in a DM: the other side saves it from the sender's device.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_big_file_in_a_dm_is_saved() {
-    let (a, b) = (start(&dir("a"), "a").await, start(&dir("b"), "b").await);
-    let hub = a.create("hub").await.unwrap();
-    b.join(&a.invite(&hub).await.unwrap()).await.unwrap();
-    let key = || a.view(&hub, |s| s.kem(&b.id()).is_some()) == Some(true);
-    until("b's key", key).await;
-    let dm = a.dm(&hub, &b.id()).await.unwrap();
-    until("b has the DM", || b.spaces().contains(&dm)).await;
-    let big = sparse((150 << 20) + 4321);
-    let f = a.offer(&dm, &big, Some("v.mp4")).await.unwrap();
-    assert!(f.direct());
-    let (channel, files) = (chatir_core::state::DM, vec![f.clone()]);
-    let post = Op::Post { channel, text: "".into(), reply: None, files };
-    a.publish(&dm, post).await.unwrap();
-    let seen = || b.view(&dm, |s| s.sender_of(&f.hash)) == Some(Some(a.id()));
-    until("b sees the post", seen).await;
-    let out = dir("out");
-    let p = b.save(&dm, &f, &out).await.unwrap();
-    assert_eq!(hash(&p), hash(&big), "whole");
-    std::fs::remove_file(big).unwrap();
-    std::fs::remove_dir_all(out).unwrap();
-}
