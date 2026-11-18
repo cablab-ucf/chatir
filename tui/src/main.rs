@@ -28,7 +28,8 @@ struct Cli {
     /// Become another device of the person behind this link code
     #[arg(long)]
     link: Option<String>,
-    /// Keep other people's ciphertext: a storage node
+    /// Keep other people's ciphertext: a storage node (CHATIR_KEEP_GB of
+    /// files, 30 GiB by default)
     #[arg(long)]
     serve: bool,
     /// With --serve: files past 5 GB are kept for whoever gives this

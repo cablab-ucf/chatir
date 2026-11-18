@@ -141,13 +141,21 @@ pub(super) fn gate(
         while let Some(m) = rx.recv().await {
             match m {
                 ProviderMessage::ClientConnected(m) => {
-                    if let Some(d) = m.endpoint_id {
-                        who.insert(m.connection_id, d);
+                    let n = n.upgrade();
+                    if let Some(d) = m.endpoint_id
+                        && who.insert(m.connection_id, d).is_none()
+                        && let Some(n) = n
+                    {
+                        n.send.blobs.fetch_add(1, Relaxed);
                     }
                     let _ = m.tx.send(Ok(())).await;
                 }
                 ProviderMessage::ConnectionClosed(m) => {
-                    who.remove(&m.inner.connection_id);
+                    if who.remove(&m.inner.connection_id).is_some()
+                        && let Some(n) = n.upgrade()
+                    {
+                        n.send.blobs.fetch_sub(1, Relaxed);
+                    }
                 }
                 ProviderMessage::GetRequestReceived(m) => {
                     let d = who.get(&m.inner.connection_id);

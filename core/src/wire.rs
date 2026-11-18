@@ -36,7 +36,7 @@ const PINS: &[(&str, &str, &str)] = &[
     ("node.rs", "const BLOB", "ed1e76cf336d6d7f"),
     ("node.rs", "const DIRECT", "2881192e0d2cf86e"),
     ("node.rs", "const HAND", "e5a845cf500d3b2d"),
-    ("node.rs", "enum Ask", "40bef832f31f7034"),
+    ("node.rs", "enum Ask", "70b03c86d6617f22"),
     ("node.rs", "fn ev_label", "4efd4168d32558a7"),
     ("node.rs", "fn ev_ack", "fd5fcada693d870d"),
     ("node.rs", "fn hold_token", "7bd0b4878353508d"),

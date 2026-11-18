@@ -433,6 +433,15 @@ impl Node {
         if !self.takes(&sp, &id) || lock(&sp.busy).insert(id, true).is_some() {
             return;
         }
+        // Cut short (`prove`'s timeout), it frees its turn: else no sync
+        // with `id` would start again, and files from it are refused.
+        struct Turn<'a>(&'a Space, EndpointId);
+        impl Drop for Turn<'_> {
+            fn drop(&mut self) {
+                lock(&self.0.busy).remove(&self.1);
+            }
+        }
+        let turn = Turn(&sp, id);
         let again = || {
             let mut b = lock(&sp.busy);
             let again = b.insert(id, false) == Some(true);
@@ -464,6 +473,7 @@ impl Node {
                 Err(e) => debug!("sync with {}: {e:#}", id.fmt_short()),
             }
         }
+        std::mem::forget(turn);
     }
 
     /// Once a run, as a sync with a storage node of ours ends: its pushir

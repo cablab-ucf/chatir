@@ -83,6 +83,13 @@ fn limit() -> u64 {
     test.and_then(|v| v.parse().ok()).unwrap_or(MAX_FILE)
 }
 
+/// What a storage node keeps of files in all: CHATIR_KEEP_GB (GiB), else
+/// 30 GiB.
+fn area() -> u64 {
+    let gb = std::env::var("CHATIR_KEEP_GB").ok().and_then(|v| v.parse().ok());
+    gb.unwrap_or(30u64) << 30
+}
+
 /// What opens in memory, to preview; larger files are saved.
 const PREVIEW: usize = 25 << 20;
 const BLOB: &[u8] = b"spaces/blob/1";
@@ -514,6 +521,8 @@ enum Ask {
     Keep([u8; 16], Id, Option<String>),
     // A member's small sealed file, for a space this storage node keeps.
     Hold(Id, [u8; 16], Id),
+    // Whether a sealed file this big would be kept (`Keep`) now: room left.
+    Room([u8; 16], u64),
 }
 
 /// A storage node's key for one space's small files: members have it.

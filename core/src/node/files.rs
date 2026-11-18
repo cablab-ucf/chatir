@@ -245,7 +245,7 @@ impl Node {
     /// (QUIC encrypts), checked chunk by chunk. `name`: else the path's.
     /// Served to `space`'s members only, until we stop sharing it.
     pub async fn offer(
-        &self,
+        self: &Arc<Self>,
         space: &Id,
         path: &Path,
         name: Option<&str>,
@@ -255,21 +255,37 @@ impl Node {
         let files = &self.files;
         let path = std::path::absolute(path)?;
         let size = std::fs::metadata(&path)?.len();
-        // Too big to hash first: device to device, as it is.
-        if size >= crate::send::BIG {
-            return self.offer_direct(space, &path, name);
+        let base = path.file_name().and_then(|n| n.to_str());
+        let name = short(name.or(base).unwrap_or("file"));
+        // Big: sealed for our storage nodes if they have room, so it comes
+        // while we are away; else served from here (`pull` wakes us).
+        if size >= crate::send::BIG && self.fits(space, size).await {
+            return self.seal_file(space, &path, &name, None).await;
         }
         let (format, mode) = (Default::default(), ImportMode::TryReference);
         let opts = AddPathOptions { path: path.clone(), format, mode };
         let tag = files.add_path_with_opts(opts).with_tag().await?;
-        let base = path.file_name().and_then(|n| n.to_str());
-        let name = short(name.or(base).unwrap_or("file"));
         let hash = Id(*tag.hash.as_bytes());
         let space = Some(*space);
         let (tag, n) = (tag.name.0.to_vec(), name.clone());
         lock(&self.shared).insert(hash, Shared { space, tag, name: n, size });
         self.save_shared();
         Ok(File { name, size, hash, key: crate::op::OFFERED })
+    }
+
+    /// Whether every storage node of ours keeping `space` (one at least)
+    /// would keep `size` bytes, sealed, now.
+    async fn fits(&self, space: &Id, size: u64) -> bool {
+        let Some(len) = crate::crypto::sealed_len(size) else { return false };
+        let all = self.stores(space);
+        let asks = all.iter().map(|(addr, token)| async move {
+            let ask = Ask::Room(*token, len);
+            let ask = self.ask(addr.clone(), &ask);
+            let r = tokio::time::timeout(Duration::from_secs(15), ask).await;
+            matches!(r, Ok(Ok(no)) if no.is_empty())
+        });
+        let yes = n0_future::join_all(asks).await;
+        !yes.is_empty() && yes.into_iter().all(|y| y)
     }
 
     /// Passed on from here too, to that space's members alone.
@@ -358,15 +374,38 @@ impl Node {
             // Storage nodes and those online first, then everyone known.
             let mut peers: Vec<EndpointId> =
                 self.stores(space).into_iter().map(|s| s.0.id).collect();
+            let me = self.device();
+            let who = self.view(space, |s| s.sender_of(h)).flatten();
+            let theirs =
+                who.and_then(|u| self.view(space, |s| s.devices_of(&u)));
+            let theirs = theirs.unwrap_or_default().into_iter().map(|d| d.0);
+            let theirs: Vec<_> = theirs.filter(|d| *d != me).collect();
+            peers.extend(&theirs);
             peers.extend(sp.nbrs());
             peers.extend(self.bootstrap(&sp));
             let mut seen = HashSet::new();
             peers.retain(|p| seen.insert(*p));
-            self.prove(space, &peers).await;
-            // Real size first: a post may claim 1 byte.
+            // Real size first: a post may claim 1 byte. Nobody answers: its
+            // sender's devices, asleep, woken by their lanes, asked again
+            // for a minute.
+            let mut woke = None::<Instant>;
+            let got = loop {
+                self.prove(space, &peers).await;
+                let got = self.verified(&peers, h).await;
+                match woke {
+                    _ if got.is_some() => break got,
+                    None if !theirs.is_empty() => {
+                        theirs.iter().for_each(|d| self.rouse(*d));
+                        woke = Some(Instant::now());
+                    }
+                    Some(t) if t.elapsed() < Duration::from_secs(60) => {}
+                    _ => break None,
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            };
             let gone = "nobody who has it is reachable now: it saves once \
                 its sender, or a storage node keeping it, is online";
-            let (size, from) = self.verified(&peers, h).await.context(gone)?;
+            let (size, from) = got.context(gone)?;
             ensure!(size == len, "not the file its post said");
             // Who answered first, then the rest; a link may drop mid-way
             // (relay losses): asked again, it resumes.
@@ -379,7 +418,11 @@ impl Node {
             let ep = self.up().await?;
             let known = peers.iter().filter(|p| self.known(&sp, p));
             let pull = self.downloader(&ep, known.copied().collect());
-            pull.download(hash, peers.repeat(3)).await.ok().context(gone)?;
+            // Counted: the node stays up for it, out of sight too.
+            self.send.blobs.fetch_add(1, Relaxed);
+            let got = pull.download(hash, peers.repeat(3)).await;
+            self.send.blobs.fetch_sub(1, Relaxed);
+            got.ok().context(gone)?;
         }
         Ok(&self.files)
     }
@@ -644,6 +687,7 @@ impl Node {
             (0, Some(t)) if same(&head[1..], &t) => 1024,
             (0, _) => bail!("not a storage node of yours"),
             (1, Some(_)) => 128,
+            (2, Some(t)) if same(&head[1..], &t) => 16,
             _ => bail!("not a storage node"),
         };
         let rest = sync::rest(&mut rx, max).await?;
@@ -651,17 +695,14 @@ impl Node {
             Ask::Keep(t, h, pw) if self.serve.is_some_and(|s| same(&s, &t)) => {
                 let size = self.verified(&[from], &h).await;
                 let size = size.context("not reachable, or not there")?.0;
-                let same = |a: &str, b: &str| {
-                    blake3::hash(a.as_bytes()) == blake3::hash(b.as_bytes())
-                };
-                let open = self.big.as_deref().zip(pw.as_deref());
-                if Some(size) > crate::crypto::sealed_len(limit())
-                    && !open.is_some_and(|(a, b)| same(a, b))
-                {
-                    let no = "over 5 GB: storage nodes keep it only with their password";
+                match self.refuse(size, pw.as_deref()) {
+                    Some(no) => tx.write_all(no.as_bytes()).await?,
+                    None => self.fetch(&h, from, None),
+                }
+            }
+            Ask::Room(t, size) if self.serve.is_some_and(|s| same(&s, &t)) => {
+                if let Some(no) = self.refuse(size, None) {
                     tx.write_all(no.as_bytes()).await?;
-                } else {
-                    self.fetch(&h, from, None);
                 }
             }
             Ask::Hold(sp, t, h)
@@ -680,12 +721,30 @@ impl Node {
                     }
                 }
             }
-            Ask::Keep(..) => bail!("not a storage node of yours"),
+            Ask::Keep(..) | Ask::Room(..) => {
+                bail!("not a storage node of yours")
+            }
             Ask::Hold(..) => bail!("not a space this storage node keeps"),
         }
         tx.finish()?;
         let _ = tokio::time::timeout(Duration::from_secs(10), c.closed()).await;
         Ok(())
+    }
+
+    /// Why this storage node would not keep `size` sealed bytes, if not:
+    /// past 5 GB without its password, or past its room (`area`).
+    fn refuse(&self, size: u64, pw: Option<&str>) -> Option<&'static str> {
+        let same = |a: &str, b: &str| {
+            blake3::hash(a.as_bytes()) == blake3::hash(b.as_bytes())
+        };
+        let open = self.big.as_deref().zip(pw).is_some_and(|(a, b)| same(a, b));
+        if Some(size) > crate::crypto::sealed_len(limit()) && !open {
+            return Some(
+                "over 5 GB: storage nodes keep it only with their password",
+            );
+        }
+        let used = du(&self.dir.join("files"));
+        (used + size > area()).then_some("this storage node is full")
     }
 
     /// May `d` have blob `h`? Sealed ones: any member's proven device, or
@@ -709,4 +768,14 @@ impl Node {
             None => self.spaces().iter().any(member),
         }
     }
+}
+
+/// Bytes under `p`, every file's.
+fn du(p: &Path) -> u64 {
+    let Ok(d) = std::fs::read_dir(p) else { return 0 };
+    let size = |e: std::fs::DirEntry| match e.file_type() {
+        Ok(t) if t.is_dir() => du(&e.path()),
+        _ => e.metadata().map_or(0, |m| m.len()),
+    };
+    d.flatten().map(size).sum()
 }
