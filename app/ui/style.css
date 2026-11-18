@@ -598,7 +598,9 @@ table.keys kbd {
 .content .math math { font-family: "NewCMMath", math; }
 /* Temml makes every <math> a flexbox; Typst's need MathML's own layout. */
 .typst math { display: math; }
-.typst math[display="block"] { display: block math; }
+/* WebKit has no block math: a centred block instead. */
+.typst math[display="block"] { display: block; display: block math;
+  text-align: center; }
 /* Code: Prism's tokens */
 .tok.comment, .tok.prolog, .tok.doctype, .tok.cdata { color: var(--dim); }
 .tok.keyword, .tok.important, .tok.atrule, .tok.selector { color: var(--pink); }

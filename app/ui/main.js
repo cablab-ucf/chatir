@@ -59,8 +59,8 @@ function h(tag, props, ...kids) {
   return e;
 }
 
-/** A popover for what a control does or holds: on hover, or pinned by a
- * tap (a phone has no hover) until a tap elsewhere. `body` makes it. */
+/** A popover for what a control does or holds: `brief` on hover, `body`
+ * pinned by a tap (a phone has no hover) until a tap elsewhere. */
 const tipBox = h("div", { id: "tip", class: "hidden", role: "tooltip" });
 document.body.append(tipBox);
 let tipAt = null, tipPinned = false;
@@ -69,10 +69,10 @@ function tipHide() {
   tipAt = null;
   tipPinned = false;
 }
-function tip(el, body) {
-  const show = () => {
+function tip(el, body, brief = body) {
+  const show = (f = body) => {
     tipAt = el;
-    put(tipBox, body());
+    put(tipBox, f());
     tipBox.classList.remove("hidden");
     const r = el.getBoundingClientRect();
     const [w, ht] = [tipBox.offsetWidth, tipBox.offsetHeight];
@@ -81,7 +81,8 @@ function tip(el, body) {
     tipBox.style.top = Math.max(8, r.bottom + ht + 14 > innerHeight
       ? r.top - ht - 6 : r.bottom + 6) + "px";
   };
-  el.onpointerenter = (e) => e.pointerType === "mouse" && !tipPinned && show();
+  el.onpointerenter = (e) =>
+    e.pointerType === "mouse" && !tipPinned && show(brief);
   el.onpointerleave = () => tipAt === el && !tipPinned && tipHide();
   el.onclick = (e) => {
     e.preventDefault();
@@ -3430,22 +3431,12 @@ function connectionsFlow() {
 /** How far one of ours went, in icons: no connection; ✓ left here, the
  * storage disk and the relay's cloud struck through until each has it;
  * ✓✓ on their device (* not yet on the one they used last); ✓✓ lit, read.
- * Hover for the whole of it; tap on a phone. */
+ * Hover for a word, tap for the whole of it. */
 function ticks(m) {
-  const n = (k) => m.of > 1 ? ` ${k} of ${m.of}` : "";
-  const why = [
-    m.status === "offline" ? "Only on this device: no connection now."
-      : "Left this device.",
-    m.relay ? "A relay holds us (relays pass it on and keep nothing, so " +
-      "they cannot say they had it)." : "No relay holds us now.",
-    !m.storage ? "No storage node keeps this space."
-      : m.kept ? "A storage node keeps it, for whoever is away."
-      : "No storage node has it yet.",
-    m.got ? `On their device:${n(m.got)}` + (m.active < m.got
-      ? `; on the one they used last:${n(m.active) || " not yet"}.` : ".")
-      : "Not on any device of theirs yet.",
-    m.readers ? `Read:${n(m.readers)}.` : "",
-  ].filter(Boolean).join(" ");
+  const n = (k) => m.of > 1 ? `${k} of ${m.of}` : k ? "yes" : "not yet";
+  const word = { offline: "Not sent", waiting: "Waiting", sent: "Sent",
+    kept: "Kept", delivered: "Delivered", read: "Read" }[m.status] ?? "Sent";
+  const line = (k, v) => h("p", {}, h("b", {}, k), h("small", {}, v));
   const ic = {
     offline: ["offline"],
     waiting: ["check", ...(m.storage ? ["diskOff"] : []),
@@ -3456,10 +3447,18 @@ function ticks(m) {
     read: ["checks"],
   }[m.status] ?? ["check"];
   const star = m.status === "delivered" && m.active < m.got;
-  return h("span", {
-    class: `ticks ${m.status}`, title: why, "aria-label": why, role: "button",
-    tabindex: 0, onclick: (e) => { e.stopPropagation(); toast(why, false, 9e3); },
-  }, ic.map(icon), star && h("b", {}, "*"));
+  return tip(h("span", { class: `ticks ${m.status}`, "aria-label": word,
+    role: "button", tabindex: 0 }, ic.map(icon), star && h("b", {}, "*")),
+  () => [
+    line("This device", m.status === "offline" ? "Only here: no connection"
+      : "Sent from here"),
+    line("Relay", m.relay ? "Passing it on, keeping nothing" : "None now"),
+    line("Storage node", !m.storage ? "None for this space"
+      : m.kept ? "Keeps it for whoever is away" : "Not yet"),
+    line("Their devices", n(m.got)),
+    m.active < m.got && line("Last one they used", n(m.active)),
+    m.readers > 0 && line("Read", n(m.readers)),
+  ], () => h("b", {}, word));
 }
 
 /** A storage node off our list (every device of ours); ours, here, it
