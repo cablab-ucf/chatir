@@ -25,6 +25,16 @@ async fn start(
     on(dir, name, link, serve, Net::Direct).await
 }
 
+/// This device's own push relay is on loopback (pushir dials a lane on
+/// loopback only then): every relay here is the test's.
+fn local() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: set once, the same for every test, before lanes are dialed.
+    ONCE.call_once(|| unsafe {
+        std::env::set_var("PUSHIR_RELAY", "http://127.0.0.1:9/")
+    });
+}
+
 async fn on(
     dir: &std::path::Path,
     name: &str,
@@ -32,6 +42,7 @@ async fn on(
     serve: bool,
     net: Net,
 ) -> Arc<Node> {
+    local();
     let filter = tracing_subscriber::EnvFilter::from_default_env();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -69,6 +80,7 @@ async fn node(name: &str) -> Arc<Node> {
 /// never the Nix store), and a phone at `d` with its mailbox there.
 async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
     use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    local();
     let mut cfg = ServerConfig::default();
     cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
     let relay = Server::spawn(cfg).await.unwrap();
@@ -86,6 +98,7 @@ async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
 /// A lane for `d` on `relay`, before its node starts: members' frames go
 /// out only from a device that has one (for the ack).
 async fn lane(d: &std::path::Path, relay: &iroh_relay::server::Server) {
+    local();
     let at = format!("http://{}/", relay.http_addr().unwrap());
     let net = Net::Relay(vec![at.parse().unwrap()]);
     std::fs::create_dir_all(d).unwrap();

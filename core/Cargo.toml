@@ -37,9 +37,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 x-wing = { version = "0.1", features = ["getrandom"] }
 # The lab's shared network: the post-quantum endpoint and TLS (irnet), short
 # codes (pairir), one relay mailbox per device (pushir: lanes and rings).
-irnet = { git = "https://github.com/cablab-ucf/irnet", rev = "7f8c000428461e8000657866620952d4dad247d5" }
-pairir = { git = "https://github.com/cablab-ucf/pairir", rev = "a991f1baf716c016bbc386132baa495536b50b78" }
-pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "3b3e6ae1211259990a479455fed95d47a92c6e92" }
+irnet = { git = "https://github.com/cablab-ucf/irnet", rev = "3b962fb55562589d5af801a4a8f29214c2b8e55e" }
+pairir = { git = "https://github.com/cablab-ucf/pairir", rev = "2e13c7d899c0eb8c723c08fed39693d55ea1cd49" }
+pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "b59ae26154a8004a16a1269ad7475219d22587aa" }
 
 # A call's voice, native: the echo canceller hears what plays.
 cpal = { version = "0.18", optional = true }
