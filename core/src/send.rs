@@ -37,6 +37,9 @@ pub const ALPN: &[u8] = b"spaces/send/1";
 const BLOCK: u64 = 4 << 20;
 /// What a stream reads or writes at once: memory is streams × this a side.
 const SLICE: usize = 1 << 20;
+/// A file is at most this big: a sender's size is never trusted to size
+/// the bitmap (an absurd one would abort the process, mailbox and all).
+const LARGEST: u64 = 1 << 40;
 /// Connections × streams on each that a receiver pulls with: the best
 /// measured on loopback (a connection seals on one core). 64 streams of
 /// 2 MiB a round trip, each idle one between blocks: 7 Gbit/s at 100 ms.
@@ -298,6 +301,9 @@ fn has(b: &[u8], i: u64) -> bool {
 impl Part {
     /// `to`'s `.part` (made by `claim`), and its bitmap unless `new`.
     fn open(to: &Path, size: u64, new: bool) -> io::Result<Self> {
+        if size > LARGEST {
+            return Err(io::Error::other("over 1 TiB"));
+        }
         let path = with(to, ".part");
         let file =
             std::fs::OpenOptions::new().read(true).write(true).open(&path)?;

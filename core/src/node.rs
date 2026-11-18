@@ -1287,8 +1287,15 @@ mod tests {
         a.hear(&[&[1u8][..], &id.0, &7u64.to_le_bytes()].concat());
         a.hear(&[&[1u8][..], &ev_ack(&id, &rand(), 7, &dev(2))].concat());
         assert!(lock(&a.waits).contains_key(&want), "forged");
+        // A later op's ack leaves an earlier one's retries running (its
+        // frame may have been lost), and is no proof that it came.
+        let early = ev_ack(&id, &k, 5, &dev(2));
+        lock(&a.waits).insert(early, (id, 5, dev(2), false, Instant::now()));
+        assert!(a.delivering());
         a.hear(&[&[1u8][..], &want].concat());
-        assert!(lock(&a.waits).is_empty());
+        assert_eq!(lock(&a.waits).keys().collect::<Vec<_>>(), [&early]);
+        a.hear(&[&[1u8][..], &early].concat());
+        assert!(lock(&a.waits).is_empty() && !a.delivering());
         stop(a).await;
     }
 

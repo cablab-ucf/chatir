@@ -76,7 +76,7 @@ async fn doze(app: AppHandle) {
 async fn nap() -> bool {
     use std::sync::atomic::Ordering::SeqCst;
     let n = running().filter(|n| n.in_call().is_none() && !FG.load(SeqCst));
-    let n = n.filter(|n| !n.transferring());
+    let n = n.filter(|n| !n.transferring() && !n.delivering());
     #[cfg(desktop)]
     let n = n.filter(|n| n.wakes() && on_battery());
     let Some(n) = n else { return false };

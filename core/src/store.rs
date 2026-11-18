@@ -10,7 +10,6 @@ use std::path::Path;
 
 pub struct Log {
     f: File,
-    end: u64,
 }
 
 /// One unchecked record onto a log no node has open, without reading it.
@@ -45,19 +44,29 @@ impl Log {
             each(end, head[4], b);
             end += 5 + len as u64;
         }
+        // Cut, but kept aside: past a damaged length may be whole records.
+        if f.metadata()?.len() > end {
+            let mut tail = vec![];
+            (&f).seek(SeekFrom::Start(end))?;
+            (&f).read_to_end(&mut tail)?;
+            let mut o = OpenOptions::new();
+            let cut =
+                o.create(true).append(true).open(path.with_extension("cut"))?;
+            (&cut).write_all(&tail)?;
+            cut.sync_data()?;
+        }
         f.set_len(end)?;
-        Ok(Self { f, end })
+        Ok(Self { f })
     }
 
     pub fn append(&mut self, checked: u8, b: &[u8], sync: bool) -> Result<u64> {
-        let at = self.end;
+        // At the file's end, not ours: asleep, `append` may have added one.
+        let at = self.f.seek(SeekFrom::End(0))?;
         let len = (b.len() as u32).to_le_bytes();
-        self.f.seek(SeekFrom::Start(at))?;
         self.f.write_all(&[&len[..], &[checked], b].concat())?;
         if sync {
             self.f.sync_data()?;
         }
-        self.end += 5 + b.len() as u64;
         Ok(at)
     }
 
@@ -110,5 +119,25 @@ fn torn_tail() {
     assert_eq!(recs, vec![(0, 0, b"one".to_vec()), (8, 2, b"two".to_vec())]);
     assert_eq!(fs::metadata(&p).unwrap().len(), len);
     assert_eq!(l.read(8, 3).unwrap(), b"two");
+    // What was cut is kept aside.
+    assert_eq!(fs::read(p.with_extension("cut")).unwrap(), [9, 0, 0]);
+    fs::remove_file(p.with_extension("cut")).unwrap();
+    fs::remove_file(p).unwrap();
+}
+
+/// A record the asleep path appends while the node has the log open (it
+/// starts or stops) is neither overwritten nor lost.
+#[test]
+fn appended_asleep_while_open() {
+    let p = std::env::temp_dir().join(format!("chatir-a-{}.log", crate::now()));
+    let mut l = Log::open(&p, |_, _, _| {}).unwrap();
+    l.append(1, b"one", false).unwrap();
+    append(&p, b"rung").unwrap();
+    assert_eq!(l.append(1, b"two", false).unwrap(), 8 + 9);
+    drop(l);
+    let mut recs = vec![];
+    Log::open(&p, |_, c, b| recs.push((c, b))).unwrap();
+    let want = [(1, &b"one"[..]), (0, b"rung"), (1, b"two")];
+    assert_eq!(recs, want.map(|(c, b)| (c, b.to_vec())));
     fs::remove_file(p).unwrap();
 }

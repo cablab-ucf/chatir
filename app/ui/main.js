@@ -879,7 +879,7 @@ async function openUrl(url) {
     return;
   }
   // A code, as a camera app hands it on: `chatir:` and the code.
-  if (/^chatir:(?!\/\/)/i.test(url)) return takeAny(url, true);
+  if (/^chatir:(?!\/\/)/i.test(url)) return takeAny(url);
   if (!String(url).startsWith("chatir://open/")) return;
   // A channel's link, or a message's.
   const [sid, ch, msg] = url.replace(/^chatir:\/\/open\//, "").split("/");
@@ -2633,22 +2633,23 @@ async function long(code) {
 }
 
 /** Any code however it came (typed, pasted, scanned, a short code, a
- * camera app's `chatir:` link), taken as what it is. From outside the
- * page (`outside`), what would change this device is asked first. */
-async function takeAny(text, outside = false) {
+ * camera app's `chatir:` link), taken as what it is. What would change
+ * this device is asked first, however it came: a "join" code handed over
+ * may be another's link code, which makes this device theirs. */
+async function takeAny(text) {
   let code = String(text ?? "").trim().replace(/^chatir:/i, "");
   code = code && await long(code);
   if (!code) return;
   const kind = await rpc("kind", { code }).catch(() => null);
   if (kind === "join") return joinCode(code);
   if (kind === "link") {
-    const ok = !outside || await confirmBox({ title: "Link this device?",
+    const ok = await confirmBox({ title: "Link this device?",
       sub: "A link code makes this device the one who made it, with its " +
         "spaces. Only your own device's code.", ok: "Continue" });
     return ok && linkFlow(null, code);
   }
   if (kind === "host") {
-    const ok = !outside || await confirmBox({ title: "Pair a storage node?",
+    const ok = await confirmBox({ title: "Pair a storage node?",
       sub: "It will keep your spaces' sealed messages.", ok: "Pair" });
     return ok && pairStorage(code);
   }

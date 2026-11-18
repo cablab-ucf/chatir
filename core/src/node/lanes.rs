@@ -259,14 +259,15 @@ impl Node {
             ack();
             return (None, false);
         }
-        rung.push(s.id);
-        rung.drain(..rung.len().saturating_sub(64));
-        let _ = store::save(&f, &rung);
         let log = dir.join("spaces").join(format!("{space}.log"));
-        // Live ops (calls) pass; the rest wait in the log.
+        // Live ops (calls) pass; the rest wait in the log, then count as
+        // rung (not before: a failed append is taken again).
         if !e.live && store::append(&log, raw).is_err() {
             return (None, true);
         }
+        rung.push(s.id);
+        rung.drain(..rung.len().saturating_sub(64));
+        let _ = store::save(&f, &rung);
         ack();
         // Ours, from another device of ours: nothing to tell us, but the
         // node starts for it (a space joined there, a level set).
@@ -580,18 +581,14 @@ impl Node {
             // The mailbox is on its relay (again): our lane, proved anew.
             let n = self.clone();
             tokio::spawn(async move { n.check_lane().await });
-            let mut at = lock(&self.caught);
-            if at.is_none_or(|t| t.elapsed() >= BEAT) {
-                *at = Some(Instant::now());
-                self.all().iter().for_each(|sp| self.catch_up(sp));
-            }
-            return;
+            return self.catch_up_all();
         }
         match crate::push::split(b) {
             Some((crate::push::OP, l, rest)) => {
                 let env = postcard::from_bytes::<Env>(rest).ok();
+                // Under a key we lack (a rekey missed): catch up.
                 let Some((sp, k)) = self.labelled(&l, env.as_ref()) else {
-                    return;
+                    return self.catch_up_all();
                 };
                 if rest.is_empty() {
                     return self.catch_up(&sp);
@@ -655,6 +652,21 @@ impl Node {
         }
     }
 
+    /// Ops of ours not yet acked by a device they went to: its retries
+    /// (`wake_who`) still run.
+    pub fn delivering(&self) -> bool {
+        lock(&self.waits).values().any(|w| w.4.elapsed() < WAITED)
+    }
+
+    /// Every space caught up with, once a `BEAT` at most.
+    fn catch_up_all(self: &Arc<Self>) {
+        let mut at = lock(&self.caught);
+        if at.is_none_or(|t| t.elapsed() >= BEAT) {
+            *at = Some(Instant::now());
+            self.all().iter().for_each(|sp| self.catch_up(sp));
+        }
+    }
+
     /// The space whose key makes label `l`: the op's epoch key, or (with
     /// no op) the current one.
     fn labelled(&self, l: &Key, e: Option<&Env>) -> Option<(Arc<Space>, Key)> {
@@ -685,9 +697,12 @@ impl Node {
     /// or a member's device has them.
     pub(super) fn acked(&self, space: Id, d: EndpointId, ts: u64) {
         let Ok(sp) = self.get(&space) else { return };
-        lock(&self.waits).retain(|_, w| (w.0, w.2) != (space, d) || w.1 > ts);
         let host = lock(&sp.book).st.hosts().iter().any(|a| a.id == d)
             || self.stores(&space).iter().any(|s| s.0.id == d);
+        // A device acks the op it took, not those before (one may be lost:
+        // its retries go on); a storage node keeps all it was sent.
+        let done = |t: u64| if host { t <= ts } else { t == ts };
+        lock(&self.waits).retain(|_, w| (w.0, w.2) != (space, d) || !done(w.1));
         match host {
             true => {
                 let mut k = lock(&self.kept);

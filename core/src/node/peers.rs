@@ -222,7 +222,11 @@ impl Node {
         // Reached, directly: a neighbor (caught up with once).
         self.neighbor(sp, from);
         self.signaled(sp, raw, from);
-        Some(e)
+        // Acked only once kept: refused (dated ahead, a full disk), its
+        // sender keeps trying. A storage node acks once it fetched it.
+        let i = Id(blake3::hash(raw).into());
+        let kept = sp.inv.is_none() || e.live || lock(&sp.book).has(&i, e.ts);
+        kept.then_some(e)
     }
 
     /// What we tell `to` when we ask: our room, and who we are, signed.
