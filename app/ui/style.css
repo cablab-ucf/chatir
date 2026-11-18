@@ -1628,14 +1628,26 @@ dialog:has(.settings) { width: min(560px, calc(100vw - 32px)); }
 #device .box button:hover:not(:disabled) { color: var(--text-strong); }
 #device .box button:disabled { opacity: 0.4; }
 
-/* (i): what a control does, on hover, or on a tap beneath it. */
+/* A popover: on hover, or pinned by a tap until a tap elsewhere. */
+#tip {
+  position: fixed; z-index: 70; max-width: min(320px, calc(100vw - 16px));
+  background: var(--bg-float); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; box-shadow: var(--glow); padding: 8px 12px;
+  font-size: 13px; line-height: 1.4; overflow-wrap: anywhere;
+}
+#tip p { margin: 0; }
+#tip p + p { margin-top: 6px; }
+#tip b { display: block; color: var(--text-strong); }
+#tip small { display: block; font-size: 11px; color: var(--muted); }
+#net { cursor: pointer; }
+
+/* (i): what a control does */
 button.info {
   display: inline-grid; place-items: center; width: 18px; height: 18px;
   margin-left: 2px; color: var(--muted); vertical-align: middle;
 }
 button.info .icon { width: 14px; height: 14px; }
 button.info:hover { color: var(--text-strong); }
-.note.why { margin: 4px 0 0; font-weight: normal; text-transform: none; letter-spacing: 0; }
 .row.shared .gear { color: var(--muted); padding: 4px; }
 .row.shared .gear:hover { color: var(--text-strong); }
 
@@ -1679,7 +1691,7 @@ details summary { cursor: pointer; color: var(--muted); margin-top: 8px; }
 figure.chart { margin: 6px 0 12px; }
 svg.chart { width: 100%; height: auto; display: block; }
 svg.chart .sent, figure.chart i.sent { fill: var(--brand); background: var(--brand); }
-svg.chart .got, figure.chart i.got { fill: var(--cyan); background: var(--cyan); }
+svg.chart .got, figure.chart i.got { fill: var(--green); background: var(--green); }
 svg.chart .axis { stroke: var(--line); stroke-width: 0.5; }
 figure.chart figcaption { display: flex; justify-content: space-between;
   font-size: 11px; color: var(--muted); }

@@ -59,18 +59,47 @@ function h(tag, props, ...kids) {
   return e;
 }
 
-/** What a control does, behind an (i): its tooltip, and on a tap (a
- * phone has no hover) shown beneath it. */
-function info(text) {
-  const note = h("p", { class: "note why hidden" }, text);
-  const b = h("button", { class: "info", title: text, "aria-label": "About",
-    onclick: (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      note.classList.toggle("hidden");
-    } }, icon("info"));
-  return [b, note];
+/** A popover for what a control does or holds: on hover, or pinned by a
+ * tap (a phone has no hover) until a tap elsewhere. `body` makes it. */
+const tipBox = h("div", { id: "tip", class: "hidden", role: "tooltip" });
+document.body.append(tipBox);
+let tipAt = null, tipPinned = false;
+function tipHide() {
+  tipBox.classList.add("hidden");
+  tipAt = null;
+  tipPinned = false;
 }
+function tip(el, body) {
+  const show = () => {
+    tipAt = el;
+    put(tipBox, body());
+    tipBox.classList.remove("hidden");
+    const r = el.getBoundingClientRect();
+    const [w, ht] = [tipBox.offsetWidth, tipBox.offsetHeight];
+    tipBox.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2,
+      innerWidth - w - 8)) + "px";
+    tipBox.style.top = Math.max(8, r.bottom + ht + 14 > innerHeight
+      ? r.top - ht - 6 : r.bottom + 6) + "px";
+  };
+  el.onpointerenter = (e) => e.pointerType === "mouse" && !tipPinned && show();
+  el.onpointerleave = () => tipAt === el && !tipPinned && tipHide();
+  el.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (tipPinned && tipAt === el) return tipHide();
+    show();
+    tipPinned = true;
+  };
+  if (tipAt === el) show(); // redrawn while open: what it says now
+  return el;
+}
+addEventListener("pointerdown", (e) => tipAt && !tipAt.contains(e.target) &&
+  !tipBox.contains(e.target) && tipHide());
+addEventListener("scroll", () => tipAt && tipHide(), true);
+
+/** What a control does, behind an (i). */
+const info = (text) => tip(h("button", { class: "info", "aria-label": text },
+  icon("info")), () => text);
 
 const put = (el, ...kids) =>
   el.replaceChildren(
@@ -952,10 +981,13 @@ function renderHeader() {
   net.className = s?.peers ? "up" : "";
   put(net, s && [h("i", { class: "dot" }),
     `${s.peers} peer${s.peers === 1 ? "" : "s"}`]);
-  const near = (s?.near ?? []).map((p) => `${p.who} (device ${p.device})`);
-  net.title = near.length ? `Connected with:\n${near.join("\n")}`
-    : "Connected with no one now";
-  net.onclick = () => toast(net.title);
+  const near = s?.near ?? [];
+  net.setAttribute("aria-label", near.length ? "Connected with " +
+    near.map((p) => p.who).join(", ") : "Connected with no one now");
+  tip(net, () => near.length ? [h("small", {}, "Connected with"),
+    near.map((p) => h("p", {}, h("b", {}, p.who),
+      h("small", {}, `device ${p.device}`)))]
+    : h("p", {}, "Connected with no one now"));
   const input = $("input");
   input.placeholder = S.normal ? "-- NORMAL --  j/k pick, ? keys, i types"
     : parent ? `Reply in ${ch.name}`
@@ -2958,8 +2990,7 @@ const TABS = { account: "Account", devices: "Devices", privacy: "Privacy",
   look: "Appearance", network: "Network", about: "About" };
 
 const toggle = (title, small, checked, change) => {
-  const [b, why] = info(small);
-  return h("label", { class: "switch" }, h("span", {}, title, b, why),
+  return h("label", { class: "switch" }, h("span", {}, title, info(small)),
     h("input", { type: "checkbox", checked,
       onchange: (e) => change(e.target.checked) }), h("i"));
 };
@@ -3220,10 +3251,10 @@ function trafficChart(ends, since) {
     "aria-label": "Sent and received, an hour a bar, the last day" });
   bins.forEach(([o, g], i) => {
     const [ho, hg] = [36 * o / top, 36 * g / top];
-    const t = svg("title", {});
-    t.textContent = `${24 - i} h ago: sent ${amount(o)}, received ${amount(g)}`;
-    const col = svg("g", {});
-    col.append(t, svg("rect", { x: i * 10 + 1, y: 40 - ho, width: 8,
+    const col = tip(svg("g", {}), () => h("p", {}, h("b", {}, `${24 - i} h ago`),
+      h("small", {}, `sent ${amount(o)}`), h("small", {},
+        `received ${amount(g)}`)));
+    col.append(svg("rect", { x: i * 10 + 1, y: 40 - ho, width: 8,
       height: Math.max(ho, o ? 0.5 : 0), class: "sent" }),
     svg("rect", { x: i * 10 + 1, y: 42, width: 8,
       height: Math.max(hg, g ? 0.5 : 0), class: "got" }));
