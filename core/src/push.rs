@@ -154,6 +154,11 @@ pub fn listen(dir: &Path) -> UnboundedReceiver<Heard> {
     rx
 }
 
+/// No longer heard here (a node that listened stops): the next listens.
+pub fn unlisten(dir: &Path) {
+    lock(&EARS).remove(dir);
+}
+
 /// Whether someone hears `dir`'s lane.
 pub fn heard(dir: &Path) -> bool {
     lock(&EARS).get(dir).is_some_and(|e| !e.is_closed())

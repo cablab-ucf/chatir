@@ -18,6 +18,8 @@ pub(super) async fn heartbeat(n: Weak<Node>) {
         }
         last = now();
         lock(&n.waits).retain(|_, w| w.4.elapsed() < WAITED);
+        // Unacked frames of ours whose time came: again (first as we start).
+        n.flush_out(i == 0, false);
         // Our lane, proved now and then: only one that works wakes us. A
         // mailbox held here is proved as it connects, watched by pushir.
         if i % LANE_BEATS == 0 && n.serve.is_none() {

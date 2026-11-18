@@ -463,6 +463,9 @@ impl Node {
     pub async fn resume(self: &Arc<Self>) {
         self.send.kick.notify_waiters();
         crate::push::reset().await;
+        // Unacked frames of ours: those due, and those that reached no
+        // relay last time (the network may be back).
+        self.flush_out(false, true);
         if let Some(ep) = self.ep() {
             ep.network_change().await;
         }

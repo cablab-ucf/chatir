@@ -853,6 +853,12 @@ impl State {
         }
     }
 
+    /// Whether post `id` is to `me`: a DM, a reply to them, a mention.
+    pub fn mentions_me(&self, id: &Id, me: &Id) -> bool {
+        let tag = self.tag(me);
+        self.post(id).is_some_and(|p| self.mentions(p, me, &tag))
+    }
+
     pub fn message(&self, id: &Id) -> Option<(Ch, Message)> {
         let (ch, at) = self.index.get(id)?;
         Some((*ch, self.view(at, self.posts.get(ch)?.get(at)?)?))

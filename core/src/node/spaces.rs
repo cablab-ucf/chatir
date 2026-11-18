@@ -78,6 +78,59 @@ impl Node {
         l.read.get(&(*id, *ch)).or(l.joined.get(id)).copied().unwrap_or(0)
     }
 
+    /// Posts by others among `ids`, just had: noted as had (`rung`, so a
+    /// ring that brings one again shows nothing); dated before what was
+    /// read in their channel (written offline, a clock behind, a lane that
+    /// lost them), unread again from there and, if `tell`, told once by
+    /// `notices`. Never lost among the read. (Dated before we joined, it is
+    /// history; after what was read, plain unread.)
+    pub(super) fn late(
+        self: &Arc<Self>,
+        sp: &Arc<Space>,
+        ids: &[Id],
+        tell: bool,
+    ) {
+        if sp.inv.is_none() || sp.id == self.own || ids.is_empty() {
+            return;
+        }
+        let me = self.id();
+        let posts: Vec<(Id, Ch, u64)> = self
+            .view(&sp.id, |s| {
+                let of = |i: &Id| s.message(i).map(|(ch, m)| (*i, ch, m));
+                let others = ids.iter().filter_map(of);
+                others
+                    .filter(|x| x.2.author != me)
+                    .map(|(i, ch, m)| (i, ch, m.ts))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if posts.is_empty() {
+            return;
+        }
+        let had: Vec<Id> = posts.iter().map(|x| x.0).collect();
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || rung_add(&dir, &had));
+        let late: Vec<(Id, Ch, Id)> = {
+            let mut l = lock(&self.local);
+            let late = posts.into_iter().filter(|(_, ch, ts)| {
+                let read = l.read.get(&(sp.id, *ch)).copied();
+                read.is_some_and(|r| *ts <= r)
+            });
+            let late: Vec<_> = late.collect();
+            for (_, ch, ts) in &late {
+                let r = l.read.entry((sp.id, *ch)).or_default();
+                *r = (*r).min(ts.saturating_sub(1));
+            }
+            late.into_iter().map(|(i, ch, _)| (sp.id, ch, i)).collect()
+        };
+        if !late.is_empty() {
+            self.persist();
+            if tell {
+                lock(&self.late).extend(late);
+            }
+        }
+    }
+
     /// Read here; in a DM, its sender is told (not while invisible).
     pub fn mark_read(self: &Arc<Self>, id: &Id, ch: &Ch) {
         let latest = self.view(id, |s| s.latest(ch)).flatten().unwrap_or(0);
@@ -143,6 +196,8 @@ impl Node {
             b.keys.insert(tag(&i.key), i.key);
             b.fold(&id, &self.me, work);
         }
+        // Rung asleep (`Src::Log(0)`): `late` below.
+        let rung = std::mem::take(&mut b.posted);
         let boot = peers.iter().chain(inv.iter().flat_map(|i| &i.peers));
         boot.filter(|a| a.id != self.device())
             .for_each(|a| self.lookup.add_endpoint_info(a.clone()));
@@ -183,6 +238,8 @@ impl Node {
             let _ = sp.task.set(AbortOnDropHandle::new(tokio::spawn(task)));
         }
         self.bootstrap(&sp).into_iter().take(4).for_each(|p| self.sync(&sp, p));
+        // Rung asleep (told there already): unread if they came late.
+        self.late(&sp, &rung, false);
         self.emit(Event::Changed { space: id });
         tokio::spawn(self.clone().effects(sp.clone()));
         Ok(sp)
@@ -259,6 +316,7 @@ impl Node {
             let h = lock(&self.hosts);
             h.get(&sp.id).map(|h| h.tags.clone()).unwrap_or_default()
         });
+        let mut posted = vec![];
         let new = {
             let mut b = lock(&sp.book);
             let rejects = b.rejects;
@@ -295,6 +353,7 @@ impl Node {
                         .into_iter()
                         .map(|(i, e, r)| (i, e, Src::Net(r, mine)));
                     let new = b.fold(&sp.id, &self.me, w.collect());
+                    posted = std::mem::take(&mut b.posted);
                     if b.rejects != rejects {
                         let r: Vec<_> = b.rejected.iter().collect();
                         if let Err(e) = store::save(&self.rejected(&sp.id), &r)
@@ -307,6 +366,9 @@ impl Node {
             }
         };
         if new > 0 {
+            if !mine {
+                self.late(sp, &posted, true);
+            }
             self.emit(Event::Changed { space: sp.id });
             tokio::spawn(self.clone().effects(sp.clone()));
             // A DM's news from them, here: they see ✓✓.

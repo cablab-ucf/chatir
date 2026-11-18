@@ -1185,19 +1185,22 @@ async fn text_is_handed_to_one_of_our_devices() {
         "once"
     );
     assert!(b.hand(a2.device(), "hi").await.is_err(), "not b's device");
-    // The same again within the retry window (a retry whose ack was lost,
-    // or the copy by lane): taken, not told twice; another text is.
+    // Sent again on purpose: a text of its own, told once more (each goes
+    // by lane and directly; the two copies are one text, and a retry of
+    // the lane's whose ack was lost is too). Then another text.
     a.hand(a2.device(), "https://example.org/x").await.unwrap();
     a.hand(a2.device(), "and this").await.unwrap();
-    let next = async {
-        loop {
-            if let Ok(Event::Handed { text, .. }) = rx.recv().await {
-                return text;
-            }
+    let mut next = vec![];
+    while next.len() < 3 {
+        let r = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        match r {
+            Ok(Ok(Event::Handed { text, .. })) => next.push(text),
+            Ok(_) => {}
+            Err(_) => break,
         }
-    };
-    let next = tokio::time::timeout(Duration::from_secs(10), next).await;
-    assert_eq!(next.unwrap(), "and this", "the copy was not told again");
+    }
+    let want = ["https://example.org/x", "and this"];
+    assert_eq!(next, want, "each told once, the copies not again");
 }
 
 /// Down, our device is woken (its lane) and the text waits for it: here

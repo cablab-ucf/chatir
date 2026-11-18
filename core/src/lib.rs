@@ -120,7 +120,7 @@ pub fn data(serve: bool) -> std::path::PathBuf {
 }
 
 /// What signing out takes away.
-pub const MINE: [&str; 20] = [
+pub const MINE: [&str; 23] = [
     "seed",
     "device",
     "local",
@@ -143,6 +143,9 @@ pub const MINE: [&str; 20] = [
     "phonebook",
     "shown",
     "rung",
+    "handed",
+    "outbox",
+    "shared.lock",
 ];
 
 /// Unix time in milliseconds.

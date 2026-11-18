@@ -5,13 +5,14 @@ mod files;
 mod lanes;
 mod live;
 mod net;
+mod outbox;
 mod pair;
 mod peers;
 mod space;
 mod spaces;
 
 pub use net::*;
-use {lanes::*, live::*, pair::*, peers::*, space::*};
+use {lanes::*, live::*, outbox::*, pair::*, peers::*, space::*};
 
 use crate::call::{self, Call};
 use crate::crypto::{Key, Me, kem_open, kem_seal, rand, same};
@@ -358,6 +359,9 @@ struct Book {
     // Refused, oldest first: indexed as had, never served.
     rejected: VecDeque<(Id, u32)>,
     rejects: u64,
+    // Posts just folded that came by the network or a ring (not from our
+    // own log's checked past), by op id: for `late`, which takes them.
+    posted: Vec<Id>,
 }
 
 /// (author, (ts, id), epoch, key, via `Back` rather than `Rekey`).
@@ -437,6 +441,12 @@ pub struct Node {
     // time, device, live?), and how many left that way and how many were
     // dialed after all.
     waits: Mutex<HashMap<Key, Wait>>,
+    // Push frames of ours not yet acked, kept on disk (`outbox`).
+    outbox: Mutex<Vec<Out>>,
+    out_dirty: AtomicBool,
+    // We hear our lane ourselves (no app does): let go as we stop, so the
+    // next node here hears it.
+    ear: AtomicBool,
     // Our lane, proved: the nonce last sent to it through its relay, and
     // when one last came back (`check_lane`).
     echo: Mutex<(Key, Option<Instant>)>,
@@ -468,6 +478,9 @@ pub struct Node {
     rang: Mutex<HashSet<(Id, Id, Ch)>>,
     // Texts from our devices not yet told: a notice each, as a message is.
     texts: Mutex<Vec<Notice>>,
+    // Posts by others that came dated before what we were told or read
+    // (`late`): told by `notices`, once.
+    late: Mutex<Vec<(Id, Ch, Id)>>,
     // Texts of ours sent by lane, by the ack each awaits.
     told: Mutex<HashMap<Key, tokio::sync::oneshot::Sender<()>>>,
     name: Mutex<String>,
@@ -588,6 +601,9 @@ impl Node {
         let budget = store::load(&cfg.dir.join("budget"));
         let shared = store::load(&cfg.dir.join("shared"));
         let send = crate::send::Sends::load(&cfg.dir);
+        // Unacked frames of a past run: each goes again as we start.
+        let mut outbox: Vec<Out> = store::load(&cfg.dir.join("outbox"));
+        outbox.iter_mut().for_each(|o| o.next = 0);
         // Where our devices' files go: kept for a start that names none
         // (a phone woken without its app).
         let at = cfg.dir.join("downloads");
@@ -612,6 +628,9 @@ impl Node {
             links: Links::default(),
             traffic: Arc::default(),
             waits: Mutex::default(),
+            outbox: Mutex::new(outbox),
+            out_dirty: AtomicBool::new(false),
+            ear: AtomicBool::new(false),
             echo: Mutex::default(),
             caught: Mutex::default(),
             evs: Default::default(),
@@ -642,6 +661,7 @@ impl Node {
             prefs: Mutex::new(prefs),
             closed: Mutex::new(closed),
             rang: Mutex::default(),
+            late: Mutex::default(),
             texts: Mutex::default(),
             told: Mutex::default(),
             name: Mutex::new(cfg.name),
@@ -698,6 +718,7 @@ impl Node {
         }
         if !crate::push::heard(&n.dir) {
             let rx = crate::push::listen(&n.dir);
+            n.ear.store(true, Relaxed);
             tokio::spawn(hear(Arc::downgrade(&n), rx));
         }
         tokio::spawn(lane_up(Arc::downgrade(&n)));
@@ -823,13 +844,34 @@ impl Node {
             }) else {
                 continue;
             };
+            // Late ones (`late`) first, the newest of each channel, as loud
+            // as the space is: one a newer post of its channel overrides.
+            let late: Vec<(Ch, Id)> = {
+                let mut l = lock(&self.late);
+                let (here, rest) = l.drain(..).partition(|x| x.0 == id);
+                *l = rest;
+                here.into_iter().map(|x| (x.1, x.2)).collect()
+            };
+            let late_in = |ch: &Ch| {
+                let v = self.view(&id, |s| {
+                    let of = late.iter().filter(|x| x.0 == *ch);
+                    let to_me = |x: &&(Ch, Id)| {
+                        level == Level::All || s.mentions_me(&x.1, &me)
+                    };
+                    let ms = of.filter(to_me).filter_map(|x| s.message(&x.1));
+                    ms.map(|x| x.1).max_by_key(|m| m.ts)
+                });
+                v.flatten().filter(|m| m.ts > self.since(&id, ch))
+            };
             for (ch, room) in rooms.iter().filter(|_| level != Level::Off) {
                 let since = self.since(&id, ch).max(mark);
                 let m = self.view(&id, |s| match level {
                     Level::All => s.last_from(ch, since, &me),
                     _ => s.last_mention(ch, since, &me),
                 });
-                let Some(m) = m.flatten() else { continue };
+                let Some(m) = m.flatten().or_else(|| late_in(ch)) else {
+                    continue;
+                };
                 let title = match dm {
                     true => m.name.clone(),
                     false => format!("{} in #{room} ({name})", m.name),
@@ -941,6 +983,10 @@ impl Node {
 
     pub async fn shutdown(&self) {
         self.phonebook();
+        self.save_out_now();
+        if self.ear.load(Relaxed) {
+            crate::push::unlisten(&self.dir);
+        }
         let call = lock(&self.call).take();
         if let Some(sp) = call.and_then(|c| self.get(&c.space).ok()) {
             self.signal(&sp, Op::Call { channel: None }).await;
@@ -1247,6 +1293,99 @@ mod tests {
         s.fetch(&Id(rand()), nobody, Some((sp, size)));
         assert!(until(|| spent(true) == 0).await, "none came");
         stop(s).await;
+    }
+
+    /// A post by someone else dated before what we read in its channel
+    /// (written offline, a clock behind): unread again and told, once;
+    /// had (`rung`), a ring that brings it asleep shows nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_late_post_is_unread_and_told_once() {
+        let a = start(&Net::Direct, "late").await;
+        let id = a.create("s").await.unwrap();
+        let ch = a.view(&id, |s| s.channels()[0].0).unwrap();
+        let sp = a.get(&id).unwrap();
+        let k = lock(&sp.book).key(sp.inv.as_ref().unwrap()).0;
+        let (u, d) = (Me::new(rand()), SecretKey::from_bytes(&rand()).public());
+        let post = |ts, text: &str| {
+            let (channel, text) = (ch, text.into());
+            let op = Op::Post { channel, text, reply: None, files: vec![] };
+            op::seal(&id, &k, &u.user, d, ts, op).1
+        };
+        assert!(a.notices().is_empty(), "told up to now");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let t = now();
+        a.ingest(&sp, vec![post(t, "now")], false);
+        assert!(a.notices().iter().any(|n| n.body == "now"));
+        a.mark_read(&id, &ch);
+        assert_eq!(a.unread(&id, &ch).0, 0);
+        let late = post(t - 60_000, "written offline");
+        a.ingest(&sp, vec![late.clone()], false);
+        assert!(a.unread(&id, &ch).0 >= 1, "unread again");
+        let told = a.notices();
+        assert!(told.iter().any(|n| n.body == "written offline"), "told");
+        assert!(a.notices().is_empty(), "once");
+        let ms = a.view(&id, |s| s.messages(&ch, None, 10)).unwrap();
+        let i = ms.iter().find(|m| m.text == "written offline").unwrap().id;
+        let had = || store::load::<Vec<Id>>(&a.dir.join("rung")).contains(&i);
+        assert!(until(had).await, "noted as had");
+        stop(a).await;
+    }
+
+    /// A device text is taken once by lane (its mac: a retry whose ack was
+    /// lost, any time later), once across its two ways, yet the same words
+    /// sent twice are two texts.
+    #[test]
+    fn a_text_is_taken_once_each() {
+        let dir = std::env::temp_dir().join(format!("chatir-handed-{}", now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let from = SecretKey::from_bytes(&rand()).public();
+        let (m1, m2) = (rand(), rand());
+        assert!(!taken_text(&dir, &from, "ok", Some(&m1)));
+        assert!(taken_text(&dir, &from, "ok", Some(&m1)), "a retry");
+        assert!(taken_text(&dir, &from, "ok", None), "its direct copy");
+        assert!(!taken_text(&dir, &from, "ok", Some(&m2)), "\"ok\" again");
+        assert!(taken_text(&dir, &from, "ok", None), "that one's direct copy");
+        assert!(!taken_text(&dir, &from, "hi", None));
+        assert!(!taken_text(&dir, &from, "hi", None), "twice direct: two");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Frames of ours not yet acked outlive the process: started again,
+    /// each goes again, and an ack takes it off.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_outbox_outlives_a_restart() {
+        let a = start(&Net::Direct, "outbox").await;
+        let dir = a.dir.clone();
+        let (d, space) = (SecretKey::from_bytes(&rand()).public(), Id(rand()));
+        let relay = "https://relay.invalid./".parse().unwrap();
+        let lane = pushir::Lane { relay, id: d, secret: [0; 32] };
+        let ack = rand();
+        let o = Out::new(Some(ack), space, d, 7, lane.to_string(), vec![1]);
+        a.keep_out(vec![o.clone(), o]);
+        assert_eq!(lock(&a.outbox).len(), 1, "one frame to a device, once");
+        a.shutdown().await;
+        drop(a);
+        assert!(Node::outbox_waiting(&dir));
+        let cfg = Config {
+            dir: dir.clone(),
+            name: "outbox".into(),
+            net: Net::Direct,
+            link: None,
+            serve: false,
+            big: None,
+            inbox: None,
+        };
+        let a = Node::start(cfg).await.unwrap();
+        let tried = || lock(&a.outbox).first().is_some_and(|o| o.tries > 0);
+        let awaited = || tried() && lock(&a.waits).contains_key(&ack);
+        assert!(
+            until(awaited).await,
+            "sent again as it starts, its ack awaited"
+        );
+        a.hear(&[&[crate::push::ACK][..], &ack].concat());
+        a.save_out_now();
+        assert!(lock(&a.outbox).is_empty() && !Node::outbox_waiting(&dir));
+        stop(a).await;
     }
 
     /// Events name no space; a relay can neither ack them nor (with a

@@ -513,3 +513,92 @@ async fn a_lane_moved_while_a_phone_sleeps_reaches_it() {
     let lanes = b.view(&id, |s| s.pushes_of(Some(&aid))).unwrap_or_default();
     assert!(lanes.iter().any(|l| l.1.contains("level:mentions")), "{lanes:?}");
 }
+
+/// Sent while the receiver's phone sleeps and lost on its way (nothing
+/// acked): the sender's outbox keeps it across a restart, sends it again
+/// as it starts, and the phone shows it and acks it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unacked_message_outlives_its_senders_restart() {
+    let (adir, db) = (dir("a"), dir("b"));
+    let a = node(&adir, "a", false).await;
+    let b = node(&db, "b", true).await;
+    let id = a.create("hub").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("a has b's lane", || told(&a, &id, &b, "")).await;
+    let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
+    until("b knows a", named).await;
+    let bid = b.id();
+    b.shutdown().await;
+    drop(b);
+
+    fresh(&db);
+    a.publish(&id, post(ch, "still there?", None)).await.unwrap();
+    // On its way, never taken: as good as lost.
+    until("rang", || RANG.lock().unwrap().iter().any(|f| ours(&db, f))).await;
+    assert!(Node::outbox_waiting(&adir), "kept before it went");
+    a.shutdown().await;
+    drop(a);
+    fresh(&db);
+
+    let a = node(&adir, "a", false).await;
+    let again = rung(&db).await;
+    let (n, _) = woken(&db, &again);
+    assert_eq!(n.expect("shown").body, "still there?");
+    // Its ack may beat a's own lane back on the relay (which, deployed,
+    // holds it): as the next try would, the phone acks it again, shown once.
+    let ts = a.view(&id, |s| s.messages(&ch, None, 1)[0].ts).unwrap();
+    for _ in 0..40 {
+        if a.reach(&id, &bid).is_some_and(|t| t >= ts) {
+            break;
+        }
+        assert!(matches!(woken(&db, &again), (None, false)), "shown once");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    until("a hears b has it", || a.reach(&id, &bid).is_some_and(|t| t >= ts))
+        .await;
+    until("off the outbox", || !Node::outbox_waiting(&adir)).await;
+}
+
+/// Two messages whose frames come out of order: the older one still shows
+/// asleep (it was only dated before what was shown), each once.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_message_that_comes_late_still_shows_asleep() {
+    let (a, db, b) = pair().await;
+    let id = a.create("hub").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("a has b's lane", || told(&a, &id, &b, "")).await;
+    let named = || b.view(&id, |s| s.profile(&a.id()).is_some()) == Some(true);
+    until("b knows a", named).await;
+    b.shutdown().await;
+    drop(b);
+
+    fresh(&db);
+    a.publish(&id, post(ch, "first", None)).await.unwrap();
+    let first = rung(&db).await;
+    a.publish(&id, post(ch, "second", None)).await.unwrap();
+    let second = rung(&db).await;
+    assert_eq!(woken(&db, &second).0.expect("shown").body, "second");
+    assert_eq!(woken(&db, &first).0.expect("shown, late").body, "first");
+    assert!(matches!(woken(&db, &first), (None, false)), "once");
+}
+
+/// A message the running node took another way (a direct link, a sync):
+/// its ring, coming once the node has stopped, shows nothing again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_had_by_the_node_does_not_ring_again_asleep() {
+    let (a, db, b) = pair().await;
+    let id = a.create("hub").await.unwrap();
+    let ch = general(&a, &id);
+    b.join(&a.invite(&id).await.unwrap()).await.unwrap();
+    until("a has b's lane", || told(&a, &id, &b, "")).await;
+    fresh(&db);
+    a.publish(&id, post(ch, "seen", None)).await.unwrap();
+    until("b has it", || texts(&b, &id, &ch).contains(&"seen".to_string()))
+        .await;
+    until("noted as had", || db.join("rung").exists()).await;
+    b.shutdown().await;
+    drop(b);
+    assert!(matches!(woken(&db, &rung(&db).await), (None, false)));
+}

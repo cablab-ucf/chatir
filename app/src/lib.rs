@@ -163,6 +163,13 @@ async fn hear(app: AppHandle, n: Arc<Node>) {
             notify(&app, &x).await;
             continue;
         }
+        // The mailbox is back, the network too: frames of ours waiting to
+        // go (the outbox) start a node, which sends them as it starts.
+        if f.is_empty() && Node::outbox_waiting(&dir) {
+            let _ = start(&app, None).await;
+            tauri::async_runtime::spawn(doze(app.clone()));
+            continue;
+        }
         let Some(news) = Node::news(&dir, &f) else { continue };
         let (x, catch) = news.map_or((None, true), |w| Node::woken(&dir, &w));
         if let Some(x) = &x {

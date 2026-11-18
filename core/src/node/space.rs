@@ -24,6 +24,7 @@ impl Book {
             rekeys: HashMap::new(),
             rejected: VecDeque::new(),
             rejects: 0,
+            posted: vec![],
         }
     }
 
@@ -182,6 +183,10 @@ impl Book {
                 roles |= net && matches!(s.op, Op::Role { .. });
                 if matches!(s.op, Op::Rekey { .. }) {
                     self.rekeys.insert(s.id, i);
+                }
+                let new = matches!(src, Src::Net(..) | Src::Log(0));
+                if new && matches!(s.op, Op::Post { .. }) {
+                    self.posted.push(s.id);
                 }
                 ops.push(s);
             }

@@ -462,6 +462,11 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
                 };
                 return Ok(took(&n, &dir, sync));
             }
+            // The mailbox is back, the network too: frames of ours waiting
+            // to go (the outbox) start a node, which sends them as it starts.
+            if b.is_empty() && Node::outbox_waiting(&dir) {
+                return Ok(Shown { catch: true, ..Shown::default() });
+            }
             // A text from another of ours: shown from the push alone.
             if let Some(x) = Node::text(&dir, &b).await {
                 let (hide, quiet) =

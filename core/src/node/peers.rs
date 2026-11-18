@@ -184,7 +184,10 @@ impl Node {
     pub(super) async fn told(self: &Arc<Self>, c: &Connection) -> Result<()> {
         let from = c.remote_id();
         while let Ok(mut s) = c.accept_uni().await {
-            let b = sync::rest(&mut s, 32 + GOSSIP_MAX).await?;
+            // One stream too big or cut short: the next ones still count.
+            let Ok(b) = sync::rest(&mut s, 32 + GOSSIP_MAX).await else {
+                continue;
+            };
             let Some((id, raw)) = b.split_first_chunk::<32>() else { continue };
             let Ok(sp) = self.get(&Id(*id)) else { continue };
             // A kept op, acked (space, its time): its sender shows it here.
@@ -423,6 +426,9 @@ impl Node {
             tokio::spawn(async move { drop(tx.join_peers(vec![peer]).await) });
         }
         self.reach_device(&sp.id, &peer, now());
+        // Synced: it has all we wrote here, whatever its lane missed.
+        let d = *peer.as_bytes();
+        self.out_done(|o| o.space == sp.id && o.device == d);
         if !std::mem::take(&mut *lock(&sp.undelivered)).is_empty() {
             self.emit(Event::Changed { space: sp.id });
         }
