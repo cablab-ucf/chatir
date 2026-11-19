@@ -111,6 +111,9 @@ pub struct State {
     idle: HashMap<Id, BTreeMap<Pos, Op>>,
     // Each author's profiles (each one a key), the newest few alone.
     profiles_at: HashMap<Id, BTreeMap<Pos, (String, Vec<u8>)>>,
+    // Members whose name another's matches (case aside): shown with their
+    // short id. Worked out when first asked after a name changed.
+    twins: std::cell::OnceCell<HashSet<Id>>,
     posts: HashMap<Ch, BTreeMap<Pos, Post>>,
     index: HashMap<Id, (Ch, Pos)>,
     // Re-sealed by others, one op may come under several epochs.
@@ -317,6 +320,7 @@ impl State {
         (self.name, self.channels) = (None, BTreeMap::new());
         self.order = vec![];
         (self.profiles, self.roles) = (HashMap::new(), HashMap::new());
+        self.twins = Default::default();
         self.profiled = HashMap::new();
         (self.epochs, self.hosts, self.bans) =
             (vec![], BTreeMap::new(), vec![]);
@@ -469,6 +473,7 @@ impl State {
         let p = p.map(|(at, (n, k))| (*at, crate::op::name(n), k.clone()));
         let Some((at, n, mut k)) = p else {
             self.profiled.remove(a);
+            self.twins = Default::default();
             return drop(self.profiles.remove(a));
         };
         // Told under a key a later epoch left them out of: none, however dated.
@@ -478,6 +483,7 @@ impl State {
         }
         self.profiles.insert(*a, (n, k));
         self.profiled.insert(*a, at);
+        self.twins = Default::default();
     }
 
     /// A member's first burn that counted where dated (as `judge`).
@@ -614,6 +620,23 @@ impl State {
         name.unwrap_or_else(|| user.to_string()[..8].into())
     }
 
+    /// The name to show: with the short id beside it when another member
+    /// goes by the same (anyone may take any name; `@name` still matches).
+    pub fn shown_name(&self, user: &Id) -> String {
+        let twins = self.twins.get_or_init(|| {
+            let mut by: HashMap<String, Vec<Id>> = HashMap::new();
+            for (u, p) in &self.profiles {
+                by.entry(p.0.to_lowercase()).or_default().push(*u);
+            }
+            by.into_values().filter(|v| v.len() > 1).flatten().collect()
+        });
+        let name = self.display_name(user);
+        match twins.contains(user) {
+            true => format!("{name} · {}", &user.to_string()[..8]),
+            false => name,
+        }
+    }
+
     pub fn profile(&self, user: &Id) -> Option<&str> {
         Some(&self.profiles.get(user)?.0)
     }
@@ -720,7 +743,7 @@ impl State {
             .into_iter()
             .map(|id| Member {
                 id: *id,
-                name: self.display_name(id),
+                name: self.shown_name(id),
                 role: self.role(id),
             })
             .collect();
@@ -942,7 +965,7 @@ impl State {
             let (text, _) = self.resolve(&r, q)?;
             Some(Quote {
                 author: q.author,
-                name: self.display_name(&q.author),
+                name: self.shown_name(&q.author),
                 text: text.into(),
             })
         });
@@ -964,7 +987,7 @@ impl State {
             }
         }
         reactions.values_mut().for_each(|v| v.sort());
-        let (author, name) = (p.author, self.display_name(&p.author));
+        let (author, name) = (p.author, self.shown_name(&p.author));
         let reactions = reactions.into_iter().collect();
         let (reply, files) = (p.reply, p.files.clone());
         let pinned = self.pins.get(&id).is_some_and(|(at, by, on)| {
@@ -1408,6 +1431,34 @@ mod tests {
         }
         st.extend([sealed(4, x, [0; 8], name("a"))]);
         assert!(st.kem(&x).is_none(), "backdated, still left out");
+    }
+
+    /// One taking another's name (any case) is shown with their short id,
+    /// both are; a name nobody shares is shown as it is.
+    #[test]
+    fn a_name_two_members_share_is_told_apart() {
+        let [o, a, b] = people();
+        let mut st = State::new(&Invite::new(o, "", None));
+        let named = |n, u, s: &str| {
+            op(n, u, Op::Profile { name: s.into(), kem: vec![] })
+        };
+        st.extend([
+            named(1, o, "Owen"),
+            named(2, a, "Alice"),
+            named(3, b, "alice"),
+        ]);
+        assert_eq!(st.shown_name(&o), "Owen");
+        let (sa, sb) = (st.shown_name(&a), st.shown_name(&b));
+        assert!(
+            sa.starts_with("Alice · ")
+                && sb.starts_with("alice · ")
+                && sa != sb
+        );
+        st.extend([named(4, b, "Bob")]);
+        assert_eq!(
+            (st.shown_name(&a), st.shown_name(&b)),
+            ("Alice".into(), "Bob".into())
+        );
     }
 
     #[test]

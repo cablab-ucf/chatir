@@ -39,7 +39,7 @@ x-wing = { version = "0.1", features = ["getrandom"] }
 # codes (pairir), one relay mailbox per device (pushir: lanes and rings).
 irnet = { git = "https://github.com/cablab-ucf/irnet", rev = "3b962fb55562589d5af801a4a8f29214c2b8e55e" }
 pairir = { git = "https://github.com/cablab-ucf/pairir", rev = "2e13c7d899c0eb8c723c08fed39693d55ea1cd49" }
-pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "b59ae26154a8004a16a1269ad7475219d22587aa" }
+pushir = { git = "https://github.com/cablab-ucf/pushir", rev = "70d19ba365d265ad7782a590ac916a32580fa5fa" }
 
 # A call's voice, native: the echo canceller hears what plays.
 cpal = { version = "0.18", optional = true }

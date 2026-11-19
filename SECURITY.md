@@ -11,11 +11,12 @@ this repository), not in an issue.
 | Party | Can | Cannot |
 |---|---|---|
 | Network, relay operator (irnet, pushir) | see endpoint ids, timing, sizes; drop or delay | read or forge ops, frames, calls; ack for a device |
-| Storage node (yours) | keep and serve sealed ops of spaces you name; see sizes, times, device and user ids that sync with it | read content; forge or reorder ops; ack an op it does not hold |
+| Storage node (yours) | keep and serve sealed ops of spaces you name; see sizes, times, and the user id behind each device of yours | read content; forge or reorder ops; ack an op it does not hold |
 | Non-member (knows a device id) | open at most 16 links to it (256 in all), each closed when silent | join, read, sync, wake a device, hold iroh open for long |
+| Another member's storage node | keep the space's sealed ops; see devices and times | learn which user each device is (no user id goes to it) |
 | Member | read and write the space; claim any device id in its own ops; see members' devices and lanes | forge another member's ops or acks (acks are signed by the device, v0.5.0); silence a device whose owner was proven to it |
-| Admin | change roles, rekey, ban; date control ops back | reuse an epoch's tag (counts for nothing); make devices disagree on a ban (control ops are judged at their place) |
-| Removed or banned member | keep what it read; be told it is out | read anything written after the rekey that removed it |
+| Admin | change roles, rekey, ban; date control ops back | reuse an epoch's tag (counts for nothing); hand members two keys under one tag unseen (the rekey's commitment; see limits); make devices disagree on a ban (control ops are judged at their place) |
+| Removed or banned member | keep what it read; be told it is out | read anything written after the rekey that removed it; keep a host it listed in use |
 | Device thief (unlocked, data readable) | everything that device holds | anything other devices write after it is removed |
 
 ## Cryptography
@@ -58,26 +59,44 @@ unread). Nothing is dropped silently: refusals are returned to the sender.
   are files of mode 0600 in a 0700 folder: full-disk or Android file
   encryption is assumed. Secrets are not zeroized in memory.
 - Admins may date control ops back (roles, rekeys); devices converge on the
-  same result whatever order ops arrive in.
-- Epoch tags are 8 bytes: an admin can find two keys with one tag in about
-  2^32 work and split members between them. Admins are trusted with keys.
-- An admin's garbage rekey box is not detected by others; the member left
-  out sees the space locked and the head can rekey.
-- Hosts an admin listed stay listed after that admin is banned; members tell
-  hosts the user id behind each device (sync `Hello`).
+  same result whatever order ops arrive in (control ops are judged at their
+  place, tested).
+- Epoch tags are 8 bytes. Since v0.5.0 a rekey commits to its full key: a
+  member whose box opens to any other key under that tag takes none, and the
+  locked banner says whose rekey left it out (as it does for a garbage box).
+  A rekey without a commitment (from an app before v0.5.0) is still taken,
+  for compatibility: an admin running modified software can still split a
+  space by leaving it out (about 2^32 work). Admins are trusted with keys.
+- A newcomer whose invite key a rekey has since made stale gets no new key
+  by itself: it looks exactly like someone holding a leaked old invite. Its
+  space shows locked, with "Ask an admin" for a fresh invite.
 - A member can claim another's device id in its own `Push`: until that
   device's owner is proven to a sender (a sync with it), the sender wakes
   the device by no lane there; messages still arrive by gossip and sync.
-- Display names need not be unique; mentions match by name.
-- Linking a device needs no confirmation on your other devices.
+- Display names need not be unique: a name two members share is shown with
+  each one's short id, and `@name` mentions both.
+- A device that becomes you (a link code used) is told on your other devices,
+  once; it is not asked for in advance.
 - Ops may be dated up to 10 minutes ahead (pins and topics hold that long).
-- Link previews are fetched by the sender (the site sees its IP), off with
-  the setting; https to public addresses only.
-- Peers' voice is decoded by unsafe-libopus (c2rust libopus 1.3.1).
-- Math is rendered by Typst with a sandbox denylist.
+- Link previews are fetched by the sender (the site sees its IP, not that it
+  is chatir), off with the setting; https to public addresses only, 15 s.
+- Peers' voice is decoded by unsafe-libopus (c2rust libopus 1.3.1). Packets
+  are bounded to Opus's 1275 bytes before decoding; 20,000 random, flipped
+  and cut packets decode or drop in the tests.
+- Received math is typeset by Typst. Math mode reaches only Typst's math
+  scope (no files, computation, clock or network: tested); `std`, `#` and `$`
+  are refused; 2048 characters at most; random inputs are fuzzed in tests.
+- A member who holds a lane can make the device do work: a sealed empty
+  message catches up once a minute at most, a bare op its space once 10 s,
+  unreadable news asleep once 30 s; a dial keeps iroh up while it lasts.
 - If the lab's relays are blocked, the relay hop falls back to iroh's
   classical-TLS relays; peer links stay post-quantum.
-- Spaces above 64 devices keep gossip, so iroh, up while the app runs.
+- Spaces above 64 devices keep gossip, so iroh, up while the app is in sight
+  (out of sight a phone naps; lanes wake it).
+- Build and release: the TestFlight build holds the App Store Connect key
+  while it builds (Apple signs as it builds; the project and tools are made
+  before the key); chatir and pasa share one Android signing key, kept
+  because a new key would stop every installed app from updating.
 
 ## Wire compatibility
 
