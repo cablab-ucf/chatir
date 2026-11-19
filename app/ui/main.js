@@ -963,7 +963,10 @@ function renderHeader() {
     : ch ? `Message #${ch.name}` : "";
   input.disabled = !ch || s.locked;
   $("locked").classList.toggle("hidden", !s?.locked);
-  put($("locked"), "This space moved to a new key without you. ",
+  // Left out by a rekey whose key for us does not open: who did it, said.
+  const by = s?.left_out ? `${s.left_out}'s new key for you does not open, ` +
+    "by mistake or to split the space. " : "";
+  put($("locked"), "This space moved to a new key without you. ", by,
     h("button", { class: "btn", onclick: askAdmin }, "Ask an admin"));
   for (const id of ["scroller", "composer", "members"]) {
     $(id).classList.toggle("hidden", !s || (id === "members" && s.dm));

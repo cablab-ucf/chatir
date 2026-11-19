@@ -45,8 +45,11 @@ const LARGEST: u64 = 1 << 40;
 /// 2 MiB a round trip, each idle one between blocks: 7 Gbit/s at 100 ms.
 /// `CHATIR_SEND` (`4x16`) tries another.
 const SHAPE: (usize, usize) = (8, 8);
-/// Blocks a peer may have us send at once, over all its connections.
-const PER_PEER: usize = 512;
+/// Blocks a peer may have us send at once, over all its connections (a
+/// receiver's own `SHAPE` asks 64), and all peers together: each holds a
+/// 1 MiB buffer.
+const PER_PEER: usize = 128;
+const ALL_PEERS: usize = 256;
 /// A block whose hash differs is asked again this many times a round.
 const TRIES: u8 = 3;
 /// Offers in a space this big go device to device, not through iroh-blobs.
@@ -676,6 +679,9 @@ impl<'a> Slot<'a> {
         d: EndpointId,
     ) -> Option<Self> {
         let mut b = lock(m);
+        if b.values().sum::<usize>() >= ALL_PEERS {
+            return None;
+        }
         let k = b.entry(d).or_default();
         if *k >= PER_PEER {
             return None;

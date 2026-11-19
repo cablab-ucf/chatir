@@ -247,7 +247,15 @@ impl Node {
     ) -> Hello {
         let room = self.room(sp);
         let me = &self.me.user;
-        let who = sp.inv.as_ref().map(|_| sync::sign(me, &sp.id, &room, to));
+        // Who we are only to members and our own storage nodes: a host
+        // another member runs admits us by the room, and need not learn
+        // which user each device is.
+        let host = lock(&sp.book).st.hosts().iter().any(|a| a.id == *to);
+        let theirs = sp.inv.is_some()
+            && host
+            && !self.stores(&sp.id).iter().any(|s| s.0.id == *to);
+        let who = (sp.inv.as_ref().filter(|_| !theirs))
+            .map(|_| sync::sign(me, &sp.id, &room, to));
         let (devices, tags) = match token {
             Some(_) => {
                 let t =

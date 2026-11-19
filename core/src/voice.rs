@@ -72,6 +72,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// One 20 ms Opus frame as the page sends it: audio, Opus, f64 µs, data.
+/// The largest Opus packet (RFC 6716 §3.2.1): one frame of 1275 bytes.
+const MAX_PACKET: usize = 1275;
+
 pub fn frame(us: f64, opus: &[u8]) -> Vec<u8> {
     [&[0u8, 0][..], &us.to_le_bytes(), opus].concat()
 }
@@ -240,7 +243,9 @@ pub struct Ears(HashMap<Id, Dec>);
 
 impl Ears {
     pub fn hear(&mut self, mix: &Mutex<Mix>, who: Id, f: &[u8]) {
-        if f.len() < 11 || f[0] != 0 || f[1] != 0 {
+        // One Opus packet, at most its format's 1275 bytes: no more of a
+        // peer's bytes reach the decoder (translated C) than Opus allows.
+        if f.len() < 11 || f.len() > 10 + MAX_PACKET || f[0] != 0 || f[1] != 0 {
             return;
         }
         let Some(d) = self.0.get_mut(&who) else {
@@ -545,6 +550,68 @@ mod tests {
         assert!(rms(&echo_only) < 0.005, "echo left: {}", rms(&echo_only));
         // Ours over it still goes out.
         assert!(rms(&sent) > 0.05, "our voice: {}", rms(&sent));
+    }
+
+    /// A peer's packets reach a decoder translated from C: random bytes,
+    /// real packets with bytes flipped or cut, and every length up to the
+    /// bound decode or are refused, and the mix stays sound.
+    #[test]
+    fn any_packet_a_peer_sends_is_decoded_or_dropped() {
+        let mut mic = Mic::new().unwrap();
+        let mut real = vec![];
+        for i in 0..50 {
+            mic.take(
+                &voice(180.0, PACKET, i * PACKET),
+                vec![0.0; PACKET],
+                true,
+                |p| real.push(p),
+            );
+        }
+        let (mut ears, mix) = (Ears::default(), Mutex::new(Mix::default()));
+        let who = Id([7; 32]);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for k in 0..20_000 {
+            let mut f = match k % 3 {
+                // Random, any length up to past the bound.
+                0 => {
+                    let n = (next() % (10 + MAX_PACKET as u64 + 64)) as usize;
+                    let mut f: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+                    f.iter_mut().take(2).for_each(|b| *b = 0);
+                    f
+                }
+                // A real packet, bytes flipped.
+                1 => {
+                    let mut f =
+                        real[(next() % real.len() as u64) as usize].clone();
+                    for _ in 0..1 + next() % 8 {
+                        let i = 10 + (next() as usize) % (f.len() - 10);
+                        f[i] ^= next() as u8;
+                    }
+                    f
+                }
+                // A real packet, cut short or padded.
+                _ => {
+                    let mut f =
+                        real[(next() % real.len() as u64) as usize].clone();
+                    f.resize(
+                        11 + (next() as usize) % (f.len() + 40),
+                        next() as u8,
+                    );
+                    f
+                }
+            };
+            f.truncate(10 + MAX_PACKET + 64);
+            ears.hear(&mix, who, &f);
+        }
+        let mut out = vec![0.0; 960];
+        lock(&mix).play(&mut out);
+        assert!(out.iter().all(|x| x.is_finite()), "the mix stays sound");
     }
 
     #[test]

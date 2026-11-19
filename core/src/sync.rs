@@ -21,7 +21,7 @@ use anyhow::{Result, anyhow};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{EndpointId, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -137,6 +137,30 @@ impl Drop for Turn<'_> {
     }
 }
 
+/// A user's sync turns, counted while they last.
+struct Turns<'a>(&'a Mutex<HashMap<Id, usize>>, Id);
+
+impl<'a> Turns<'a> {
+    fn take(m: &'a Mutex<HashMap<Id, usize>>, u: Id) -> Option<Self> {
+        let mut t = lock(m);
+        let k = t.entry(u).or_default();
+        (*k < 4).then(|| *k += 1)?;
+        Some(Self(m, u))
+    }
+}
+
+impl Drop for Turns<'_> {
+    fn drop(&mut self) {
+        let mut t = lock(self.0);
+        if let Some(k) = t.get_mut(&self.1) {
+            *k -= 1;
+            if *k == 0 {
+                t.remove(&self.1);
+            }
+        }
+    }
+}
+
 pub async fn respond(n: &Arc<Node>, c: &Connection) -> Result<()> {
     // From anyone, before we know the space: small (2,000 devices), and
     // soon. A turn only once admitted: the slow hold up nobody.
@@ -168,6 +192,11 @@ async fn session(
     let _all = all.try_acquire().map_err(|_| anyhow!("busy"))?;
     anyhow::ensure!(lock(each).insert(who), "busy");
     let _each = Turn(each, who);
+    // 4 at once a user (or a device that says no user): one signer with
+    // many endpoint ids holds no more of the 32.
+    let user =
+        self::who(&hello, &n.device()).unwrap_or(Id(*c.remote_id().as_bytes()));
+    let _mine = Turns::take(&n.turns, user).ok_or_else(|| anyhow!("busy"))?;
     if let Some(ids) = out {
         // Told they are out (its rekeys, up to 16 MB) once a minute a
         // space: a stale key from any number of new ids costs no more.

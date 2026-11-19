@@ -686,11 +686,16 @@ impl Node {
     pub fn hear(self: &Arc<Self>, b: &[u8]) {
         if b.is_empty() {
             // The mailbox is on its relay (again): our lane, proved anew;
-            // frames of ours that reached no relay go now.
+            // frames of ours that reached no relay go now; and catch up.
+            // Once a `BEAT` at most: a member may seal an empty message to
+            // our lane, which reads the same.
+            if !self.beat_since(&self.caught) {
+                return;
+            }
             let n = self.clone();
             tokio::spawn(async move { n.check_lane().await });
             self.flush_out(false, true);
-            return self.catch_up_all();
+            return self.all().iter().for_each(|sp| self.catch_up(sp));
         }
         match crate::push::split(b) {
             Some((crate::push::OP, l, rest)) => {
@@ -699,8 +704,19 @@ impl Node {
                 let Some((sp, k)) = self.labelled(&l, env.as_ref()) else {
                     return self.catch_up_all();
                 };
+                // Bare (too big to carry): caught up with, once each 10 s a
+                // space however many come.
                 if rest.is_empty() {
-                    return self.catch_up(&sp);
+                    let mut c = lock(&self.caught_sp);
+                    let t = c
+                        .get(&sp.id)
+                        .filter(|t| t.elapsed() < Duration::from_secs(10));
+                    if t.is_none() {
+                        c.insert(sp.id, Instant::now());
+                        drop(c);
+                        self.catch_up(&sp);
+                    }
+                    return;
                 }
                 let by = env.and_then(|e| lock(&sp.book).check(&sp.id, &e));
                 let Some(d) = by.map(|s| s.device) else { return };
@@ -798,11 +814,19 @@ impl Node {
 
     /// Every space caught up with, once a `BEAT` at most.
     fn catch_up_all(self: &Arc<Self>) {
-        let mut at = lock(&self.caught);
-        if at.is_none_or(|t| t.elapsed() >= BEAT) {
-            *at = Some(Instant::now());
+        if self.beat_since(&self.caught) {
             self.all().iter().for_each(|sp| self.catch_up(sp));
         }
+    }
+
+    /// Whether a `BEAT` passed since `at` (now noted, if so).
+    fn beat_since(&self, at: &Mutex<Option<Instant>>) -> bool {
+        let mut at = lock(at);
+        let due = at.is_none_or(|t| t.elapsed() >= BEAT);
+        if due {
+            *at = Some(Instant::now());
+        }
+        due
     }
 
     /// The space whose key makes label `l`: the op's epoch key, or (with

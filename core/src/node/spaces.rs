@@ -23,6 +23,17 @@ impl Node {
     }
 
     /// Keys moved on without us: we can read the past only.
+    /// Who left us out of the space's newest key with a box of ours that
+    /// opens to no key of it (on purpose, or splitting the space): said.
+    pub fn left_out_by(&self, id: &Id) -> Option<Id> {
+        let sp = self.get(id).ok()?;
+        let b = lock(&sp.book);
+        let e = b.st.epoch()?;
+        let held = b.keys.contains_key(&e.tag);
+        let by = b.left_out.iter().find(|x| x.0 == e.tag).map(|x| x.1);
+        by.filter(|_| !held)
+    }
+
     pub fn locked(&self, id: &Id) -> bool {
         let Ok(sp) = self.get(id) else { return false };
         let Some(inv) = &sp.inv else { return false };
@@ -295,7 +306,13 @@ impl Node {
         let hosts = b.st.hosts();
         hosts.iter().for_each(|a| self.lookup.add_endpoint_info(a.clone()));
         let mut v: Vec<_> = hosts.into_iter().map(|a| a.id).collect();
-        v.extend(b.st.devices(16));
+        // Devices we synced with first (proven to answer), newest first
+        // within each: dates are claimed, a sync is not.
+        let mut ds = b.st.devices(16);
+        let synced = lock(&self.synced);
+        ds.sort_by_key(|d| !synced.contains_key(d));
+        drop(synced);
+        v.extend(ds);
         v.extend(sp.inv.iter().flat_map(|i| i.peers.iter().map(|a| a.id)));
         v.extend(self.owners(&sp.id).into_iter().take(16));
         let me = self.device();
@@ -833,14 +850,15 @@ impl Node {
                     .filter_map(|m| Some((m.id, b.st.kem(&m.id)?.to_vec())));
             (new, old, to.collect::<Vec<_>>())
         };
-        // Past what a rekey carries (`op::fits`) it would be refused on
-        // every device, its own too: said now, not redone each minute.
-        ensure!(to.len() <= 3000, "too many members to rekey (3000 at most)");
+        // Past what a rekey carries (`op::fits`, with its commitment) it
+        // would be refused everywhere, its own too: said now.
+        ensure!(to.len() < 3000, "too many members to rekey (2999 at most)");
         // Sealed outside the book's lock: thousands of X-Wing seals.
         let aad = rekey_aad(id, &tag(&new));
-        let boxes: Vec<_> = (to.iter())
+        let mut boxes: Vec<_> = (to.iter())
             .filter_map(|(u, k)| Some((*u, kem_seal(k, &aad, &new)?)))
             .collect();
+        boxes.push((crate::state::COMMIT, crate::state::commit(&new)));
         lock(&sp.book).keys.insert(tag(&new), new);
         self.post(&sp, Op::Rekey { epoch: tag(&new), boxes }).await?;
         self.post(&sp, Op::Back { key: old }).await?;

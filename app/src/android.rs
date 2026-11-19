@@ -482,12 +482,26 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
             }
             Ok(match Node::news(&dir, &b) {
                 Some(Some(news)) => shown(&dir, news),
-                Some(None) => Shown { catch: true, ..Shown::default() },
+                // A dial, or news under a label the phonebook lacks: caught
+                // up, once each 30 s however many come (one catch-up takes
+                // them all; a lane holder's flood wakes the phone no more).
+                Some(None) => Shown { catch: due(), ..Shown::default() },
                 None => Shown::default(),
             })
         })
     })
     .resolve::<Log>()
+}
+
+/// Whether a catch-up for news it cannot read is due: 30 s since the last.
+fn due() -> bool {
+    static AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let mut at = AT.lock().unwrap_or_else(|e| e.into_inner());
+    let due = at.is_none_or(|t| t.elapsed() >= Duration::from_secs(30));
+    if due {
+        *at = Some(Instant::now());
+    }
+    due
 }
 
 /// What a ring brings, to show now, and whether to catch up for it. With

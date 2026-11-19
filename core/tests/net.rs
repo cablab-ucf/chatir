@@ -1432,3 +1432,24 @@ async fn small_ops_go_as_events() {
     say(&a, &id, ch, &long).await;
     until("b has it whole", || texts(&b, &id, &ch).contains(&long)).await;
 }
+
+/// A device that becomes us (a link code used, by us or by whoever got
+/// it) is told on our other devices, once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_device_is_told_on_the_others() {
+    let a = node("a").await;
+    assert!(a.notices().iter().all(|x| x.title != "A device was linked"));
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    let both = || a.devices().iter().any(|d| d.0 == a2.device());
+    until("a knows its new device", both).await;
+    let mut told = 0;
+    for _ in 0..40 {
+        told += a
+            .notices()
+            .iter()
+            .filter(|x| x.title == "A device was linked")
+            .count();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(told, 1, "told once");
+}

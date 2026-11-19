@@ -362,6 +362,8 @@ struct Book {
     // Posts just folded that came by the network or a ring (not from our
     // own log's checked past), by op id: for `late`, which takes them.
     posted: Vec<Id>,
+    // Rekeys whose box for us opened to no key of theirs, and by whom.
+    left_out: Vec<([u8; 8], Id)>,
 }
 
 /// (author, (ts, id), epoch, key, via `Back` rather than `Rekey`).
@@ -451,6 +453,12 @@ pub struct Node {
     inbound: Mutex<HashMap<EndpointId, usize>>,
     // When each space last told a stale key it is out (`sync::session`).
     pub(crate) outs: Mutex<HashMap<Id, Instant>>,
+    // Our devices as last told (`new_devices`), kept in `known`.
+    known: Mutex<Option<BTreeSet<EndpointId>>>,
+    // Sync turns each user holds now (`sync::session`).
+    pub(crate) turns: Mutex<HashMap<Id, usize>>,
+    // When a bare frame last had each space caught up with.
+    caught_sp: Mutex<HashMap<Id, Instant>>,
     // Devices whose `Here` we answered (with our call), and when.
     answered: Mutex<HashMap<(Id, EndpointId), (Instant, u8)>>,
     // Our lane, proved: the nonce last sent to it through its relay, and
@@ -640,6 +648,9 @@ impl Node {
             inbound: Mutex::default(),
             outs: Mutex::default(),
             answered: Mutex::default(),
+            turns: Mutex::default(),
+            known: Mutex::default(),
+            caught_sp: Mutex::default(),
             echo: Mutex::default(),
             caught: Mutex::default(),
             evs: Default::default(),
@@ -836,6 +847,47 @@ impl Node {
         }
     }
 
+    /// A device that became us since we last looked (a link code used, on
+    /// purpose or not): told on every other device of ours, once each.
+    fn new_devices(&self) -> Vec<Notice> {
+        let (f, me) = (self.dir.join("known"), self.device());
+        let now: BTreeSet<EndpointId> =
+            self.devices().into_iter().map(|d| d.0).collect();
+        let mut k = lock(&self.known);
+        let known = k.get_or_insert_with(|| store::load(&f));
+        if *known == now {
+            return vec![];
+        }
+        // First look (or an older profile): what is there is ours already.
+        let first = known.is_empty();
+        let new: Vec<_> =
+            now.difference(known).filter(|d| **d != me).copied().collect();
+        *known = now;
+        if let Err(e) = store::save(&f, &*known) {
+            warn!("saving our devices: {e}");
+        }
+        if first {
+            return vec![];
+        }
+        let said = |d: &EndpointId| {
+            let name =
+                self.label(d).unwrap_or_else(|| d.fmt_short().to_string());
+            let body = format!(
+                "{name} is now one of your devices. If you did not link it, \
+                 remove it in Settings › Devices and sign in anew."
+            );
+            Notice::new(
+                self.own,
+                Ch::default(),
+                "A device was linked".into(),
+                body,
+                false,
+                false,
+            )
+        };
+        new.iter().map(said).collect()
+    }
+
     /// Per channel or thread, the newest unread (by level), once across wakes.
     pub fn notices(&self) -> Vec<Notice> {
         let (me, mut out, mut live) = (self.id(), vec![], HashSet::new());
@@ -923,6 +975,7 @@ impl Node {
         }
         lock(&self.rang).retain(|c| live.contains(c));
         out.extend(self.offer_notices());
+        out.extend(self.new_devices());
         out.append(&mut lock(&self.texts));
         // On disk only when it moved: this runs on every change.
         if lock(&self.prefs).told != was {

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 const PINS: &[(&str, &str, &str)] = &[
     ("crypto.rs", "", "5b65c3c8624bc939"),
     ("op.rs", "", "df6e8c1b1f7fe41d"),
-    ("sync.rs", "", "c0bda6e608badfd1"),
+    ("sync.rs", "", "f523647ee7fa555f"),
     ("call.rs", "", "7a747ca9595a581f"),
     ("code.rs", "const APP", "6bdd9ce91f92c8b9"),
     ("push.rs", "const ALPN", "25b892e629921b57"),

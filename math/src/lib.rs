@@ -112,3 +112,63 @@ mod tests {
         assert_eq!(ours.trim_end(), css.trim_end());
     }
 }
+#[cfg(test)]
+mod scope {
+    use super::mathml;
+
+    /// Math mode resolves only the math scope: the rest of Typst (files,
+    /// computation, the clock) is unknown there, not just denied by name.
+    #[test]
+    fn only_the_math_scope_is_reachable() {
+        for s in [
+            "calc.abs(-5)",
+            "upper(\"ab\")",
+            "repr(1)",
+            "lorem(3)",
+            "array.range(3)",
+            "range(3).len()",
+            "datetime.today()",
+            "sys.version",
+            "read(\"/etc/passwd\")",
+            "box(width: 1pt)",
+            "link(\"https://evil.example\")[x]",
+            "place(dx: 1pt)[x]",
+        ] {
+            assert!(mathml(s, false).is_err(), "{s} reached");
+        }
+        assert!(mathml("frac(a, b) + sum_(i=1)^n x_i", true).is_ok());
+        // `image` there is the symbol ⊷, not the function: nothing loads.
+        let img = mathml("image(\"x.png\")", false).unwrap();
+        assert!(img.contains('⊷') && !img.contains("<img"));
+    }
+
+    /// Whatever a message holds, rendering ends, panics nothing, and keeps
+    /// to its bounds: random and nested math, near the length limit.
+    #[test]
+    fn any_input_renders_or_is_refused() {
+        let atoms = [
+            "a", "x_i", "^2", "frac(", "sqrt(", "(", ")", "[", "]", "{", "}",
+            ",", ";", "mat(", "vec(", "&", "\\\\", "\"", "'", "sum_", "lr(",
+            "|", "op(", "attach(", "cases(", " ", "=", "/", "abs(", "∫", "→",
+            "😀", "\u{0}", "..", ":",
+        ];
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..3000 {
+            let n = (next() % 400) as usize;
+            let s: String = (0..n)
+                .map(|_| atoms[(next() % atoms.len() as u64) as usize])
+                .collect();
+            let _ = mathml(&s, next() % 2 == 0);
+        }
+        // Deep nesting, at the limit: refused or rendered, never a crash.
+        let deep = "frac(".repeat(400) + &")".repeat(400);
+        let _ = mathml(&deep, true);
+        assert!(mathml(&"x".repeat(2049), false).is_err(), "over the limit");
+    }
+}
