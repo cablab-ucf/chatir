@@ -411,14 +411,20 @@ async fn live(dir: PathBuf) -> anyhow::Result<()> {
 }
 
 /// chatir's lane secret on the phone's mailbox, for pushir's library; empty
-/// if it cannot be kept (never zeros: a secret anyone knows).
+/// if it cannot be kept (never zeros: a secret anyone knows). The first
+/// call as the process starts (no activity: at boot, after an update, a
+/// sticky service restarted): Android's context is held for native code
+/// from here, before pushir looks a relay up (else, unset, that panics,
+/// and `panic = "abort"` takes the process and every push with it).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_center_cxn_chatir_Wake_lane<'l>(
     mut env: EnvUnowned<'l>,
     _: JClass<'l>,
+    ctx: JObject<'l>,
     dir: JString<'l>,
 ) -> JByteArray<'l> {
     env.with_env(|e| {
+        hold(e, &ctx);
         let k = push::secret(&profile(e, &dir));
         e.byte_array_from_slice(k.as_ref().map_or(&[][..], |k| &k[..]))
     })
@@ -462,6 +468,11 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
                 };
                 return Ok(took(&n, &dir, sync));
             }
+            // The mailbox is back, the network too: frames of ours waiting
+            // to go (the outbox) start a node, which sends them as it starts.
+            if b.is_empty() && Node::outbox_waiting(&dir) {
+                return Ok(Shown { catch: true, ..Shown::default() });
+            }
             // A text from another of ours: shown from the push alone.
             if let Some(x) = Node::text(&dir, &b).await {
                 let (hide, quiet) =
@@ -471,12 +482,26 @@ pub extern "system" fn Java_center_cxn_chatir_Wake_ring<'l>(
             }
             Ok(match Node::news(&dir, &b) {
                 Some(Some(news)) => shown(&dir, news),
-                Some(None) => Shown { catch: true, ..Shown::default() },
+                // A dial, or news under a label the phonebook lacks: caught
+                // up, once each 30 s however many come (one catch-up takes
+                // them all; a lane holder's flood wakes the phone no more).
+                Some(None) => Shown { catch: due(), ..Shown::default() },
                 None => Shown::default(),
             })
         })
     })
     .resolve::<Log>()
+}
+
+/// Whether a catch-up for news it cannot read is due: 30 s since the last.
+fn due() -> bool {
+    static AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let mut at = AT.lock().unwrap_or_else(|e| e.into_inner());
+    let due = at.is_none_or(|t| t.elapsed() >= Duration::from_secs(30));
+    if due {
+        *at = Some(Instant::now());
+    }
+    due
 }
 
 /// What a ring brings, to show now, and whether to catch up for it. With

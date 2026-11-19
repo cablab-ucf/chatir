@@ -334,6 +334,21 @@ jobs:
           targets: aarch64-apple-ios
       - if: env.ASC == 'true'
         uses: ./.github/actions/cargo-tauri
+      # Tools and the Xcode project first, with no key in reach: brew's
+      # and xcodegen's scripts never see it. (The build itself signs as it
+      # goes, so it holds the key: archiving unsigned, then signing in a
+      # job that builds nothing, is planned with the next Xcode set-up.)
+      - name: The Xcode project, no key
+        if: env.ASC == 'true'
+        working-directory: app
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          v='"version": "'${TAG#v}'"'
+          sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" tauri.conf.json
+          brew install xcodegen
+          cargo tauri ios init --ci
+          cargo tauri icon icons/icon.png
       - name: Signed by Apple, to TestFlight
         if: env.ASC == 'true'
         working-directory: app
@@ -343,11 +358,6 @@ jobs:
           APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}
           P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
-          v='"version": "'${TAG#v}'"'
-          sed -i.bak "s/\"version\": \"[^\"]*\"/$v/" tauri.conf.json
-          brew install xcodegen
-          cargo tauri ios init --ci
-          cargo tauri icon icons/icon.png
           k=$HOME/.appstoreconnect/private_keys/AuthKey_$APPLE_API_KEY.p8
           mkdir -p "${k%/*}" && echo "$P8" > "$k"
           APPLE_API_KEY_PATH=$k cargo tauri ios build --ci --target aarch64 \

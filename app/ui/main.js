@@ -879,7 +879,7 @@ async function openUrl(url) {
     return;
   }
   // A code, as a camera app hands it on: `chatir:` and the code.
-  if (/^chatir:(?!\/\/)/i.test(url)) return takeAny(url, true);
+  if (/^chatir:(?!\/\/)/i.test(url)) return takeAny(url);
   if (!String(url).startsWith("chatir://open/")) return;
   // A channel's link, or a message's.
   const [sid, ch, msg] = url.replace(/^chatir:\/\/open\//, "").split("/");
@@ -963,7 +963,10 @@ function renderHeader() {
     : ch ? `Message #${ch.name}` : "";
   input.disabled = !ch || s.locked;
   $("locked").classList.toggle("hidden", !s?.locked);
-  put($("locked"), "This space moved to a new key without you. ",
+  // Left out by a rekey whose key for us does not open: who did it, said.
+  const by = s?.left_out ? `${s.left_out}'s new key for you does not open, ` +
+    "by mistake or to split the space. " : "";
+  put($("locked"), "This space moved to a new key without you. ", by,
     h("button", { class: "btn", onclick: askAdmin }, "Ask an admin"));
   for (const id of ["scroller", "composer", "members"]) {
     $(id).classList.toggle("hidden", !s || (id === "members" && s.dm));
@@ -2633,22 +2636,23 @@ async function long(code) {
 }
 
 /** Any code however it came (typed, pasted, scanned, a short code, a
- * camera app's `chatir:` link), taken as what it is. From outside the
- * page (`outside`), what would change this device is asked first. */
-async function takeAny(text, outside = false) {
+ * camera app's `chatir:` link), taken as what it is. What would change
+ * this device is asked first, however it came: a "join" code handed over
+ * may be another's link code, which makes this device theirs. */
+async function takeAny(text) {
   let code = String(text ?? "").trim().replace(/^chatir:/i, "");
   code = code && await long(code);
   if (!code) return;
   const kind = await rpc("kind", { code }).catch(() => null);
   if (kind === "join") return joinCode(code);
   if (kind === "link") {
-    const ok = !outside || await confirmBox({ title: "Link this device?",
+    const ok = await confirmBox({ title: "Link this device?",
       sub: "A link code makes this device the one who made it, with its " +
         "spaces. Only your own device's code.", ok: "Continue" });
     return ok && linkFlow(null, code);
   }
   if (kind === "host") {
-    const ok = !outside || await confirmBox({ title: "Pair a storage node?",
+    const ok = await confirmBox({ title: "Pair a storage node?",
       sub: "It will keep your spaces' sealed messages.", ok: "Pair" });
     return ok && pairStorage(code);
   }
@@ -2854,6 +2858,12 @@ async function addCard(code, p) {
   if (isMe(p.owner)) return toast("That is your own contact code", true);
   const d = S.spaces.find((x) => x.dm && x.with === p.owner);
   if (d) return open(d.id);
+  // Asked, however it came (a web page's link too): adding them dials
+  // them, so they learn this device is theirs to reach.
+  const ok = await confirmBox({ title: `Add ${p.name || "this contact"}?`,
+    sub: "They can then message you, and learn your chatir id. Add only " +
+      "people you meant to.", ok: "Add" });
+  if (!ok) return;
   if (!(await call("join", { code }).catch(() => null))) return;
   S.meet = p.owner;
   toast(`${p.name || "Contact"} added: your DM opens once they're reachable.`);

@@ -120,7 +120,7 @@ pub fn data(serve: bool) -> std::path::PathBuf {
 }
 
 /// What signing out takes away.
-pub const MINE: [&str; 20] = [
+pub const MINE: [&str; 28] = [
     "seed",
     "device",
     "local",
@@ -141,8 +141,17 @@ pub const MINE: [&str; 20] = [
     "sends",
     "allowed",
     "phonebook",
+    // Every space's current key, for a sleeping phone: never left behind.
+    "phonebook.json",
+    "usage",
+    "hosts",
+    "budget",
     "shown",
     "rung",
+    "handed",
+    "outbox",
+    "shared.lock",
+    "known",
 ];
 
 /// Unix time in milliseconds.

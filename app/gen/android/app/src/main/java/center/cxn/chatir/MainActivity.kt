@@ -40,7 +40,7 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge(bars, bars)
     Wake.release() // a push may have started chatir first
     veil(Wake.veiled(dataDir.absolutePath))
-    answerable(intent)
+    answerable(this, intent)
     overLock(ringing(intent))
     super.onCreate(savedInstanceState)
     Wake.page(true)
@@ -58,7 +58,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onNewIntent(intent: Intent) {
-    answerable(intent)
+    answerable(this, intent)
     if (ringing(intent)) overLock(true)
     super.onNewIntent(intent)
   }

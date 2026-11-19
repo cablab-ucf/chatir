@@ -5,13 +5,14 @@ mod files;
 mod lanes;
 mod live;
 mod net;
+mod outbox;
 mod pair;
 mod peers;
 mod space;
 mod spaces;
 
 pub use net::*;
-use {lanes::*, live::*, pair::*, peers::*, space::*};
+use {lanes::*, live::*, outbox::*, pair::*, peers::*, space::*};
 
 use crate::call::{self, Call};
 use crate::crypto::{Key, Me, kem_open, kem_seal, rand, same};
@@ -358,6 +359,11 @@ struct Book {
     // Refused, oldest first: indexed as had, never served.
     rejected: VecDeque<(Id, u32)>,
     rejects: u64,
+    // Posts just folded that came by the network or a ring (not from our
+    // own log's checked past), by op id: for `late`, which takes them.
+    posted: Vec<Id>,
+    // Rekeys whose box for us opened to no key of theirs, and by whom.
+    left_out: Vec<([u8; 8], Id)>,
 }
 
 /// (author, (ts, id), epoch, key, via `Back` rather than `Rekey`).
@@ -437,6 +443,24 @@ pub struct Node {
     // time, device, live?), and how many left that way and how many were
     // dialed after all.
     waits: Mutex<HashMap<Key, Wait>>,
+    // Push frames of ours not yet acked, kept on disk (`outbox`).
+    outbox: Mutex<Vec<Out>>,
+    out_dirty: AtomicBool,
+    // We hear our lane ourselves (no app does): let go as we stop, so the
+    // next node here hears it.
+    ear: AtomicBool,
+    // Links others opened to us, by device (`Proto`'s caps).
+    inbound: Mutex<HashMap<EndpointId, usize>>,
+    // When each space last told a stale key it is out (`sync::session`).
+    pub(crate) outs: Mutex<HashMap<Id, Instant>>,
+    // Our devices as last told (`new_devices`), kept in `known`.
+    known: Mutex<Option<BTreeSet<EndpointId>>>,
+    // Sync turns each user holds now (`sync::session`).
+    pub(crate) turns: Mutex<HashMap<Id, usize>>,
+    // When a bare frame last had each space caught up with.
+    caught_sp: Mutex<HashMap<Id, Instant>>,
+    // Devices whose `Here` we answered (with our call), and when.
+    answered: Mutex<HashMap<(Id, EndpointId), (Instant, u8)>>,
     // Our lane, proved: the nonce last sent to it through its relay, and
     // when one last came back (`check_lane`).
     echo: Mutex<(Key, Option<Instant>)>,
@@ -468,6 +492,9 @@ pub struct Node {
     rang: Mutex<HashSet<(Id, Id, Ch)>>,
     // Texts from our devices not yet told: a notice each, as a message is.
     texts: Mutex<Vec<Notice>>,
+    // Posts by others that came dated before what we were told or read
+    // (`late`): told by `notices`, once.
+    late: Mutex<Vec<(Id, Ch, Id)>>,
     // Texts of ours sent by lane, by the ack each awaits.
     told: Mutex<HashMap<Key, tokio::sync::oneshot::Sender<()>>>,
     name: Mutex<String>,
@@ -588,6 +615,9 @@ impl Node {
         let budget = store::load(&cfg.dir.join("budget"));
         let shared = store::load(&cfg.dir.join("shared"));
         let send = crate::send::Sends::load(&cfg.dir);
+        // Unacked frames of a past run: each goes again as we start.
+        let mut outbox: Vec<Out> = store::load(&cfg.dir.join("outbox"));
+        outbox.iter_mut().for_each(|o| o.next = 0);
         // Where our devices' files go: kept for a start that names none
         // (a phone woken without its app).
         let at = cfg.dir.join("downloads");
@@ -612,6 +642,15 @@ impl Node {
             links: Links::default(),
             traffic: Arc::default(),
             waits: Mutex::default(),
+            outbox: Mutex::new(outbox),
+            out_dirty: AtomicBool::new(false),
+            ear: AtomicBool::new(false),
+            inbound: Mutex::default(),
+            outs: Mutex::default(),
+            answered: Mutex::default(),
+            turns: Mutex::default(),
+            known: Mutex::default(),
+            caught_sp: Mutex::default(),
             echo: Mutex::default(),
             caught: Mutex::default(),
             evs: Default::default(),
@@ -642,6 +681,7 @@ impl Node {
             prefs: Mutex::new(prefs),
             closed: Mutex::new(closed),
             rang: Mutex::default(),
+            late: Mutex::default(),
             texts: Mutex::default(),
             told: Mutex::default(),
             name: Mutex::new(cfg.name),
@@ -698,6 +738,7 @@ impl Node {
         }
         if !crate::push::heard(&n.dir) {
             let rx = crate::push::listen(&n.dir);
+            n.ear.store(true, Relaxed);
             tokio::spawn(hear(Arc::downgrade(&n), rx));
         }
         tokio::spawn(lane_up(Arc::downgrade(&n)));
@@ -806,6 +847,47 @@ impl Node {
         }
     }
 
+    /// A device that became us since we last looked (a link code used, on
+    /// purpose or not): told on every other device of ours, once each.
+    fn new_devices(&self) -> Vec<Notice> {
+        let (f, me) = (self.dir.join("known"), self.device());
+        let now: BTreeSet<EndpointId> =
+            self.devices().into_iter().map(|d| d.0).collect();
+        let mut k = lock(&self.known);
+        let known = k.get_or_insert_with(|| store::load(&f));
+        if *known == now {
+            return vec![];
+        }
+        // First look (or an older profile): what is there is ours already.
+        let first = known.is_empty();
+        let new: Vec<_> =
+            now.difference(known).filter(|d| **d != me).copied().collect();
+        *known = now;
+        if let Err(e) = store::save(&f, &*known) {
+            warn!("saving our devices: {e}");
+        }
+        if first {
+            return vec![];
+        }
+        let said = |d: &EndpointId| {
+            let name =
+                self.label(d).unwrap_or_else(|| d.fmt_short().to_string());
+            let body = format!(
+                "{name} is now one of your devices. If you did not link it, \
+                 remove it in Settings › Devices and sign in anew."
+            );
+            Notice::new(
+                self.own,
+                Ch::default(),
+                "A device was linked".into(),
+                body,
+                false,
+                false,
+            )
+        };
+        new.iter().map(said).collect()
+    }
+
     /// Per channel or thread, the newest unread (by level), once across wakes.
     pub fn notices(&self) -> Vec<Notice> {
         let (me, mut out, mut live) = (self.id(), vec![], HashSet::new());
@@ -823,13 +905,34 @@ impl Node {
             }) else {
                 continue;
             };
+            // Late ones (`late`) first, the newest of each channel, as loud
+            // as the space is: one a newer post of its channel overrides.
+            let late: Vec<(Ch, Id)> = {
+                let mut l = lock(&self.late);
+                let (here, rest) = l.drain(..).partition(|x| x.0 == id);
+                *l = rest;
+                here.into_iter().map(|x| (x.1, x.2)).collect()
+            };
+            let late_in = |ch: &Ch| {
+                let v = self.view(&id, |s| {
+                    let of = late.iter().filter(|x| x.0 == *ch);
+                    let to_me = |x: &&(Ch, Id)| {
+                        level == Level::All || s.mentions_me(&x.1, &me)
+                    };
+                    let ms = of.filter(to_me).filter_map(|x| s.message(&x.1));
+                    ms.map(|x| x.1).max_by_key(|m| m.ts)
+                });
+                v.flatten().filter(|m| m.ts > self.since(&id, ch))
+            };
             for (ch, room) in rooms.iter().filter(|_| level != Level::Off) {
                 let since = self.since(&id, ch).max(mark);
                 let m = self.view(&id, |s| match level {
                     Level::All => s.last_from(ch, since, &me),
                     _ => s.last_mention(ch, since, &me),
                 });
-                let Some(m) = m.flatten() else { continue };
+                let Some(m) = m.flatten().or_else(|| late_in(ch)) else {
+                    continue;
+                };
                 let title = match dm {
                     true => m.name.clone(),
                     false => format!("{} in #{room} ({name})", m.name),
@@ -872,6 +975,7 @@ impl Node {
         }
         lock(&self.rang).retain(|c| live.contains(c));
         out.extend(self.offer_notices());
+        out.extend(self.new_devices());
         out.append(&mut lock(&self.texts));
         // On disk only when it moved: this runs on every change.
         if lock(&self.prefs).told != was {
@@ -897,7 +1001,9 @@ impl Node {
         if sp.inv.is_none() {
             return Ok(());
         }
-        // How loud we are here: members ring us only for what we would show.
+        // How loud we are here: members ring us only for what we would show;
+        // and that our acks are signed (older parsers skip the word).
+        let url = format!("{url} {ACK_SIGNED}");
         let url = match self.level(id) {
             Level::All => url,
             Level::Mentions => format!("{url} level:mentions"),
@@ -941,6 +1047,10 @@ impl Node {
 
     pub async fn shutdown(&self) {
         self.phonebook();
+        self.save_out_now();
+        if self.ear.load(Relaxed) {
+            crate::push::unlisten(&self.dir);
+        }
         let call = lock(&self.call).take();
         if let Some(sp) = call.and_then(|c| self.get(&c.space).ok()) {
             self.signal(&sp, Op::Call { channel: None }).await;
@@ -1249,6 +1359,99 @@ mod tests {
         stop(s).await;
     }
 
+    /// A post by someone else dated before what we read in its channel
+    /// (written offline, a clock behind): unread again and told, once;
+    /// had (`rung`), a ring that brings it asleep shows nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_late_post_is_unread_and_told_once() {
+        let a = start(&Net::Direct, "late").await;
+        let id = a.create("s").await.unwrap();
+        let ch = a.view(&id, |s| s.channels()[0].0).unwrap();
+        let sp = a.get(&id).unwrap();
+        let k = lock(&sp.book).key(sp.inv.as_ref().unwrap()).0;
+        let (u, d) = (Me::new(rand()), SecretKey::from_bytes(&rand()).public());
+        let post = |ts, text: &str| {
+            let (channel, text) = (ch, text.into());
+            let op = Op::Post { channel, text, reply: None, files: vec![] };
+            op::seal(&id, &k, &u.user, d, ts, op).1
+        };
+        assert!(a.notices().is_empty(), "told up to now");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let t = now();
+        a.ingest(&sp, vec![post(t, "now")], false);
+        assert!(a.notices().iter().any(|n| n.body == "now"));
+        a.mark_read(&id, &ch);
+        assert_eq!(a.unread(&id, &ch).0, 0);
+        let late = post(t - 60_000, "written offline");
+        a.ingest(&sp, vec![late.clone()], false);
+        assert!(a.unread(&id, &ch).0 >= 1, "unread again");
+        let told = a.notices();
+        assert!(told.iter().any(|n| n.body == "written offline"), "told");
+        assert!(a.notices().is_empty(), "once");
+        let ms = a.view(&id, |s| s.messages(&ch, None, 10)).unwrap();
+        let i = ms.iter().find(|m| m.text == "written offline").unwrap().id;
+        let had = || store::load::<Vec<Id>>(&a.dir.join("rung")).contains(&i);
+        assert!(until(had).await, "noted as had");
+        stop(a).await;
+    }
+
+    /// A device text is taken once by lane (its mac: a retry whose ack was
+    /// lost, any time later), once across its two ways, yet the same words
+    /// sent twice are two texts.
+    #[test]
+    fn a_text_is_taken_once_each() {
+        let dir = std::env::temp_dir().join(format!("chatir-handed-{}", now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let from = SecretKey::from_bytes(&rand()).public();
+        let (m1, m2) = (rand(), rand());
+        assert!(!taken_text(&dir, &from, "ok", Some(&m1)));
+        assert!(taken_text(&dir, &from, "ok", Some(&m1)), "a retry");
+        assert!(taken_text(&dir, &from, "ok", None), "its direct copy");
+        assert!(!taken_text(&dir, &from, "ok", Some(&m2)), "\"ok\" again");
+        assert!(taken_text(&dir, &from, "ok", None), "that one's direct copy");
+        assert!(!taken_text(&dir, &from, "hi", None));
+        assert!(!taken_text(&dir, &from, "hi", None), "twice direct: two");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Frames of ours not yet acked outlive the process: started again,
+    /// each goes again, and an ack takes it off.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_outbox_outlives_a_restart() {
+        let a = start(&Net::Direct, "outbox").await;
+        let dir = a.dir.clone();
+        let (d, space) = (SecretKey::from_bytes(&rand()).public(), Id(rand()));
+        let relay = "https://relay.invalid./".parse().unwrap();
+        let lane = pushir::Lane { relay, id: d, secret: [0; 32] };
+        let ack = rand();
+        let o = Out::new(Some(ack), space, d, 7, lane.to_string(), vec![1]);
+        a.keep_out(vec![o.clone(), o]);
+        assert_eq!(lock(&a.outbox).len(), 1, "one frame to a device, once");
+        a.shutdown().await;
+        drop(a);
+        assert!(Node::outbox_waiting(&dir));
+        let cfg = Config {
+            dir: dir.clone(),
+            name: "outbox".into(),
+            net: Net::Direct,
+            link: None,
+            serve: false,
+            big: None,
+            inbox: None,
+        };
+        let a = Node::start(cfg).await.unwrap();
+        let tried = || lock(&a.outbox).first().is_some_and(|o| o.tries > 0);
+        let awaited = || tried() && lock(&a.waits).contains_key(&ack);
+        assert!(
+            until(awaited).await,
+            "sent again as it starts, its ack awaited"
+        );
+        a.hear(&[&[crate::push::ACK][..], &ack].concat());
+        a.save_out_now();
+        assert!(lock(&a.outbox).is_empty() && !Node::outbox_waiting(&dir));
+        stop(a).await;
+    }
+
     /// Events name no space; a relay can neither ack them nor (with a
     /// device two members claim) take them in its place.
     #[tokio::test(flavor = "multi_thread")]
@@ -1275,6 +1478,10 @@ mod tests {
         let lanes = a.lanes(&id);
         assert!(!lanes.contains_key(&dev(1)), "claimed twice: neither's");
         assert!(lanes[&dev(2)].id == dev(13));
+        // Proven u's (its sync): u's lane, whoever else claims it.
+        a.bind(dev(1), u.id());
+        assert!(a.lanes(&id)[&dev(1)].id == dev(11), "its owner's");
+        lock(&a.verified).remove(&dev(1));
         // u's op from device 2's lane: under its label, not the space's id.
         let raw = op::seal(&id, &k, &u.user, dev(2), now(), post(ch, "ev")).1;
         a.hear(&[&[0u8][..], &id.0, &raw].concat());
@@ -1287,8 +1494,29 @@ mod tests {
         a.hear(&[&[1u8][..], &id.0, &7u64.to_le_bytes()].concat());
         a.hear(&[&[1u8][..], &ev_ack(&id, &rand(), 7, &dev(2))].concat());
         assert!(lock(&a.waits).contains_key(&want), "forged");
+        // A later op's ack leaves an earlier one's retries running (its
+        // frame may have been lost), and is no proof that it came.
+        let early = ev_ack(&id, &k, 5, &dev(2));
+        lock(&a.waits).insert(early, (id, 5, dev(2), false, Instant::now()));
+        assert!(a.delivering());
         a.hear(&[&[1u8][..], &want].concat());
-        assert!(lock(&a.waits).is_empty());
+        assert_eq!(lock(&a.waits).keys().collect::<Vec<_>>(), [&early]);
+        a.hear(&[&[1u8][..], &early].concat());
+        assert!(lock(&a.waits).is_empty() && !a.delivering());
+        // A device whose lane says it signs its acks: one unsigned (any
+        // member could make it) counts for nothing; its own does.
+        let relay = "https://relay.invalid./".parse().unwrap();
+        let l = pushir::Lane { relay, id: dev(14), secret: [0; 32] };
+        let url = Some(format!("{l} {ACK_SIGNED}"));
+        let signs = op::seal(&id, &k, &u.user, dev(3), now(), Op::Push { url });
+        a.ingest(&sp, vec![signs.1], false);
+        let want = ev_ack(&id, &k, 9, &dev(3));
+        lock(&a.waits).insert(want, (id, 9, dev(3), false, Instant::now()));
+        a.hear(&[&[1u8][..], &want].concat());
+        a.hear(&ack_frame(&want, &SecretKey::from_bytes(&[4; 32])));
+        assert!(lock(&a.waits).contains_key(&want), "made up, or another's");
+        a.hear(&ack_frame(&want, &SecretKey::from_bytes(&[3; 32])));
+        assert!(lock(&a.waits).is_empty(), "its own");
         stop(a).await;
     }
 

@@ -25,7 +25,8 @@ struct Cli {
     /// This network only, found by mDNS: no relays, no DHT
     #[arg(long)]
     lan: bool,
-    /// Become another device of the person behind this link code
+    /// Become another device of the person behind this link code: `-`
+    /// reads it from stdin (or CHATIR_LINK), kept out of `ps` and history
     #[arg(long)]
     link: Option<String>,
     /// Keep other people's ciphertext: a storage node
@@ -121,9 +122,18 @@ async fn stopped() {
 }
 
 fn restart(exe: &std::path::Path) -> Result<()> {
-    let args = std::env::args_os().skip(1);
+    // Linked already (the seed is on disk): not again, nor shown in argv.
+    let mut args = vec![];
+    let mut all = std::env::args_os().skip(1);
+    while let Some(a) = all.next() {
+        match a.to_str() {
+            Some("--link") => drop(all.next()),
+            Some(s) if s.starts_with("--link=") => {}
+            _ => args.push(a),
+        }
+    }
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(args);
+    cmd.args(args).env_remove("CHATIR_LINK");
     #[cfg(unix)]
     return Err(std::os::unix::process::CommandExt::exec(&mut cmd).into());
     #[cfg(not(unix))]
@@ -187,7 +197,23 @@ async fn main() -> Result<()> {
     } else {
         log.with_writer(std::io::stderr).init();
     }
-    let (name, link, serve) = (c.name, c.link, c.serve);
+    let (name, serve) = (c.name, c.serve);
+    // The code is the seed: by stdin or the environment, never argv.
+    let link = match c.link.as_deref() {
+        Some("-") => {
+            let mut l = String::new();
+            std::io::stdin().read_line(&mut l)?;
+            Some(l.trim().to_string())
+        }
+        Some(code) => {
+            eprintln!(
+                "chatir: a link code on the command line is seen by \
+                any local user (ps) and kept in shell history: use --link -"
+            );
+            Some(code.to_string())
+        }
+        None => std::env::var("CHATIR_LINK").ok(),
+    };
     let code_file = dir.join("code");
     let big =
         c.big_password.or_else(|| std::env::var("CHATIR_BIG_PASSWORD").ok());

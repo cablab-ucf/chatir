@@ -12,6 +12,31 @@ fn phonebook_of(dir: &Path) -> BTreeMap<Id, Page> {
 
 /// An op taken with no node running, acked to the lane of the device it
 /// came from (as the phonebook has it): sent on the runtime we run in.
+/// An ack's frame, signed by the device that acks (`ACK_SIGNED`): with
+/// the space's key any member could make the ack itself. Older senders
+/// read the ack alone.
+pub(super) fn ack_frame(a: &Key, me: &SecretKey) -> Vec<u8> {
+    let sig = me.sign(&[ACK_CTX, a].concat()).to_bytes();
+    [&[crate::push::ACK][..], a, &sig].concat()
+}
+
+const ACK_CTX: &[u8] = b"chatir ack 1";
+/// In a device's lane (its `Push`): its acks are signed, so one that is
+/// not is someone else's.
+pub(super) const ACK_SIGNED: &str = "acks:signed";
+
+/// Whether ack `a` (`sig`: what followed it) is `d`'s own, as a device
+/// that says it signs must; one that does not say (older) is taken as is.
+fn acked_by(signs: bool, d: &EndpointId, a: &Key, sig: &[u8]) -> bool {
+    match <&[u8; 64]>::try_from(sig) {
+        Ok(s) => {
+            let s = iroh::Signature::from_bytes(s);
+            d.verify(&[ACK_CTX, a].concat(), &s).is_ok()
+        }
+        Err(_) => !signs,
+    }
+}
+
 fn ack_asleep(dir: &Path, space: &Id, p: &Page, ts: u64, from: &EndpointId) {
     let to = p.lanes.get(from).and_then(|l| crate::push::lane_of(l));
     let me = std::fs::read(dir.join("device")).ok();
@@ -20,7 +45,7 @@ fn ack_asleep(dir: &Path, space: &Id, p: &Page, ts: u64, from: &EndpointId) {
     let rt = tokio::runtime::Handle::try_current();
     let (Some(to), Some(me), Ok(rt)) = (to, me, rt) else { return };
     let a = ev_ack(space, &p.key, ts, &me.public());
-    let ack = [&[crate::push::ACK][..], &a].concat();
+    let ack = ack_frame(&a, &me);
     rt.spawn(async move { crate::push::send(&to, &ack).await });
 }
 
@@ -60,7 +85,8 @@ pub(super) async fn acks(c: Connection, n: Weak<Node>) {
             continue;
         };
         let Ok(ts) = <[u8; 8]>::try_from(ts) else { continue };
-        n.acked(Id(*id), d, u64::from_le_bytes(ts));
+        // Never past now: a host saying u64::MAX would mark all kept.
+        n.acked(Id(*id), d, u64::from_le_bytes(ts).min(now()));
     }
 }
 
@@ -125,6 +151,48 @@ fn a_phonebook_reads_across_versions() {
     let pb = phonebook_of(&dir);
     assert_eq!(pb.get(&Id([1; 32])).map(|p| p.key), Some([7; 32]));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// One at a time, across threads and processes, the small files a sleeping
+/// device and its node share are read and rewritten (`rung`, `shown`,
+/// `handed`): each frame comes on a thread of its own, and a node may be
+/// starting or stopping. Not `lock`: a running node holds that one. No
+/// folder yet: as it is.
+pub(super) fn shared<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    let mut o = std::fs::OpenOptions::new();
+    let l = o
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join("shared.lock"));
+    let held = l.ok().filter(|l| l.lock().is_ok());
+    let r = f();
+    if let Some(l) = held {
+        let _ = l.unlock();
+    }
+    r
+}
+
+/// Ops this device has (by a ring, or folded by its node), newest last:
+/// what comes again is not shown again.
+const RUNG: usize = 2048;
+/// Dated this long ago, a ring is not shown asleep: unread, it waits.
+const WEEK: u64 = 7 * 24 * 3600 * 1000;
+
+/// `ids` noted as had (`rung`).
+pub(super) fn rung_add(dir: &Path, ids: &[Id]) {
+    let f = dir.join("rung");
+    shared(dir, || {
+        let mut rung: Vec<Id> = store::load(&f);
+        let new: Vec<Id> =
+            ids.iter().filter(|i| !rung.contains(i)).copied().collect();
+        if new.is_empty() {
+            return;
+        }
+        rung.extend(new);
+        rung.drain(..rung.len().saturating_sub(RUNG));
+        let _ = store::save(&f, &rung);
+    })
 }
 
 impl Node {
@@ -217,7 +285,7 @@ impl Node {
             let ack = [&[crate::push::ACK][..], &text_ack(&k, &mac)].concat();
             crate::push::send(&at, &ack).await;
         }
-        if taken_text(dir, &from, &text) {
+        if taken_text(dir, &from, &text, Some(&mac)) {
             return None;
         }
         let who = match name.is_empty() {
@@ -252,22 +320,33 @@ impl Node {
         // Here now: acked to the device it came from, as a running node acks
         // an event, so its sender says it is on this device and rings no more.
         let ack = || ack_asleep(dir, space, p, e.ts, &s.device);
-        // Once: a ring comes again until acked (its ack may be lost).
+        // Once: a ring comes again until acked (its ack may be lost), and
+        // what the node took another way is in `rung` too (`late`).
         let f = dir.join("rung");
-        let mut rung: Vec<Id> = store::load(&f);
-        if rung.contains(&s.id) {
-            ack();
-            return (None, false);
-        }
-        rung.push(s.id);
-        rung.drain(..rung.len().saturating_sub(64));
-        let _ = store::save(&f, &rung);
         let log = dir.join("spaces").join(format!("{space}.log"));
-        // Live ops (calls) pass; the rest wait in the log.
-        if !e.live && store::append(&log, raw).is_err() {
-            return (None, true);
+        let had = shared(dir, || {
+            let mut rung: Vec<Id> = store::load(&f);
+            if rung.contains(&s.id) {
+                return Some(true);
+            }
+            // Live ops (calls) pass; the rest wait in the log, then count
+            // as rung (not before: a failed append is taken again).
+            if !e.live && store::append(&log, raw).is_err() {
+                return None;
+            }
+            rung.push(s.id);
+            rung.drain(..rung.len().saturating_sub(RUNG));
+            let _ = store::save(&f, &rung);
+            Some(false)
+        });
+        match had {
+            None => return (None, true),
+            Some(true) => {
+                ack();
+                return (None, false);
+            }
+            Some(false) => ack(),
         }
-        ack();
         // Ours, from another device of ours: nothing to tell us, but the
         // node starts for it (a space joined there, a level set).
         if p.me == Some(s.author) {
@@ -300,12 +379,16 @@ impl Node {
                 };
                 // Told now: the node does not tell it again.
                 let f = dir.join("shown");
-                let mut told: BTreeMap<Id, u64> = store::load(&f);
-                let t = told.entry(*space).or_default();
-                // Once: a ring and an event may both bring it.
-                let tell = tell && e.ts > *t;
-                *t = (*t).max(e.ts.min(now()));
-                let _ = store::save(&f, &told);
+                shared(dir, || {
+                    let mut told: BTreeMap<Id, u64> = store::load(&f);
+                    let t = told.entry(*space).or_default();
+                    *t = (*t).max(e.ts.min(now()));
+                    let _ = store::save(&f, &told);
+                });
+                // Once (`rung`), even dated before what was shown (written
+                // offline, a clock behind): it is new here. A week old, it
+                // waits, unread, for the app (`late`).
+                let tell = tell && e.ts + WEEK > now();
                 let body = if text.is_empty() { "(file)".into() } else { text };
                 tell.then(|| n(channel, at(&channel), body, false, false))
             }
@@ -419,12 +502,12 @@ impl Node {
                 (at.map(|k| ev_label(id, &k)), key.map(|k| ev_label(id, &k)));
             let op = env.zip(key).and_then(|(e, k)| op::open(id, &k, &e, None));
             let op = op.map(|o| o.0.op);
-            let all = b.st.pushes_of(who).into_iter();
-            let all = all.filter(|(d, url)| {
-                let user = b.st.owner_of(d).unwrap_or_default();
-                wants(&b.st, op.as_ref(), level_of(url), &user)
+            // As its claimant would see it: claimed by two, its owner's.
+            let all = self.owned(b.st.push_claims(who)).into_iter();
+            let all = all.filter(|(user, _, url)| {
+                wants(&b.st, op.as_ref(), level_of(url), user)
             });
-            let all = all.collect::<Vec<_>>();
+            let all = all.map(|(_, d, u)| (d, u)).collect::<Vec<_>>();
             // A DM they have not joined yet (our knock on its way): no lane
             // of theirs here.
             let peer = b.st.peer(&self.id());
@@ -441,7 +524,10 @@ impl Node {
         }
         // Told by its lane: the op on it; too big for a frame, the space
         // alone (catch up). Again for a minute, until acked (asleep too:
-        // `woken` acks what it took, and shows it once).
+        // `woken` acks what it took, and shows it once); past that from the
+        // outbox, kept on disk first, until acked (calls are live: no).
+        let mut keep = vec![];
+        let mut go = vec![];
         for (d, url) in urls.iter().filter(|u| u.0 != dev) {
             let Some(to) = crate::push::lane_of(url) else { continue };
             let raw = raw.as_deref().unwrap_or_default();
@@ -452,8 +538,15 @@ impl Node {
                 at.filter(|_| full.is_some()).map(|k| ev_ack(id, &k, ts, d));
             let bare = labels.1.map(|l| [&[crate::push::OP][..], &l].concat());
             let Some(f) = full.or(bare) else { continue };
+            if !live {
+                keep.push(Out::new(a, *id, *d, ts, url.clone(), f.clone()));
+            }
+            go.push((to, f, a, *d));
+        }
+        self.keep_out(keep);
+        for (to, f, a, d) in go {
             // Sent just now as an event (`event`: it is up): not twice.
-            let w = (*id, ts, *d, live, Instant::now());
+            let w = (*id, ts, d, live, Instant::now());
             let sent = a.and_then(|a| lock(&self.waits).insert(a, w));
             let n = Arc::downgrade(self);
             tokio::spawn(async move {
@@ -562,13 +655,28 @@ impl Node {
     /// Each device of space `id` that told its events address; one two
     /// members claim is neither's (dialed, never sent events).
     pub(super) fn lanes(&self, id: &Id) -> HashMap<EndpointId, pushir::Lane> {
-        let p = self.view(id, |s| s.pushes_of(None)).unwrap_or_default();
-        let mut claims: HashMap<EndpointId, usize> = HashMap::new();
-        p.iter().for_each(|x| *claims.entry(x.0).or_default() += 1);
-        let at = |(d, u): (EndpointId, String)| {
-            (claims[&d] == 1).then_some((d, crate::push::lane_of(&u)?))
+        let p = self.view(id, |s| s.push_claims(None)).unwrap_or_default();
+        let at = |(_, d, u): (Id, EndpointId, String)| {
+            Some((d, crate::push::lane_of(&u)?))
         };
-        p.into_iter().filter_map(at).collect()
+        self.owned(p).into_iter().filter_map(at).collect()
+    }
+
+    /// Claims of lanes, one a device: its only claimant's, or (a member
+    /// claimed another's device, to silence it) its proven owner's, the
+    /// user its sync proved it is; unproven, nobody's.
+    fn owned(
+        &self,
+        p: Vec<(Id, EndpointId, String)>,
+    ) -> Vec<(Id, EndpointId, String)> {
+        let mut who: HashMap<EndpointId, HashSet<Id>> = HashMap::new();
+        for (a, d, _) in &p {
+            who.entry(*d).or_default().insert(*a);
+        }
+        let proven = |d: &EndpointId| lock(&self.verified).get(d).map(|v| v.0);
+        p.into_iter()
+            .filter(|(a, d, _)| who[d].len() == 1 || proven(d) == Some(*a))
+            .collect()
     }
 
     /// A message on our lane (`push::split`): from a member's device an
@@ -577,24 +685,38 @@ impl Node {
     /// a link is coming). Empty, frames may have been missed: catch up.
     pub fn hear(self: &Arc<Self>, b: &[u8]) {
         if b.is_empty() {
-            // The mailbox is on its relay (again): our lane, proved anew.
+            // The mailbox is on its relay (again): our lane, proved anew;
+            // frames of ours that reached no relay go now; and catch up.
+            // Once a `BEAT` at most: a member may seal an empty message to
+            // our lane, which reads the same.
+            if !self.beat_since(&self.caught) {
+                return;
+            }
             let n = self.clone();
             tokio::spawn(async move { n.check_lane().await });
-            let mut at = lock(&self.caught);
-            if at.is_none_or(|t| t.elapsed() >= BEAT) {
-                *at = Some(Instant::now());
-                self.all().iter().for_each(|sp| self.catch_up(sp));
-            }
-            return;
+            self.flush_out(false, true);
+            return self.all().iter().for_each(|sp| self.catch_up(sp));
         }
         match crate::push::split(b) {
             Some((crate::push::OP, l, rest)) => {
                 let env = postcard::from_bytes::<Env>(rest).ok();
+                // Under a key we lack (a rekey missed): catch up.
                 let Some((sp, k)) = self.labelled(&l, env.as_ref()) else {
-                    return;
+                    return self.catch_up_all();
                 };
+                // Bare (too big to carry): caught up with, once each 10 s a
+                // space however many come.
                 if rest.is_empty() {
-                    return self.catch_up(&sp);
+                    let mut c = lock(&self.caught_sp);
+                    let t = c
+                        .get(&sp.id)
+                        .filter(|t| t.elapsed() < Duration::from_secs(10));
+                    if t.is_none() {
+                        c.insert(sp.id, Instant::now());
+                        drop(c);
+                        self.catch_up(&sp);
+                    }
+                    return;
                 }
                 let by = env.and_then(|e| lock(&sp.book).check(&sp.id, &e));
                 let Some(d) = by.map(|s| s.device) else { return };
@@ -603,7 +725,7 @@ impl Node {
                 let Some(e) = self.take(&sp, d, rest) else { return };
                 let Some(at) = self.lanes(&sp.id).remove(&d) else { return };
                 let a = ev_ack(&sp.id, &k, e.ts, &self.device());
-                let ack = [&[crate::push::ACK][..], &a].concat();
+                let ack = ack_frame(&a, &self.key);
                 tokio::spawn(async move { crate::push::send(&at, &ack).await });
             }
             Some((crate::push::TEXT, l, rest)) => {
@@ -623,11 +745,32 @@ impl Node {
                         async move { crate::push::send(&at, &ack).await },
                     );
                 }
-                if !taken_text(&self.dir, &from, &text) {
+                if !taken_text(&self.dir, &from, &text, Some(&mac)) {
                     self.show_text(from, text);
                 }
             }
-            Some((crate::push::ACK, a, _)) => {
+            Some((crate::push::ACK, a, sig)) => {
+                // Whose it is (an op of ours a device acks), signed by that
+                // device if its lane says it signs: else a member made it
+                // up (any member could), and it counts for nothing.
+                let w = lock(&self.waits).get(&a).map(|w| (w.0, w.2));
+                let o = || {
+                    let o = lock(&self.outbox);
+                    let o = o.iter().find(|o| o.ack == a);
+                    o.and_then(|o| {
+                        Some((o.space, EndpointId::from_bytes(&o.device).ok()?))
+                    })
+                };
+                // (Our own space's key only our devices hold: their acks,
+                // texts' too, need no signature.)
+                if let Some((space, d)) = w.or_else(o)
+                    && space != self.own
+                    && !acked_by(self.signs_acks(&space, &d), &d, &a, sig)
+                {
+                    return;
+                }
+                // Delivered: off the outbox, whatever it was.
+                self.out_done(|o| o.ack == a);
                 // A text of ours, taken by the device it went to.
                 if let Some(tx) = lock(&self.told).remove(&a) {
                     let _ = tx.send(());
@@ -653,6 +796,37 @@ impl Node {
             }
             _ => {}
         }
+    }
+
+    /// Ops of ours not yet acked by a device they went to: its retries
+    /// (`wake_who`) still run.
+    pub fn delivering(&self) -> bool {
+        lock(&self.waits).values().any(|w| w.4.elapsed() < WAITED)
+    }
+
+    /// Whether device `d`'s lane in `space` says its acks are signed.
+    fn signs_acks(&self, space: &Id, d: &EndpointId) -> bool {
+        let p = self.view(space, |s| s.pushes_of(None)).unwrap_or_default();
+        p.iter().any(|(x, url)| {
+            x == d && url.split_whitespace().any(|t| t == ACK_SIGNED)
+        })
+    }
+
+    /// Every space caught up with, once a `BEAT` at most.
+    fn catch_up_all(self: &Arc<Self>) {
+        if self.beat_since(&self.caught) {
+            self.all().iter().for_each(|sp| self.catch_up(sp));
+        }
+    }
+
+    /// Whether a `BEAT` passed since `at` (now noted, if so).
+    fn beat_since(&self, at: &Mutex<Option<Instant>>) -> bool {
+        let mut at = lock(at);
+        let due = at.is_none_or(|t| t.elapsed() >= BEAT);
+        if due {
+            *at = Some(Instant::now());
+        }
+        due
     }
 
     /// The space whose key makes label `l`: the op's epoch key, or (with
@@ -685,9 +859,16 @@ impl Node {
     /// or a member's device has them.
     pub(super) fn acked(&self, space: Id, d: EndpointId, ts: u64) {
         let Ok(sp) = self.get(&space) else { return };
-        lock(&self.waits).retain(|_, w| (w.0, w.2) != (space, d) || w.1 > ts);
         let host = lock(&sp.book).st.hosts().iter().any(|a| a.id == d)
             || self.stores(&space).iter().any(|s| s.0.id == d);
+        // A device acks the op it took, not those before (one may be lost:
+        // its retries go on); a storage node keeps all it was sent.
+        let done = |t: u64| if host { t <= ts } else { t == ts };
+        lock(&self.waits).retain(|_, w| (w.0, w.2) != (space, d) || !done(w.1));
+        if !host {
+            let d = *d.as_bytes();
+            self.out_done(|o| (o.space, o.device, o.ts) == (space, d, ts));
+        }
         match host {
             true => {
                 let mut k = lock(&self.kept);

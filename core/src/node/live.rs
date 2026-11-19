@@ -18,6 +18,8 @@ pub(super) async fn heartbeat(n: Weak<Node>) {
         }
         last = now();
         lock(&n.waits).retain(|_, w| w.4.elapsed() < WAITED);
+        // Unacked frames of ours whose time came: again (first as we start).
+        n.flush_out(i == 0, false);
         // Our lane, proved now and then: only one that works wakes us. A
         // mailbox held here is proved as it connects, watched by pushir.
         if i % LANE_BEATS == 0 && n.serve.is_none() {
@@ -366,19 +368,25 @@ impl Node {
                 let new = want.into_iter().map(|w| w.0);
                 new.filter(|d| *d > me && !c.has(d)).collect()
             };
-            for d in dial {
-                let hi = async {
-                    let conn = self.connect(d, call::ALPN).await.ok()?;
-                    let user = self.greet(&conn).await?;
-                    Some((user, conn))
-                };
-                let ten = Duration::from_secs(10);
-                if let Ok(Some((user, conn))) =
-                    tokio::time::timeout(ten, hi).await
-                {
-                    self.admit(user, conn);
+            // All at once, 10 s each: one device that stalls holds up no
+            // other's link.
+            let ten = Duration::from_secs(10);
+            let his = dial.into_iter().map(|d| {
+                let n = self.clone();
+                async move {
+                    let hi = async {
+                        let conn = n.connect(d, call::ALPN).await.ok()?;
+                        let user = n.greet(&conn).await?;
+                        Some((user, conn))
+                    };
+                    if let Ok(Some((user, conn))) =
+                        tokio::time::timeout(ten, hi).await
+                    {
+                        n.admit(user, conn);
+                    }
                 }
-            }
+            });
+            n0_future::join_all(his).await;
         }
     }
 
@@ -386,8 +394,10 @@ impl Node {
         let Some((id, ch)) = self.in_call() else { return };
         let Ok(sp) = self.get(&id) else { return };
         let d = conn.remote_id();
+        let ten = Duration::from_secs(10);
         if self.callers(&sp, Some(ch)).iter().any(|w| w.0 == d)
-            && let Some(user) = self.greet(&conn).await
+            && let Ok(Some(user)) =
+                tokio::time::timeout(ten, self.greet(&conn)).await
         {
             self.admit(user, conn);
         }
@@ -529,6 +539,14 @@ impl Node {
             let was = seen.get(&who).copied();
             let fresh = was.is_none_or(|w| w.1 < s.ts);
             if fresh {
+                // 8 devices an author: one naming new ones (anyone may name
+                // any) pushes out its own oldest, never others'.
+                let theirs = seen.keys().filter(|k| k.0 == s.author).count();
+                if was.is_none() && theirs >= 8 {
+                    let old = seen.iter().filter(|x| x.0.0 == s.author);
+                    let old = old.min_by_key(|x| x.1.2).map(|x| *x.0);
+                    old.map(|k| seen.remove(&k));
+                }
                 seen.insert(who, (here, s.ts, Instant::now()));
             }
             fresh && was.is_some_and(|w| w.0) != here
@@ -567,10 +585,23 @@ impl Node {
             }
             // New here, or back from sleep: answered once with our call
             // (none, mostly), which says we are here without asking back.
+            // Not in a call: three times a minute a device at most, however
+            // often it comes and goes (each answer goes to every device: N²
+            // for a member toggling `Gone` and `Here`), a lost one retried.
             Op::Here => {
                 let id = sp.id;
                 let ch = move |n: &Node| n.in_call().filter(|c| c.0 == id);
-                if (changed && !self.invisible()) || ch(self).is_some() {
+                let fresh = || {
+                    let mut a = lock(&self.answered);
+                    a.retain(|_, t| t.0.elapsed() < Duration::from_secs(60));
+                    let t =
+                        a.entry((id, s.device)).or_insert((Instant::now(), 0));
+                    t.1 += 1;
+                    t.1 <= 3
+                };
+                if (changed && !self.invisible() && fresh())
+                    || ch(self).is_some()
+                {
                     let (n, sp) = (self.clone(), sp.clone());
                     // Our call as it is when said: a call begun meanwhile
                     // is never undone by a "none" stamped after it.

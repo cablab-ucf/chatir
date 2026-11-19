@@ -1,6 +1,25 @@
 //! A space's book: its ops kept, folded, keyed.
 
 use super::*;
+use crate::state::{COMMIT, commit};
+
+/// Ops the state's walk weighs (who may do what, keys, hosts, names), as
+/// against what members write (`State::insert` keeps those apart).
+fn walked(op: &Op) -> bool {
+    !matches!(
+        op,
+        Op::Post { .. }
+            | Op::Edit { .. }
+            | Op::React { .. }
+            | Op::Pin { .. }
+            | Op::Read { .. }
+            | Op::Preview { .. }
+            | Op::Push { .. }
+            | Op::Profile { .. }
+            | Op::Back { .. }
+            | Op::Knock { .. }
+    )
+}
 
 pub(super) fn rekey_aad(space: &Id, epoch: &[u8; 8]) -> Vec<u8> {
     [&space.0[..], epoch].concat()
@@ -24,6 +43,8 @@ impl Book {
             rekeys: HashMap::new(),
             rejected: VecDeque::new(),
             rejects: 0,
+            posted: vec![],
+            left_out: vec![],
         }
     }
 
@@ -120,7 +141,15 @@ impl Book {
                     self.reject(i, day, net);
                     continue;
                 }
-                if st.role(&s.author) == Role::Banned
+                // What the walk weighs (roles, keys, hosts, names) is judged
+                // as the walk does, at its place: every device keeps the
+                // same such ops, whichever it got first (a ban, or an op
+                // dated before it). The rest from someone banned now: no.
+                let banned = match walked(&s.op) {
+                    true => st.role_at(&s.author, &at) == Role::Banned,
+                    false => st.role(&s.author) == Role::Banned,
+                };
+                if banned
                     || st.known(&e.epoch) && st.stale(&e.epoch, &at, &s.author)
                     || st.burned_after(&at, &s.author)
                 {
@@ -136,15 +165,27 @@ impl Book {
                     kept += 1;
                 }
                 let key = match &s.op {
-                    Op::Rekey { epoch, boxes } => boxes
-                        .iter()
-                        .find(|b| b.0 == me.id())
-                        .and_then(|b| {
-                            kem_open(&me.kem, &rekey_aad(sp, epoch), &b.1)
-                        })
-                        .and_then(|k| Key::try_from(k).ok())
-                        .filter(|k| tag(k) == *epoch)
-                        .map(|k| (k, false)),
+                    Op::Rekey { epoch, boxes } => {
+                        let mine = boxes.iter().find(|b| b.0 == me.id());
+                        let committed = boxes.iter().find(|b| b.0 == COMMIT);
+                        let k = mine
+                            .and_then(|b| {
+                                kem_open(&me.kem, &rekey_aad(sp, epoch), &b.1)
+                            })
+                            .and_then(|k| Key::try_from(k).ok())
+                            .filter(|k| tag(k) == *epoch)
+                            .filter(|k| {
+                                committed.is_none_or(|c| c.1 == commit(k))
+                            });
+                        // A box for us that opens to no key of its epoch (or
+                        // not the one it committed to): left out on purpose,
+                        // or by a split. Said, not silently locked.
+                        if mine.is_some() && k.is_none() {
+                            self.left_out.retain(|x| x.0 != *epoch);
+                            self.left_out.push((*epoch, s.author));
+                        }
+                        k.map(|k| (k, false))
+                    }
                     Op::Back { key } => Some((*key, true)),
                     Op::Knock { sealed } => {
                         let inv = kem_open(&me.kem, &sp.0, sealed);
@@ -183,6 +224,10 @@ impl Book {
                 if matches!(s.op, Op::Rekey { .. }) {
                     self.rekeys.insert(s.id, i);
                 }
+                let new = matches!(src, Src::Net(..) | Src::Log(0));
+                if new && matches!(s.op, Op::Post { .. }) {
+                    self.posted.push(s.id);
+                }
                 ops.push(s);
             }
             if !ops.is_empty() {
@@ -198,6 +243,10 @@ impl Book {
             let good: Vec<_> =
                 self.offered.extract_if(.., |o| good(o)).collect();
             for (_, _, under, k, back) in good {
+                // Not the key its epoch's rekey committed to: none of ours.
+                if !self.st.commit_ok(&k) {
+                    continue;
+                }
                 if back {
                     self.backs.entry(under).or_default().push(tag(&k));
                 }
@@ -259,7 +308,8 @@ impl Book {
         let set = self.st.known(&tag(&k));
         let out =
             self.st.epoch().is_some_and(|e| !self.keys.contains_key(&e.tag));
-        let new = (set || out) && self.keys.insert(tag(&k), k).is_none();
+        let ok = self.st.commit_ok(&k);
+        let new = ok && (set || out) && self.keys.insert(tag(&k), k).is_none();
         if new {
             let w = self.unpark(&tag(&k));
             self.fold(sp, me, w);
@@ -338,11 +388,22 @@ impl Space {
         b.idx.get(&day).map(|s| s.iter().copied().collect()).unwrap_or_default()
     }
 
-    pub fn get(&self, ids: &[Id]) -> Vec<Vec<u8>> {
+    /// The first of `ids` that fit `max` bytes together (one at least),
+    /// read; and how many of `ids` that took.
+    pub fn get_some(&self, ids: &[Id], max: usize) -> (Vec<Vec<u8>>, usize) {
         let mut b = lock(&self.book);
-        let at: Vec<_> =
-            ids.iter().filter_map(|i| b.at.get(i).copied()).collect();
-        at.into_iter().filter_map(|(o, l)| b.log.read(o, l).ok()).collect()
+        let (mut size, mut took, mut at) = (0, 0, vec![]);
+        for i in ids {
+            let a = b.at.get(i).copied();
+            let len = a.map_or(0, |a| a.1 as usize);
+            if took > 0 && size + len > max {
+                break;
+            }
+            (size, took) = (size + len, took + 1);
+            at.extend(a);
+        }
+        let got = at.into_iter().filter_map(|(o, l)| b.log.read(o, l).ok());
+        (got.collect(), took)
     }
 
     /// Devices of members not banned: whom a storage node may take from.
@@ -441,6 +502,89 @@ mod tests {
         assert!(!b.has(&i, DAY + 4), "asked for again");
         b.fold(&sp, &o, vec![post(DAY + 4, "b")]);
         assert_eq!(shown(&b), 2);
+        std::fs::remove_file(p).unwrap();
+    }
+
+    /// An admin's op dated before their ban counts on every device, the
+    /// ban first or not: devices that got them in either order agree.
+    #[test]
+    fn devices_agree_whichever_came_first_a_ban_or_an_op_before_it() {
+        let (o, x, v) = (Me::new(rand()), Me::new(rand()), Me::new(rand()));
+        let inv = Invite::new(o.id(), "", None);
+        let (sp, k, dev) = (inv.id(), inv.key, SecretKey::generate().public());
+        let op = |who: &Me, ts, op| {
+            let (s, raw) = op::seal(&sp, &k, &who.user, dev, ts, op);
+            (s.id, postcard::from_bytes(&raw).unwrap(), Src::Net(raw, false))
+        };
+        let role = |by: &Me, ts, user: &Me, role| {
+            op(by, ts, Op::Role { user: user.id(), role })
+        };
+        let roles = |first: bool| {
+            let p = std::env::temp_dir()
+                .join(format!("chatir-agree-{first}-{}", now()));
+            let mut b = Book::new(
+                Log::open(&p, |_, _, _| {}).unwrap(),
+                State::new(&inv),
+            );
+            b.keys.insert(tag(&k), k);
+            b.fold(&sp, &o, vec![role(&o, DAY, &x, Role::Admin)]);
+            b.fold(&sp, &o, vec![role(&o, DAY, &v, Role::Member)]);
+            let ban = || role(&o, DAY + 10, &x, Role::Banned);
+            let before = || role(&x, DAY + 5, &v, Role::Banned);
+            let order =
+                if first { [ban(), before()] } else { [before(), ban()] };
+            for w in order {
+                b.fold(&sp, &o, vec![w]);
+            }
+            let r = (b.st.role(&x.id()), b.st.role(&v.id()));
+            std::fs::remove_file(p).unwrap();
+            r
+        };
+        assert_eq!(roles(true), roles(false));
+        assert_eq!(roles(true), (Role::Banned, Role::Banned));
+    }
+
+    /// A rekey commits to its key: a member whose box opens to another key
+    /// under the same tag (a split) takes none and is told who left it out;
+    /// one whose box opens to the committed key takes it.
+    #[test]
+    fn a_rekey_box_that_is_not_its_committed_key_is_refused_and_said() {
+        let (o, v) = (Me::new(rand()), Me::new(rand()));
+        let inv = Invite::new(o.id(), "", None);
+        let (sp, k0, dev) = (inv.id(), inv.key, SecretKey::generate().public());
+        let book = |name: &str| {
+            let p =
+                std::env::temp_dir().join(format!("chatir-{name}-{}", now()));
+            let mut b = Book::new(
+                Log::open(&p, |_, _, _| {}).unwrap(),
+                State::new(&inv),
+            );
+            b.keys.insert(tag(&k0), k0);
+            (b, p)
+        };
+        let rekey = |given: Key, committed: Key| {
+            let aad = rekey_aad(&sp, &tag(&given));
+            let mut boxes =
+                vec![(o.id(), kem_seal(&o.pk(), &aad, &given).unwrap())];
+            boxes.push((v.id(), kem_seal(&v.pk(), &aad, &given).unwrap()));
+            boxes.push((COMMIT, commit(&committed)));
+            let op = Op::Rekey { epoch: tag(&given), boxes };
+            let (s, raw) = op::seal(&sp, &k0, &o.user, dev, DAY, op);
+            (s.id, postcard::from_bytes(&raw).unwrap(), Src::Net(raw, false))
+        };
+        let (good, other): (Key, Key) = (rand(), rand());
+        let (mut b, p) = book("commit-good");
+        b.fold(&sp, &v, vec![rekey(good, good)]);
+        assert!(b.keys.contains_key(&tag(&good)) && b.left_out.is_empty());
+        assert!(
+            b.st.commit_ok(&good) && !b.st.epochs()[0].to.contains(&COMMIT)
+        );
+        std::fs::remove_file(p).unwrap();
+        let (mut b, p) = book("commit-split");
+        b.fold(&sp, &v, vec![rekey(good, other)]);
+        assert!(!b.keys.contains_key(&tag(&good)), "not the committed key");
+        assert_eq!(b.left_out, [(tag(&good), o.id())], "said, and by whom");
+        assert!(!b.learn(&sp, &v, good), "nor by an invite");
         std::fs::remove_file(p).unwrap();
     }
 

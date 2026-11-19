@@ -23,6 +23,17 @@ impl Node {
     }
 
     /// Keys moved on without us: we can read the past only.
+    /// Who left us out of the space's newest key with a box of ours that
+    /// opens to no key of it (on purpose, or splitting the space): said.
+    pub fn left_out_by(&self, id: &Id) -> Option<Id> {
+        let sp = self.get(id).ok()?;
+        let b = lock(&sp.book);
+        let e = b.st.epoch()?;
+        let held = b.keys.contains_key(&e.tag);
+        let by = b.left_out.iter().find(|x| x.0 == e.tag).map(|x| x.1);
+        by.filter(|_| !held)
+    }
+
     pub fn locked(&self, id: &Id) -> bool {
         let Ok(sp) = self.get(id) else { return false };
         let Some(inv) = &sp.inv else { return false };
@@ -76,6 +87,59 @@ impl Node {
     pub(super) fn since(&self, id: &Id, ch: &Ch) -> u64 {
         let l = lock(&self.local);
         l.read.get(&(*id, *ch)).or(l.joined.get(id)).copied().unwrap_or(0)
+    }
+
+    /// Posts by others among `ids`, just had: noted as had (`rung`, so a
+    /// ring that brings one again shows nothing); dated before what was
+    /// read in their channel (written offline, a clock behind, a lane that
+    /// lost them), unread again from there and, if `tell`, told once by
+    /// `notices`. Never lost among the read. (Dated before we joined, it is
+    /// history; after what was read, plain unread.)
+    pub(super) fn late(
+        self: &Arc<Self>,
+        sp: &Arc<Space>,
+        ids: &[Id],
+        tell: bool,
+    ) {
+        if sp.inv.is_none() || sp.id == self.own || ids.is_empty() {
+            return;
+        }
+        let me = self.id();
+        let posts: Vec<(Id, Ch, u64)> = self
+            .view(&sp.id, |s| {
+                let of = |i: &Id| s.message(i).map(|(ch, m)| (*i, ch, m));
+                let others = ids.iter().filter_map(of);
+                others
+                    .filter(|x| x.2.author != me)
+                    .map(|(i, ch, m)| (i, ch, m.ts))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if posts.is_empty() {
+            return;
+        }
+        let had: Vec<Id> = posts.iter().map(|x| x.0).collect();
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || rung_add(&dir, &had));
+        let late: Vec<(Id, Ch, Id)> = {
+            let mut l = lock(&self.local);
+            let late = posts.into_iter().filter(|(_, ch, ts)| {
+                let read = l.read.get(&(sp.id, *ch)).copied();
+                read.is_some_and(|r| *ts <= r)
+            });
+            let late: Vec<_> = late.collect();
+            for (_, ch, ts) in &late {
+                let r = l.read.entry((sp.id, *ch)).or_default();
+                *r = (*r).min(ts.saturating_sub(1));
+            }
+            late.into_iter().map(|(i, ch, _)| (sp.id, ch, i)).collect()
+        };
+        if !late.is_empty() {
+            self.persist();
+            if tell {
+                lock(&self.late).extend(late);
+            }
+        }
     }
 
     /// Read here; in a DM, its sender is told (not while invisible).
@@ -143,6 +207,8 @@ impl Node {
             b.keys.insert(tag(&i.key), i.key);
             b.fold(&id, &self.me, work);
         }
+        // Rung asleep (`Src::Log(0)`): `late` below.
+        let rung = std::mem::take(&mut b.posted);
         let boot = peers.iter().chain(inv.iter().flat_map(|i| &i.peers));
         boot.filter(|a| a.id != self.device())
             .for_each(|a| self.lookup.add_endpoint_info(a.clone()));
@@ -183,6 +249,8 @@ impl Node {
             let _ = sp.task.set(AbortOnDropHandle::new(tokio::spawn(task)));
         }
         self.bootstrap(&sp).into_iter().take(4).for_each(|p| self.sync(&sp, p));
+        // Rung asleep (told there already): unread if they came late.
+        self.late(&sp, &rung, false);
         self.emit(Event::Changed { space: id });
         tokio::spawn(self.clone().effects(sp.clone()));
         Ok(sp)
@@ -238,7 +306,13 @@ impl Node {
         let hosts = b.st.hosts();
         hosts.iter().for_each(|a| self.lookup.add_endpoint_info(a.clone()));
         let mut v: Vec<_> = hosts.into_iter().map(|a| a.id).collect();
-        v.extend(b.st.devices(16));
+        // Devices we synced with first (proven to answer), newest first
+        // within each: dates are claimed, a sync is not.
+        let mut ds = b.st.devices(16);
+        let synced = lock(&self.synced);
+        ds.sort_by_key(|d| !synced.contains_key(d));
+        drop(synced);
+        v.extend(ds);
         v.extend(sp.inv.iter().flat_map(|i| i.peers.iter().map(|a| a.id)));
         v.extend(self.owners(&sp.id).into_iter().take(16));
         let me = self.device();
@@ -259,6 +333,7 @@ impl Node {
             let h = lock(&self.hosts);
             h.get(&sp.id).map(|h| h.tags.clone()).unwrap_or_default()
         });
+        let mut posted = vec![];
         let new = {
             let mut b = lock(&sp.book);
             let rejects = b.rejects;
@@ -295,6 +370,7 @@ impl Node {
                         .into_iter()
                         .map(|(i, e, r)| (i, e, Src::Net(r, mine)));
                     let new = b.fold(&sp.id, &self.me, w.collect());
+                    posted = std::mem::take(&mut b.posted);
                     if b.rejects != rejects {
                         let r: Vec<_> = b.rejected.iter().collect();
                         if let Err(e) = store::save(&self.rejected(&sp.id), &r)
@@ -307,6 +383,9 @@ impl Node {
             }
         };
         if new > 0 {
+            if !mine {
+                self.late(sp, &posted, true);
+            }
             self.emit(Event::Changed { space: sp.id });
             tokio::spawn(self.clone().effects(sp.clone()));
             // A DM's news from them, here: they see ✓✓.
@@ -497,8 +576,15 @@ impl Node {
             (key, self.tick().max(after), moved)
         };
         let rekey = matches!(op, Op::Rekey { .. });
+        let live = op.live();
         let (s, raw) = self.seal(sp, &key, ts, op);
-        self.ingest(sp, vec![raw.clone()], true);
+        // Refused here (a role or key moved under us): said, never a
+        // message that silently goes nowhere.
+        let kept = self.ingest(sp, vec![raw.clone()], true);
+        ensure!(
+            live || kept > 0,
+            "refused here: your role or this space's key changed"
+        );
         self.tell(sp, &raw);
         // Asleep, members would ring the old lane until they next met us.
         if moved {
@@ -754,16 +840,25 @@ impl Node {
     pub async fn rekey(self: &Arc<Self>, id: &Id) -> Result<()> {
         let sp = self.get(id)?;
         let inv = sp.inv.as_ref().ok_or_else(|| anyhow!("only hosted here"))?;
-        let (new, old, boxes) = {
+        let (new, old, to) = {
             let b = lock(&sp.book);
             ensure!(b.st.role(&self.id()) == Role::Admin, "only admins rekey");
             let (new, old): (Key, Key) = (rand(), b.key(inv).0);
-            let aad = rekey_aad(id, &tag(&new));
-            let to = b.st.members().into_iter().filter_map(|m| {
-                Some((m.id, kem_seal(b.st.kem(&m.id)?, &aad, &new)?))
-            });
-            (new, old, to.collect())
+            let to =
+                b.st.members()
+                    .into_iter()
+                    .filter_map(|m| Some((m.id, b.st.kem(&m.id)?.to_vec())));
+            (new, old, to.collect::<Vec<_>>())
         };
+        // Past what a rekey carries (`op::fits`, with its commitment) it
+        // would be refused everywhere, its own too: said now.
+        ensure!(to.len() < 3000, "too many members to rekey (2999 at most)");
+        // Sealed outside the book's lock: thousands of X-Wing seals.
+        let aad = rekey_aad(id, &tag(&new));
+        let mut boxes: Vec<_> = (to.iter())
+            .filter_map(|(u, k)| Some((*u, kem_seal(k, &aad, &new)?)))
+            .collect();
+        boxes.push((crate::state::COMMIT, crate::state::commit(&new)));
         lock(&sp.book).keys.insert(tag(&new), new);
         self.post(&sp, Op::Rekey { epoch: tag(&new), boxes }).await?;
         self.post(&sp, Op::Back { key: old }).await?;

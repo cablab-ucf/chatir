@@ -69,15 +69,24 @@ fun postMessage(ctx: Context, tag: String, title: String, body: String,
   NotificationManagerCompat.from(ctx).notify(tag, 0, n)
 }
 
-val answers: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+/** An Answer button's token, a file (the page may start in a fresh
+ *  process), good while the call rings. */
+private fun answer(ctx: Context, k: String) = java.io.File(ctx.noBackupFilesDir, "answer-$k")
 
-/** A chatir://call link without a shown Answer's token only rings. */
-fun answerable(i: Intent?) {
+/** A chatir://call link answers only with a shown Answer's token, once;
+ *  any other (a web page's, another app's) only rings. */
+fun answerable(ctx: Context, i: Intent?) {
   if (i == null) return
   val u = i.data?.takeIf { it.scheme == "chatir" } ?: return
   if (u.host != "call" && u.host != "ring") return
-  val ok = u.host == "call" && answers.remove(u.getQueryParameter("k") ?: "")
-  val verb = if (ok) "call" else u.host
+  val now = System.currentTimeMillis()
+  ctx.noBackupFilesDir.listFiles { f -> f.name.startsWith("answer-") &&
+    now - f.lastModified() >= 45_000 }?.forEach { it.delete() }
+  val k = u.getQueryParameter("k")?.takeIf { it.matches(Regex("[0-9a-f-]{36}")) }
+  val f = k?.let { answer(ctx, it) }
+  val fresh = f != null && f.exists()
+  val ok = u.host == "call" && fresh && f!!.delete()
+  val verb = if (ok) "call" else "ring"
   i.setData(Uri.parse("chatir://$verb${u.path}"))
 }
 
@@ -94,7 +103,7 @@ fun postCall(ctx: Context, space: String, room: String, who: String,
   val open = { verb: String, code: Int ->
     // Only this notification's token answers; other links just ring.
     val k = java.util.UUID.randomUUID().toString()
-    if (verb == "call") answers.add(k)
+    if (verb == "call") runCatching { answer(ctx, k).createNewFile() }
     val uri = Uri.parse("chatir://$verb/$space/$room?k=$k")
     val i = Intent(Intent.ACTION_VIEW, uri, ctx, MainActivity::class.java)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -111,7 +120,11 @@ fun postCall(ctx: Context, space: String, room: String, who: String,
     .setCategory(NotificationCompat.CATEGORY_CALL)
     .setFullScreenIntent(open("ring", 2), true)
     .setContentIntent(open("ring", 2))
-    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+    // Who calls, on the lock screen only as the system's setting allows.
+    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+    .setPublicVersion(NotificationCompat.Builder(ctx, calls)
+      .setSmallIcon(R.drawable.ic_stat).setContentTitle("Incoming call")
+      .setCategory(NotificationCompat.CATEGORY_CALL).build())
     .setOngoing(true)
     .setTimeoutAfter(45_000)
     .build()

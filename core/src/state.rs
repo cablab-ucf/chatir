@@ -65,9 +65,23 @@ pub struct Quote {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Epoch {
     pub tag: [u8; 8],
+    /// Sorted: who its boxes went to (`stale` searches it).
     pub to: Vec<Id>,
     pub at: Pos,
     pub by: Id,
+    /// The key's commitment (`COMMIT`), if the rekey carried one.
+    pub commit: Option<Vec<u8>>,
+}
+
+/// A rekey's commitment to its new key, as one more box under an id no
+/// member has: every member's box must open to the key it names, so an
+/// admin cannot hand two halves of a space two keys under one 8-byte tag
+/// (and split it). Older peers find no box of theirs there and pass it by.
+pub const COMMIT: Id = Id([0xff; 32]);
+
+/// What `COMMIT`'s box holds for key `k`.
+pub fn commit(k: &crate::crypto::Key) -> Vec<u8> {
+    crate::crypto::kdf("epoch commit", &[k]).to_vec()
 }
 
 type Reacts = HashMap<(Id, String), (Pos, bool)>;
@@ -97,6 +111,9 @@ pub struct State {
     idle: HashMap<Id, BTreeMap<Pos, Op>>,
     // Each author's profiles (each one a key), the newest few alone.
     profiles_at: HashMap<Id, BTreeMap<Pos, (String, Vec<u8>)>>,
+    // Members whose name another's matches (case aside): shown with their
+    // short id. Worked out when first asked after a name changed.
+    twins: std::cell::OnceCell<HashSet<Id>>,
     posts: HashMap<Ch, BTreeMap<Pos, Post>>,
     index: HashMap<Id, (Ch, Pos)>,
     // Re-sealed by others, one op may come under several epochs.
@@ -129,7 +146,8 @@ pub struct State {
     roles: HashMap<Id, Role>,
     epochs: Vec<Epoch>,
     bans: Vec<(Pos, Id)>,
-    hosts: BTreeMap<EndpointId, Option<EndpointAddr>>,
+    // By node: who listed it, and where (`None`: taken off).
+    hosts: BTreeMap<EndpointId, (Id, Option<EndpointAddr>)>,
     holds: BTreeMap<EndpointId, [u8; 16]>,
     spaces: BTreeMap<Id, Option<Invite>>,
     storage: BTreeMap<EndpointId, Option<(EndpointAddr, [u8; 16])>>,
@@ -302,6 +320,7 @@ impl State {
         (self.name, self.channels) = (None, BTreeMap::new());
         self.order = vec![];
         (self.profiles, self.roles) = (HashMap::new(), HashMap::new());
+        self.twins = Default::default();
         self.profiled = HashMap::new();
         (self.epochs, self.hosts, self.bans) =
             (vec![], BTreeMap::new(), vec![]);
@@ -380,23 +399,35 @@ impl State {
                 }
                 // Never one leaving the owner out: their word must still
                 // count. A retired owner has no word and takes no key.
+                // A tag once only (the first by place): one set again for
+                // fewer would make everyone else stale under the key they
+                // hold, silenced without being banned.
                 Op::Rekey { epoch, boxes }
                     if admin
+                        && !self.epochs.iter().any(|e| e.tag == *epoch)
                         && (head
                             || self.burned.contains_key(&self.head)
                             || boxes.iter().any(|b| b.0 == self.head)) =>
                 {
-                    let to = boxes.iter().map(|b| b.0).collect();
+                    let mut to: Vec<Id> = boxes.iter().map(|b| b.0).collect();
+                    to.retain(|u| *u != COMMIT);
+                    to.sort_unstable();
+                    let commit = boxes
+                        .iter()
+                        .find(|b| b.0 == COMMIT)
+                        .map(|b| b.1.clone());
                     self.epochs.push(Epoch {
                         tag: *epoch,
                         to,
                         at: *at,
                         by: *a,
+                        commit,
                     });
                 }
                 // Admins' to list: invites send newcomers there first.
                 Op::Host { node, on } if keeper => {
-                    drop(self.hosts.insert(node.id, on.then(|| node.clone())))
+                    let at = on.then(|| node.clone());
+                    drop(self.hosts.insert(node.id, (*a, at)))
                 }
                 Op::Hold { node, token } if keeper => {
                     self.holds.insert(*node, *token);
@@ -442,6 +473,7 @@ impl State {
         let p = p.map(|(at, (n, k))| (*at, crate::op::name(n), k.clone()));
         let Some((at, n, mut k)) = p else {
             self.profiled.remove(a);
+            self.twins = Default::default();
             return drop(self.profiles.remove(a));
         };
         // Told under a key a later epoch left them out of: none, however dated.
@@ -451,6 +483,7 @@ impl State {
         }
         self.profiles.insert(*a, (n, k));
         self.profiled.insert(*a, at);
+        self.twins = Default::default();
     }
 
     /// A member's first burn that counted where dated (as `judge`).
@@ -466,7 +499,7 @@ impl State {
     }
 
     /// `u`'s role just before `at`, as the walk had it then.
-    fn role_at(&self, u: &Id, at: &Pos) -> Role {
+    pub(crate) fn role_at(&self, u: &Id, at: &Pos) -> Role {
         let h = self.history.get(u).map_or(&[][..], Vec::as_slice);
         match h.partition_point(|x| x.0 < *at) {
             0 if *u == self.owner => Role::Admin,
@@ -484,7 +517,7 @@ impl State {
             let live = |e: &&Epoch| self.role_at(&e.by, at) == Role::Admin;
             e.iter()
                 .filter(live)
-                .any(|e| Some(e.at) > from && !e.to.contains(a))
+                .any(|e| Some(e.at) > from && e.to.binary_search(a).is_err())
         };
         self.burned.get(a).is_some_and(|b| at > b)
             || self.sealed.get(&at.1).is_some_and(|t| t.iter().all(stale))
@@ -497,7 +530,15 @@ impl State {
     pub fn stale(&self, epoch: &[u8; 8], at: &Pos, a: &Id) -> bool {
         let from = self.epochs.iter().find(|e| e.tag == *epoch).map(|e| e.at);
         let since = |e: &&Epoch| Some(e.at) > from && e.at < *at;
-        self.live().filter(since).any(|e| !e.to.contains(a))
+        self.live().filter(since).any(|e| e.to.binary_search(a).is_err())
+    }
+
+    /// Whether `k` is the key its epoch's rekey committed to (one with no
+    /// commitment, or no rekey here yet, passes: older peers set none).
+    pub fn commit_ok(&self, k: &crate::crypto::Key) -> bool {
+        let t = crate::op::tag(k);
+        let e = self.epochs.iter().find(|e| e.tag == t);
+        e.and_then(|e| e.commit.as_ref()).is_none_or(|c| *c == commit(k))
     }
 
     /// An epoch a rekey here set.
@@ -531,6 +572,15 @@ impl State {
     }
 
     pub fn pushes_of(&self, who: Option<&Id>) -> Vec<(EndpointId, String)> {
+        let c = self.push_claims(who).into_iter();
+        c.map(|(_, d, u)| (d, u)).collect()
+    }
+
+    /// Each lane, with who claims its device (anyone may claim any).
+    pub fn push_claims(
+        &self,
+        who: Option<&Id>,
+    ) -> Vec<(Id, EndpointId, String)> {
         let ok = |((a, _), (at, _)): &(&(Id, EndpointId), &(Pos, _))| {
             !self.out(a) && !self.stale_at(at, a)
         };
@@ -546,7 +596,7 @@ impl State {
             *c <= 4
         });
         p.into_iter()
-            .filter_map(|((_, d), (_, u))| Some((*d, u.clone()?)))
+            .filter_map(|((a, d), (_, u))| Some((*a, *d, u.clone()?)))
             .collect()
     }
 
@@ -568,6 +618,23 @@ impl State {
     pub fn display_name(&self, user: &Id) -> String {
         let name = self.profiles.get(user).map(|p| p.0.clone());
         name.unwrap_or_else(|| user.to_string()[..8].into())
+    }
+
+    /// The name to show: with the short id beside it when another member
+    /// goes by the same (anyone may take any name; `@name` still matches).
+    pub fn shown_name(&self, user: &Id) -> String {
+        let twins = self.twins.get_or_init(|| {
+            let mut by: HashMap<String, Vec<Id>> = HashMap::new();
+            for (u, p) in &self.profiles {
+                by.entry(p.0.to_lowercase()).or_default().push(*u);
+            }
+            by.into_values().filter(|v| v.len() > 1).flatten().collect()
+        });
+        let name = self.display_name(user);
+        match twins.contains(user) {
+            true => format!("{name} · {}", &user.to_string()[..8]),
+            false => name,
+        }
     }
 
     pub fn profile(&self, user: &Id) -> Option<&str> {
@@ -676,7 +743,7 @@ impl State {
             .into_iter()
             .map(|id| Member {
                 id: *id,
-                name: self.display_name(id),
+                name: self.shown_name(id),
                 role: self.role(id),
             })
             .collect();
@@ -717,15 +784,24 @@ impl State {
         bans.map(|(at, _)| at.0).chain(e).chain(burns).max().unwrap_or(0)
     }
 
+    /// Hosts listed by someone still in: one listed by a member since
+    /// banned or retired no longer gets the space's ops.
     pub fn hosts(&self) -> Vec<EndpointAddr> {
-        self.hosts.values().flatten().cloned().collect()
+        let ok = |(by, a): &(Id, Option<EndpointAddr>)| {
+            a.clone().filter(|_| !self.out(by))
+        };
+        self.hosts.values().filter_map(ok).collect()
     }
 
     /// Hosts, with what keeps a small file there.
     pub fn holds(&self) -> Vec<(EndpointAddr, [u8; 16])> {
-        let hold = |(id, a): (&EndpointId, &Option<EndpointAddr>)| {
-            Some((a.clone()?, *self.holds.get(id)?))
-        };
+        let hold =
+            |(id, (by, a)): (&EndpointId, &(Id, Option<EndpointAddr>))| {
+                Some((
+                    a.clone().filter(|_| !self.out(by))?,
+                    *self.holds.get(id)?,
+                ))
+            };
         self.hosts.iter().filter_map(hold).collect()
     }
 
@@ -853,6 +929,12 @@ impl State {
         }
     }
 
+    /// Whether post `id` is to `me`: a DM, a reply to them, a mention.
+    pub fn mentions_me(&self, id: &Id, me: &Id) -> bool {
+        let tag = self.tag(me);
+        self.post(id).is_some_and(|p| self.mentions(p, me, &tag))
+    }
+
     pub fn message(&self, id: &Id) -> Option<(Ch, Message)> {
         let (ch, at) = self.index.get(id)?;
         Some((*ch, self.view(at, self.posts.get(ch)?.get(at)?)?))
@@ -883,7 +965,7 @@ impl State {
             let (text, _) = self.resolve(&r, q)?;
             Some(Quote {
                 author: q.author,
-                name: self.display_name(&q.author),
+                name: self.shown_name(&q.author),
                 text: text.into(),
             })
         });
@@ -905,7 +987,7 @@ impl State {
             }
         }
         reactions.values_mut().for_each(|v| v.sort());
-        let (author, name) = (p.author, self.display_name(&p.author));
+        let (author, name) = (p.author, self.shown_name(&p.author));
         let reactions = reactions.into_iter().collect();
         let (reply, files) = (p.reply, p.files.clone());
         let pinned = self.pins.get(&id).is_some_and(|(at, by, on)| {
@@ -1351,6 +1433,34 @@ mod tests {
         assert!(st.kem(&x).is_none(), "backdated, still left out");
     }
 
+    /// One taking another's name (any case) is shown with their short id,
+    /// both are; a name nobody shares is shown as it is.
+    #[test]
+    fn a_name_two_members_share_is_told_apart() {
+        let [o, a, b] = people();
+        let mut st = State::new(&Invite::new(o, "", None));
+        let named = |n, u, s: &str| {
+            op(n, u, Op::Profile { name: s.into(), kem: vec![] })
+        };
+        st.extend([
+            named(1, o, "Owen"),
+            named(2, a, "Alice"),
+            named(3, b, "alice"),
+        ]);
+        assert_eq!(st.shown_name(&o), "Owen");
+        let (sa, sb) = (st.shown_name(&a), st.shown_name(&b));
+        assert!(
+            sa.starts_with("Alice · ")
+                && sb.starts_with("alice · ")
+                && sa != sb
+        );
+        st.extend([named(4, b, "Bob")]);
+        assert_eq!(
+            (st.shown_name(&a), st.shown_name(&b)),
+            ("Alice".into(), "Bob".into())
+        );
+    }
+
     #[test]
     fn hosts_are_admins_and_devices_stay_their_owners() {
         let [o, a, b] = people();
@@ -1374,6 +1484,15 @@ mod tests {
         let hosts: Vec<_> = st.hosts().into_iter().map(|h| h.id).collect();
         assert_eq!(hosts, [SecretKey::from_bytes(&[21; 32]).public()]);
         assert!(st.devices(9).contains(&op(3, a, host(0)).device));
+        // An admin's host counts while they do: banned, it gets nothing.
+        st.extend([
+            op(7, o, Op::Role { user: a, role: Role::Admin }),
+            op(8, a, host(22)),
+        ]);
+        assert_eq!(st.hosts().len(), 2);
+        st.extend([op(10, o, Op::Role { user: a, role: Role::Banned })]);
+        let hosts: Vec<_> = st.hosts().into_iter().map(|h| h.id).collect();
+        assert_eq!(hosts, [SecretKey::from_bytes(&[21; 32]).public()]);
     }
 
     #[test]

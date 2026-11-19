@@ -183,8 +183,15 @@ impl Node {
     /// from devices that space knows only.
     pub(super) async fn told(self: &Arc<Self>, c: &Connection) -> Result<()> {
         let from = c.remote_id();
-        while let Ok(mut s) = c.accept_uni().await {
-            let b = sync::rest(&mut s, 32 + GOSSIP_MAX).await?;
+        // Quiet a while (its dialer closes a quiet link at `QUIET_LINK`):
+        // closed, so nobody holds it open saying nothing.
+        let next = || tokio::time::timeout(3 * QUIET_LINK, c.accept_uni());
+        while let Ok(Ok(mut s)) = next().await {
+            // One stream too big, cut short or slow: the next ones count.
+            let read = sync::rest(&mut s, 32 + GOSSIP_MAX);
+            let Ok(Ok(b)) = tokio::time::timeout(QUIET_LINK, read).await else {
+                continue;
+            };
             let Some((id, raw)) = b.split_first_chunk::<32>() else { continue };
             let Ok(sp) = self.get(&Id(*id)) else { continue };
             // A kept op, acked (space, its time): its sender shows it here.
@@ -222,7 +229,12 @@ impl Node {
         // Reached, directly: a neighbor (caught up with once).
         self.neighbor(sp, from);
         self.signaled(sp, raw, from);
-        Some(e)
+        // Acked only once kept: refused (dated ahead, a full disk), its
+        // sender keeps trying. A storage node fetches it first (a sync,
+        // which tells its sender it is kept): no ack before.
+        let i = Id(blake3::hash(raw).into());
+        let kept = e.live || lock(&sp.book).has(&i, e.ts);
+        kept.then_some(e)
     }
 
     /// What we tell `to` when we ask: our room, and who we are, signed.
@@ -235,7 +247,15 @@ impl Node {
     ) -> Hello {
         let room = self.room(sp);
         let me = &self.me.user;
-        let who = sp.inv.as_ref().map(|_| sync::sign(me, &sp.id, &room, to));
+        // Who we are only to members and our own storage nodes: a host
+        // another member runs admits us by the room, and need not learn
+        // which user each device is.
+        let host = lock(&sp.book).st.hosts().iter().any(|a| a.id == *to);
+        let theirs = sp.inv.is_some()
+            && host
+            && !self.stores(&sp.id).iter().any(|s| s.0.id == *to);
+        let who = (sp.inv.as_ref().filter(|_| !theirs))
+            .map(|_| sync::sign(me, &sp.id, &room, to));
         let (devices, tags) = match token {
             Some(_) => {
                 let t =
@@ -419,6 +439,9 @@ impl Node {
             tokio::spawn(async move { drop(tx.join_peers(vec![peer]).await) });
         }
         self.reach_device(&sp.id, &peer, now());
+        // Synced: it has all we wrote here, whatever its lane missed.
+        let d = *peer.as_bytes();
+        self.out_done(|o| o.space == sp.id && o.device == d);
         if !std::mem::take(&mut *lock(&sp.undelivered)).is_empty() {
             self.emit(Event::Changed { space: sp.id });
         }

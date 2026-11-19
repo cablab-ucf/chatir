@@ -76,7 +76,7 @@ async fn doze(app: AppHandle) {
 async fn nap() -> bool {
     use std::sync::atomic::Ordering::SeqCst;
     let n = running().filter(|n| n.in_call().is_none() && !FG.load(SeqCst));
-    let n = n.filter(|n| !n.transferring());
+    let n = n.filter(|n| !n.transferring() && !n.delivering());
     #[cfg(desktop)]
     let n = n.filter(|n| n.wakes() && on_battery());
     let Some(n) = n else { return false };
@@ -161,6 +161,13 @@ async fn hear(app: AppHandle, n: Arc<Node>) {
         // A text from another of ours: shown from the push alone.
         if let Some(x) = Node::text(&dir, &f).await {
             notify(&app, &x).await;
+            continue;
+        }
+        // The mailbox is back, the network too: frames of ours waiting to
+        // go (the outbox) start a node, which sends them as it starts.
+        if f.is_empty() && Node::outbox_waiting(&dir) {
+            let _ = start(&app, None).await;
+            tauri::async_runtime::spawn(doze(app.clone()));
             continue;
         }
         let Some(news) = Node::news(&dir, &f) else { continue };
@@ -755,7 +762,14 @@ async fn serve_here(app: AppHandle) -> Result<(), String> {
         let exe = dir.join(format!("chatir{}", std::env::consts::EXE_SUFFIX));
         let (cli, v) =
             (chatir_core::release::cli(), chatir_core::release::latest());
-        let bin = chatir_core::release::fetch(&cli, &v.await?).await?;
+        let v = v.await?;
+        // Never older than this app: `latest.json` is unsigned.
+        let ours = app.package_info().version.to_string();
+        anyhow::ensure!(
+            !chatir_core::release::older(&v, &ours),
+            "the release named ({v}) is older than this app ({ours})"
+        );
+        let bin = chatir_core::release::fetch(&cli, &v).await?;
         chatir_core::release::put(&exe, &bin)?;
         let out = tokio::task::spawn_blocking(move || {
             std::process::Command::new(exe).arg("--install").output()
@@ -829,8 +843,12 @@ async fn upgrade(
         use tauri_plugin_updater::UpdaterExt;
         if let Ok(up) = app.updater()
             && let Ok(Some(u)) = up.check().await
-            && u.download_and_install(percent(progress), || {}).await.is_ok()
         {
+            // Its signature is checked as it installs. Failed, it is said:
+            // never the release page, which would have the user install by
+            // hand what failed the check.
+            let r = u.download_and_install(percent(progress), || {}).await;
+            r.map_err(|e| format!("not installed: {e}"))?;
             app.restart();
         }
         browse(chatir_core::release::LATEST).map_err(err)?;

@@ -578,6 +578,10 @@ fn space(n: &Node, id: &Id) -> Option<Value> {
     };
     let channels: Vec<_> = chans.into_iter().map(chan).collect();
     let (peers, locked) = (n.peers(id), n.locked(id));
+    // Locked by a rekey whose box for us opened to no key of it: by whom.
+    let left_out = n.left_out_by(id).map(|u| {
+        n.name_of(&u, Some(*id)).unwrap_or_else(|| u.to_string()[..8].into())
+    });
     // A DM call of ours: has their device got it, and does it ring?
     let call = n.in_call().filter(|c| c.0 == *id).map(|c| c.1);
     let rings = with.zip(call).is_some_and(|(w, c)| n.rings(id, &w, &c));
@@ -590,6 +594,7 @@ fn space(n: &Node, id: &Id) -> Option<Value> {
         "self": mine,
         "count": count,
         "admin": admin, "peers": peers, "locked": locked, "channels": channels,
+        "left_out": left_out,
         "near": n.neighbors(id).into_iter()
             .map(|(d, who)| (d.fmt_short().to_string(), who))
             .map(|(device, who)| json!({ "device": device, "who": who }))

@@ -25,6 +25,16 @@ async fn start(
     on(dir, name, link, serve, Net::Direct).await
 }
 
+/// This device's own push relay is on loopback (pushir dials a lane on
+/// loopback only then): every relay here is the test's.
+fn local() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: set once, the same for every test, before lanes are dialed.
+    ONCE.call_once(|| unsafe {
+        std::env::set_var("PUSHIR_RELAY", "http://127.0.0.1:9/")
+    });
+}
+
 async fn on(
     dir: &std::path::Path,
     name: &str,
@@ -32,6 +42,7 @@ async fn on(
     serve: bool,
     net: Net,
 ) -> Arc<Node> {
+    local();
     let filter = tracing_subscriber::EnvFilter::from_default_env();
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -69,6 +80,7 @@ async fn node(name: &str) -> Arc<Node> {
 /// never the Nix store), and a phone at `d` with its mailbox there.
 async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
     use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    local();
     let mut cfg = ServerConfig::default();
     cfg.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
     let relay = Server::spawn(cfg).await.unwrap();
@@ -86,6 +98,7 @@ async fn push_relay(d: &std::path::Path) -> iroh_relay::server::Server {
 /// A lane for `d` on `relay`, before its node starts: members' frames go
 /// out only from a device that has one (for the ack).
 async fn lane(d: &std::path::Path, relay: &iroh_relay::server::Server) {
+    local();
     let at = format!("http://{}/", relay.http_addr().unwrap());
     let net = Net::Relay(vec![at.parse().unwrap()]);
     std::fs::create_dir_all(d).unwrap();
@@ -1185,19 +1198,22 @@ async fn text_is_handed_to_one_of_our_devices() {
         "once"
     );
     assert!(b.hand(a2.device(), "hi").await.is_err(), "not b's device");
-    // The same again within the retry window (a retry whose ack was lost,
-    // or the copy by lane): taken, not told twice; another text is.
+    // Sent again on purpose: a text of its own, told once more (each goes
+    // by lane and directly; the two copies are one text, and a retry of
+    // the lane's whose ack was lost is too). Then another text.
     a.hand(a2.device(), "https://example.org/x").await.unwrap();
     a.hand(a2.device(), "and this").await.unwrap();
-    let next = async {
-        loop {
-            if let Ok(Event::Handed { text, .. }) = rx.recv().await {
-                return text;
-            }
+    let mut next = vec![];
+    while next.len() < 3 {
+        let r = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        match r {
+            Ok(Ok(Event::Handed { text, .. })) => next.push(text),
+            Ok(_) => {}
+            Err(_) => break,
         }
-    };
-    let next = tokio::time::timeout(Duration::from_secs(10), next).await;
-    assert_eq!(next.unwrap(), "and this", "the copy was not told again");
+    }
+    let want = ["https://example.org/x", "and this"];
+    assert_eq!(next, want, "each told once, the copies not again");
 }
 
 /// Down, our device is woken (its lane) and the text waits for it: here
@@ -1415,4 +1431,25 @@ async fn small_ops_go_as_events() {
     let long = "é long message ".repeat(1000);
     say(&a, &id, ch, &long).await;
     until("b has it whole", || texts(&b, &id, &ch).contains(&long)).await;
+}
+
+/// A device that becomes us (a link code used, by us or by whoever got
+/// it) is told on our other devices, once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_device_is_told_on_the_others() {
+    let a = node("a").await;
+    assert!(a.notices().iter().all(|x| x.title != "A device was linked"));
+    let a2 = start(&dir("a2"), "phone", Some(a.link_code().await), false).await;
+    let both = || a.devices().iter().any(|d| d.0 == a2.device());
+    until("a knows its new device", both).await;
+    let mut told = 0;
+    for _ in 0..40 {
+        told += a
+            .notices()
+            .iter()
+            .filter(|x| x.title == "A device was linked")
+            .count();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(told, 1, "told once");
 }

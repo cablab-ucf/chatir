@@ -25,23 +25,44 @@ pub(super) fn open_text(k: &Key, rest: &[u8]) -> Option<(Text, Key)> {
     (t.1 <= now() + SKEW && same(&text_mac(k, &t), &mac)).then_some((t, mac))
 }
 
-/// Whether `text` from `from` was taken within `AGAIN` (a retry whose ack
-/// was lost, or the same text by lane and directly): noted either way.
-/// On disk: a sleeping device's ring and its node share it.
-pub(super) fn taken_text(dir: &Path, from: &EndpointId, text: &str) -> bool {
+/// Whether this text was taken already: by lane (`mac`, its own, with its
+/// time) a retry whose ack was lost, for a month; and within `AGAIN` the
+/// same text by its other way (lane or direct, which has no mac). The same
+/// words sent twice are two texts. Noted either way; on disk, under the
+/// shared lock: a sleeping device's ring and its node share it.
+pub(super) fn taken_text(
+    dir: &Path,
+    from: &EndpointId,
+    text: &str,
+    mac: Option<&Key>,
+) -> bool {
     let f = dir.join("handed");
-    let key =
+    let words =
         *blake3::hash(&[from.as_bytes(), text.as_bytes()].concat()).as_bytes();
-    let (at, since) = (now(), AGAIN.as_millis() as u64);
-    let mut seen: Vec<(Key, u64)> = store::load(&f);
-    seen.retain(|x| at.saturating_sub(x.1) < since);
-    let again = seen.iter().any(|x| x.0 == key);
-    if !again {
-        seen.push((key, at));
-        let _ = store::save(&f, &seen);
-    }
-    again
+    let (at, again) = (now(), AGAIN.as_millis() as u64);
+    shared(dir, || {
+        // (key, when, by lane): a mac, or the words with the way they came.
+        let mut seen: Vec<(Key, u64, bool)> = store::load(&f);
+        seen.retain(|x| at.saturating_sub(x.1) < MONTH_MS);
+        seen.drain(..seen.len().saturating_sub(HANDED));
+        let lane = mac.is_some();
+        let other_way = |x: &&(Key, u64, bool)| {
+            x.0 == words && x.2 != lane && at.saturating_sub(x.1) < again
+        };
+        let taken = mac.is_some_and(|m| seen.iter().any(|x| x.0 == *m))
+            || seen.iter().any(|x| other_way(&x));
+        if !taken {
+            seen.extend(mac.map(|m| (*m, at, true)));
+            seen.push((words, at, lane));
+            let _ = store::save(&f, &seen);
+        }
+        taken
+    })
 }
+
+/// Texts remembered at most (`taken_text`), and for how long.
+const HANDED: usize = 2048;
+const MONTH_MS: u64 = 30 * 24 * 3600 * 1000;
 
 impl Node {
     /// Hand `text` to one of our own devices: one link straight to it (no
@@ -101,6 +122,10 @@ impl Node {
             return None;
         }
         let a = text_ack(&k, &mac);
+        // On disk first: it goes again after a restart until acked.
+        let url = to.to_string();
+        let keep = Out::new(Some(a), self.own, device, t.1, url, f.clone());
+        self.keep_out(vec![keep]);
         let (tx, rx) = tokio::sync::oneshot::channel();
         lock(&self.told).insert(a, tx);
         let n = self.this.get().cloned().unwrap_or_default();
@@ -189,7 +214,7 @@ impl Node {
         tx.finish()?;
         if ours {
             let text = String::from_utf8(text)?;
-            if !taken_text(&self.dir, &from, &text) {
+            if !taken_text(&self.dir, &from, &text, None) {
                 self.show_text(from, text);
             }
         }

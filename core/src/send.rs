@@ -37,13 +37,19 @@ pub const ALPN: &[u8] = b"spaces/send/1";
 const BLOCK: u64 = 4 << 20;
 /// What a stream reads or writes at once: memory is streams × this a side.
 const SLICE: usize = 1 << 20;
+/// A file is at most this big: a sender's size is never trusted to size
+/// the bitmap (an absurd one would abort the process, mailbox and all).
+const LARGEST: u64 = 1 << 40;
 /// Connections × streams on each that a receiver pulls with: the best
 /// measured on loopback (a connection seals on one core). 64 streams of
 /// 2 MiB a round trip, each idle one between blocks: 7 Gbit/s at 100 ms.
 /// `CHATIR_SEND` (`4x16`) tries another.
 const SHAPE: (usize, usize) = (8, 8);
-/// Blocks a peer may have us send at once, over all its connections.
-const PER_PEER: usize = 512;
+/// Blocks a peer may have us send at once, over all its connections (a
+/// receiver's own `SHAPE` asks 64), and all peers together: each holds a
+/// 1 MiB buffer.
+const PER_PEER: usize = 128;
+const ALL_PEERS: usize = 256;
 /// A block whose hash differs is asked again this many times a round.
 const TRIES: u8 = 3;
 /// Offers in a space this big go device to device, not through iroh-blobs.
@@ -298,6 +304,9 @@ fn has(b: &[u8], i: u64) -> bool {
 impl Part {
     /// `to`'s `.part` (made by `claim`), and its bitmap unless `new`.
     fn open(to: &Path, size: u64, new: bool) -> io::Result<Self> {
+        if size > LARGEST {
+            return Err(io::Error::other("over 1 TiB"));
+        }
         let path = with(to, ".part");
         let file =
             std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
@@ -670,6 +679,9 @@ impl<'a> Slot<'a> {
         d: EndpointId,
     ) -> Option<Self> {
         let mut b = lock(m);
+        if b.values().sum::<usize>() >= ALL_PEERS {
+            return None;
+        }
         let k = b.entry(d).or_default();
         if *k >= PER_PEER {
             return None;

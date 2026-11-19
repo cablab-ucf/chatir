@@ -635,10 +635,17 @@ impl Node {
     }
 
     pub(super) async fn give(&self, c: &Connection) -> Result<()> {
-        let ((mut tx, mut rx), from) = (c.accept_bi().await?, c.remote_id());
+        // Asked within a while, or the link goes: nobody holds it silent.
+        let ask = async {
+            let (tx, mut rx) = c.accept_bi().await?;
+            let mut head = [0u8; 17];
+            rx.read_exact(&mut head).await?;
+            anyhow::Ok((tx, rx, head))
+        };
+        let ask = tokio::time::timeout(Duration::from_secs(10), ask).await;
+        let (mut tx, mut rx, head) = ask.map_err(|_| anyhow!("silent"))??;
+        let from = c.remote_id();
         // A file's worth is read only after the head (and token), by storage.
-        let mut head = [0u8; 17];
-        rx.read_exact(&mut head).await?;
         // The ask's kind, then its token: read before anything longer.
         let max = match (head[0], self.serve) {
             (0, Some(t)) if same(&head[1..], &t) => 1024,
